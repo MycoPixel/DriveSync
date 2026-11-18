@@ -18,6 +18,8 @@ DEFAULT_CONFIG = {
     "client_secret": "",
     "convert_google_docs": True,  # download Docs/Sheets/Slides as docx/xlsx/pptx
     "export_formats": {},         # per-kind override, e.g. {"document": "pdf"}
+    "incremental_scan": True,     # use the Drive changes feed instead of
+                                  # re-listing the whole tree every pass
 }
 
 
@@ -85,6 +87,7 @@ def save_config(cfg: dict) -> dict:
         raise ValueError("transfer_concurrency must be between 1 and 16")
     merged["transfer_concurrency"] = conc
     merged["tray_enabled"] = bool(merged["tray_enabled"])
+    merged["incremental_scan"] = bool(merged["incremental_scan"])
 
     if not isinstance(merged["ignore_patterns"], list) or \
             not all(isinstance(x, str) for x in merged["ignore_patterns"]):

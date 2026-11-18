@@ -21,6 +21,8 @@ class MockDrive:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.files = {}          # id -> meta dict
+        self._changes = []       # mutation log feeding changes_list()
+        self.calls = {"list_tree": 0, "changes_list": 0}
         self.root_id = self._new_folder("My Drive")
         self._version_counter = {}
 
@@ -40,12 +42,14 @@ class MockDrive:
             "version": "1", "modifiedTime": self._now_iso(),
             "trashed": False,
         }
+        self._changes.append(fid)
         return fid
 
     def _touch(self, fid):
         self._version_counter[fid] = self._version_counter.get(fid, 1) + 1
         self.files[fid]["version"] = str(self._version_counter[fid])
         self.files[fid]["modifiedTime"] = self._now_iso()
+        self._changes.append(fid)
 
     def _fs_path(self, fid):
         """Physical path for a file id (not folders — those are virtual)."""
@@ -71,6 +75,7 @@ class MockDrive:
         return dict(self.files[file_id])
 
     def list_tree(self, folder_id):
+        self.calls["list_tree"] += 1
         items = {"": {"id": folder_id, "name": "", "mimeType": FOLDER_MIME}}
         for f in self.files.values():
             if f["trashed"]:
@@ -118,6 +123,7 @@ class MockDrive:
             "md5Checksum": hashlib.md5(data).hexdigest(),
             "size": str(len(data)),
         }
+        self._changes.append(fid)
         return dict(self.files[fid])
 
     def update_content(self, file_id, local_path):
@@ -132,6 +138,12 @@ class MockDrive:
     def rename(self, file_id, new_name, add_parent=None, remove_parent=None):
         f = self.files[file_id]
         old_path = self._fs_path(file_id)
+        # a folder rename moves every descendant file's physical location
+        old_paths = {}
+        if f["mimeType"] == FOLDER_MIME:
+            for fid2, f2 in self.files.items():
+                if f2.get("mimeType") != FOLDER_MIME and not f2.get("trashed"):
+                    old_paths[fid2] = self._fs_path(fid2)
         if new_name:
             f["name"] = new_name
         if add_parent:
@@ -140,12 +152,18 @@ class MockDrive:
                 [p for p in f["parents"] if p not in (remove_parent, add_parent)]
         elif remove_parent and remove_parent in f["parents"] and len(f["parents"]) > 1:
             f["parents"].remove(remove_parent)
-        # keep the physical file in step with the metadata change
+        # keep the physical files in step with the metadata change
         new_path = self._fs_path(file_id)
-        if old_path != new_path and old_path.exists() and \
-                f["mimeType"] != FOLDER_MIME:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(old_path, new_path)
+        if old_path != new_path and old_path.exists():
+            if f["mimeType"] != FOLDER_MIME:
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(old_path, new_path)
+            else:
+                for fid2, op2 in old_paths.items():
+                    np2 = self._fs_path(fid2)
+                    if op2.exists() and op2 != np2:
+                        np2.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(op2), str(np2))
         self._touch(file_id)
         return dict(f)
 
@@ -164,6 +182,29 @@ class MockDrive:
 
     def set_local_mtime(self, dest_path, remote_modified):
         pass
+
+    # ---- changes feed (incremental scans) --------------------------
+    def changes_start_token(self):
+        return str(len(self._changes))
+
+    def changes_list(self, page_token):
+        """Items for every file mutated since page_token, deduped keeping
+        the LAST occurrence (current metadata) like the real feed."""
+        self.calls["changes_list"] += 1
+        start = int(page_token)
+        last, order = {}, []
+        for fid in self._changes[start:]:
+            if fid not in last:
+                order.append(fid)
+            last[fid] = self.files.get(fid)
+        items = []
+        for fid in order:
+            f = last[fid]
+            if f is None:
+                continue
+            items.append({"fileId": fid, "removed": bool(f.get("trashed")),
+                          "file": dict(f)})
+        return items, str(len(self._changes))
 
     # ---- extra test helpers ----------------------------------------
     def _dir_path(self, folder_id):
@@ -200,6 +241,7 @@ class MockDrive:
             "md5Checksum": hashlib.md5(data).hexdigest(),
             "size": str(len(data)),
         }
+        self._changes.append(fid)
         return fid
 
     def put_remote_folder(self, rel_path):

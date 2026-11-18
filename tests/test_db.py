@@ -1,8 +1,11 @@
 """Store (SQLite) tests."""
 
+import re
+from datetime import datetime, timezone
+
 import pytest
 
-from drivesync.db import Store
+from drivesync.db import Store, to_local
 
 
 @pytest.fixture
@@ -139,3 +142,12 @@ def test_migration_adds_columns_to_existing_db(tmp_path):
     ecols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(entries)")}
     assert {"deleted_local", "deleted_remote"} <= ecols
     s.close()
+
+
+def test_to_local_renders_local_timezone():
+    """Displayed event timestamps are local wall-clock, not UTC."""
+    utc_dt = datetime(2026, 6, 1, 12, 30, 0, tzinfo=timezone.utc)
+    out = to_local(utc_dt.isoformat())
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", out)
+    # parsing back as local wall time must give the same instant
+    assert datetime.fromisoformat(out).astimezone().timestamp() == utc_dt.timestamp()

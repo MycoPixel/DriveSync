@@ -41,8 +41,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.2.0-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.2.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.2.2-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.2.2-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -63,6 +63,13 @@ Or manually:
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m drivesync serve
+```
+
+Uninstalling keeps your sync data (`~/.local/share/drivesync`) by default:
+
+```bash
+./uninstall.sh            # remove the app, keep config/tokens/sync state
+./uninstall.sh --purge    # remove everything, including your sync data
 ```
 
 ## One-time setup: your own Google OAuth client
@@ -123,7 +130,9 @@ The desktop app (`drivesync gui`) is what the menu launcher opens: one GTK
 window with Setup / Accounts / Folders / Activity tabs, so a fresh machine
 is configured entirely without the browser — except Google's own consent
 page, which must open in a browser once per account (that step happens on
-google.com by design). `serve` and the systemd unit are the headless/service
+google.com by design). Adding a pair needs no manual folder IDs: the
+“Browse Drive…” button walks My Drive and Shared-with-me folders — the
+same picker the dashboard uses. `serve` and the systemd unit are the headless/service
 mode; running both is safe — a cross-process lock means only one syncs at a
 time. Headless machines without GTK: `drivesync gui` prints the package to
 install and exits.
@@ -152,6 +161,7 @@ drivesync doctor                      sanity-check the installation
 | Conflict policy | `newer` | Who wins when both sides changed |
 | Ignore patterns | `*.tmp`, `*.swp`, … | Globs skipped on both sides |
 | Convert Google Docs | on | Native docs downloaded as Office files |
+| Incremental scan | on | 1–2 API calls per pass via the changes feed |
 | Server port | 5678 | Local dashboard port |
 
 ### Google Docs conversion
@@ -206,6 +216,29 @@ outcomes — local change pushes, remote change pulls, both-changed is a
 conflict handled by the policy, and one-sided deletions propagate unless the
 other side changed since the base (that's a conflict too, so edits are never
 silently destroyed).
+
+**Incremental remote scans.** After the first (full) pass, each account keeps
+a Drive *changes feed* token. Later passes rebuild the remote view from the
+base snapshot plus the feed — one or two API calls per pass, regardless of
+how many files or folders the pair has — so editing one file in a pair of
+50,000 syncs in seconds, not minutes. Structural changes the feed cannot
+express (a tracked folder renamed or moved, a whole folder arriving from
+outside the pair) automatically fall back to one full scan; first runs and
+disabled incremental scans always list the whole tree. Turn it off with:
+
+```bash
+drivesync config set incremental_scan=false
+```
+
+## Desktop app & tray
+
+`drivesync gui` (also the menu launcher) is a resident desktop app: it runs
+the sync worker, shows a Material-styled window, and keeps a system tray
+icon when pystray is installed (`sudo dnf install python3-pystray`). Closing
+the window only hides it — the tray icon stays, with **Open**, **Sync now**,
+**Pause/Resume** and **Quit**. Without pystray, closing the window exits the
+app. A second launch while it runs shows an "already running" notice instead
+of opening a duplicate.
 
 ## Current limitations (honest list)
 

@@ -14,7 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from . import __version__
 from .auth import AuthError, access_token, interactive_auth, token_from_json, whoami
 from .config import db_path, load_config, save_config
-from .db import Store
+from .db import Store, to_local
 from .drive import Drive, DriveError, FOLDER_MIME, SHORTCUT_MIME
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -208,7 +208,7 @@ def create_app(store: Store, worker=None):
         pair_id = request.args.get("pair_id", type=int)
         rows = store.recent_events(limit=limit, level=level, pair_id=pair_id)
         return jsonify({"ok": True, "events": [
-            {"id": e["id"], "ts": e["ts"], "pair_id": e["pair_id"],
+            {"id": e["id"], "ts": to_local(e["ts"]), "pair_id": e["pair_id"],
              "level": e["level"], "action": e["action"],
              "path": e["rel_path"], "message": e["message"]} for e in rows]})
 

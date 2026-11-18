@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .config import app_dir
 from .db import utcnow
-from .drive import resolve_export_formats
+from .drive import FOLDER_MIME, resolve_export_formats
 
 GDOC_PREFIX = "application/vnd.google-apps."
 CONFLICT_TAG = "%Y%m%d-%H%M%S"
@@ -198,6 +198,128 @@ def scan_remote(drive, root_id, patterns, export_map=None):
 
 def base_map(rows):
     return {r["rel_path"]: dict(r) for r in rows}
+
+
+# ---------------------------------------------------------------- delta
+class DeltaUnsupported(Exception):
+    """The changes feed cannot express this delta — a full scan is needed."""
+
+
+def remote_item_from_base(b, export_map):
+    """Rebuild what scan_remote would have returned for an unchanged entry.
+
+    Delta scans assume 'not in the feed' means 'unchanged since the last
+    pass' — true because the feed covers everything since the token and the
+    base snapshot was written exactly at that point. The item is synthesized
+    from the remote metadata stored alongside the base row.
+    """
+    mime = b.get("remote_mime") or ""
+    kind = kind_of(mime) if mime else b.get("kind")
+    item = {
+        "kind": kind,
+        "id": b.get("remote_id"),
+        "md5": None if kind == "gdoc" else b.get("remote_md5"),
+        "version": str(b.get("remote_version") or ""),
+        "mtime": float(b.get("remote_mtime") or 0.0),
+        "size": b.get("remote_size"),
+        "mime": mime,
+    }
+    if kind == "gdoc" and export_map:
+        exp = export_map.get(mime)
+        if exp:
+            item["export"] = exp
+    return item
+
+
+def scan_remote_delta(pair, base_rows, export_map, patterns, changes):
+    """Remote map for one pair: base snapshot + the account's changes feed.
+
+    File-level changes (create / edit / delete / rename / move) are applied
+    directly — the common cases, and exactly what makes a one-file edit in a
+    large pair fast. Structural changes — tracked dirs renamed or moved,
+    brand-new remote dirs (their unknown subtree could be anything), or base
+    rows written by an older version without remote metadata — raise
+    DeltaUnsupported so the caller falls back to a full scan.
+    """
+    rows = [dict(r) for r in base_rows]
+    if not all((r.get("remote_mime") or "") for r in rows):
+        raise DeltaUnsupported("base rows lack remote metadata (older layout)")
+    index = {r["remote_id"]: r["rel_path"] for r in rows if r["remote_id"]}
+    root_id = pair["remote_id"]
+    if root_id in index:
+        raise DeltaUnsupported("root id tracked as a child")
+    index[root_id] = ""                       # the pair root itself
+
+    remote = {}
+    for r in rows:
+        if r.get("deleted_remote"):
+            continue                          # acknowledged deletion
+        remote[r["rel_path"]] = remote_item_from_base(r, export_map)
+
+    def drop(rel):
+        remote.pop(rel, None)
+        for k in [k for k in remote if k.startswith(rel + "/")]:
+            remote.pop(k, None)
+
+    def feed_item(entry):
+        mime = entry.get("mimeType", "")
+        item = {
+            "kind": kind_of(mime),
+            "id": entry.get("id"),
+            "md5": None if mime.startswith(GDOC_PREFIX)
+                   else entry.get("md5Checksum"),
+            "version": str(entry.get("version", "")),
+            "mtime": parse_remote_mtime(entry.get("modifiedTime")),
+            "size": int(entry["size"]) if entry.get("size") else None,
+            "mime": mime,
+        }
+        if item["kind"] == "gdoc" and export_map:
+            exp = export_map.get(mime)
+            if exp:
+                item["export"] = exp
+        return item
+
+    for ch in changes:
+        fid = ch.get("fileId")
+        if not fid or fid == root_id:
+            continue                          # root itself: nothing to sync
+        entry = ch.get("file") or {}
+        if bool(ch.get("removed")) or bool(entry.get("trashed")):
+            if fid in index:
+                drop(index.pop(fid))
+            continue
+        if not entry.get("parents"):
+            continue
+        parent_rel = None
+        for pid in entry["parents"]:
+            if pid in index:
+                parent_rel = index[pid]
+                break
+        if parent_rel is None:
+            if fid in index:
+                drop(index.pop(fid))          # moved outside the pair tree
+            continue                          # change outside this pair
+        name = entry.get("name", "")
+        new_rel = f"{parent_rel}/{name}" if parent_rel else name
+        if fid in index:
+            old_rel = index[fid]
+            if new_rel != old_rel:
+                is_dir = (remote.get(old_rel) or {}).get("kind") == "dir" or \
+                    any(r["rel_path"].startswith(old_rel + "/") for r in rows)
+                if is_dir:
+                    raise DeltaUnsupported(f"tracked dir changed rel: {old_rel}")
+                drop(old_rel)
+            remote[new_rel] = feed_item(entry)
+            index[fid] = new_rel
+        else:
+            if kind_of(entry.get("mimeType", "")) == "dir":
+                raise DeltaUnsupported(
+                    f"new remote dir under tracked parent: {new_rel}")
+            if ignored(new_rel, patterns):
+                continue
+            remote[new_rel] = feed_item(entry)
+            index[fid] = new_rel
+    return remote
 
 
 # ---------------------------------------------------------------- decide
@@ -551,8 +673,15 @@ class SyncStats:
         self.errors = _AtomicInt()
 
 
-def sync_pair(store, cfg, pair, drive, force_full=False):
-    """Run one sync pass for a pair row. Returns (SyncStats, ok)."""
+def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
+    """Run one sync pass for a pair row. Returns (SyncStats, ok).
+
+    changes: a Drive changes feed (list of {'fileId','removed','file'})
+    captured since the previous pass. When given, the remote map is rebuilt
+    from the base snapshot + the feed instead of re-listing the whole tree —
+    one-file edits in large pairs cost 1-2 API calls instead of one per
+    folder. Structural feed changes fall back to a full scan automatically.
+    """
     local_root = str(pair["local_path"])
     stats = SyncStats()
     if not os.path.isdir(local_root):
@@ -563,16 +692,30 @@ def sync_pair(store, cfg, pair, drive, force_full=False):
 
     patterns = list(cfg.get("ignore_patterns", []))
     export_map = resolve_export_formats(cfg)
-    local = scan_local(local_root, patterns)
-    try:
-        remote = scan_remote(drive, pair["remote_id"], patterns, export_map)
-    except Exception as exc:
-        store.log(pair["id"], "error", message=f"Drive listing failed: {exc}",
-                  level="error")
-        stats.errors += 1
-        return stats, False
+    base_rows = store.base_entries(pair["id"])
 
-    base = base_map(store.base_entries(pair["id"]))
+    remote = None
+    if changes is not None and not force_full:
+        try:
+            remote = scan_remote_delta(pair, base_rows, export_map, patterns,
+                                       changes)
+        except DeltaUnsupported:
+            remote = None
+        except Exception as exc:
+            store.log(pair["id"], "info", "",
+                      f"delta scan failed ({exc}); doing a full scan")
+            remote = None
+    if remote is None:
+        try:
+            remote = scan_remote(drive, pair["remote_id"], patterns, export_map)
+        except Exception as exc:
+            store.log(pair["id"], "error", message=f"Drive listing failed: {exc}",
+                      level="error")
+            stats.errors += 1
+            return stats, False
+
+    local = scan_local(local_root, patterns)
+    base = base_map(base_rows)
 
     # exported Google-native docs live under rel+ext locally: align the maps
     fold = fold_exports(local, remote, base, export_map)
@@ -662,6 +805,28 @@ class _ApplyCtx:
         row = self.store.base_get(self.pid, rel)
         return dict(row) if row else None
 
+    def _remote_meta(self, rel, meta=None, mime_fallback=None):
+        """remote_size/mtime/mime kwargs for base_put.
+
+        Prefers the scanned remote item; an API response (meta) overrides
+        with fresh values after a mutation. Base rows carry the remote
+        metadata the delta scan needs to synthesize unchanged items.
+        """
+        r = self.remote_map.get(rel) or {}
+        size, mtime, mime = r.get("size"), r.get("mtime"), r.get("mime")
+        if meta:
+            if meta.get("size"):
+                try:
+                    size = int(meta["size"])
+                except (TypeError, ValueError):
+                    pass
+            if meta.get("modifiedTime"):
+                mtime = parse_remote_mtime(meta["modifiedTime"])
+            if meta.get("mimeType"):
+                mime = meta["mimeType"]
+        return {"remote_size": size, "remote_mtime": mtime,
+                "remote_mime": mime or mime_fallback}
+
     def lpath(self, rel):
         """Local path for rel — folded native docs resolve to their rel+ext."""
         return os.path.join(self.root, self.fold.get(rel, rel))
@@ -688,7 +853,8 @@ class _ApplyCtx:
                 fid = created["id"]
                 self.ids[cur] = fid
                 self.store.base_put(self.pid, cur, "dir", remote_id=fid,
-                                    remote_version=str(created.get("version", "")))
+                                    remote_version=str(created.get("version", "")),
+                                    remote_mime=FOLDER_MIME)
                 self.store.log(self.pid, "mkdir-remote", cur, "folder created on Drive")
             pid = fid
         return pid
@@ -778,7 +944,8 @@ class _ApplyCtx:
                             local_mtime=os.path.getmtime(path),
                             remote_md5=None if native_update
                             else meta.get("md5Checksum"),
-                            remote_version=str(meta.get("version", "")))
+                            remote_version=str(meta.get("version", "")),
+                            **self._remote_meta(base_rel, meta))
         self.ids[base_rel] = rid
         if base_rel != rel:
             self.ids.pop(rel, None)
@@ -809,7 +976,8 @@ class _ApplyCtx:
                             local_size=os.path.getsize(dest),
                             local_mtime=os.path.getmtime(dest),
                             remote_md5=r["md5"],
-                            remote_version=r["version"])
+                            remote_version=r["version"],
+                            **self._remote_meta(rel))
         self.stats.pulled += 1
         self.store.log(self.pid, "download", rel, note)
 
@@ -851,7 +1019,8 @@ class _ApplyCtx:
         os.makedirs(self.lpath(rel), exist_ok=True)
         r = self.remote_map.get(rel) or {}
         self.store.base_put(self.pid, rel, "dir", remote_id=r.get("id"),
-                            remote_version=r.get("version"))
+                            remote_version=r.get("version"),
+                            remote_mime=(r.get("mime") or FOLDER_MIME))
         self.store.log(self.pid, "mkdir-local", rel)
 
     def op_mkdir_remote(self, op):
@@ -860,7 +1029,8 @@ class _ApplyCtx:
         created = self.drive.mkdir(rel.rsplit("/", 1)[-1], pid)
         self.ids[rel] = created["id"]
         self.store.base_put(self.pid, rel, "dir", remote_id=created["id"],
-                            remote_version=str(created.get("version", "")))
+                            remote_version=str(created.get("version", "")),
+                            remote_mime=FOLDER_MIME)
         self.stats.pushed += 1
         self.store.log(self.pid, "mkdir-remote", rel)
 
@@ -927,7 +1097,9 @@ class _ApplyCtx:
                             local_mtime=(self.local_map.get(new) or {}).get("mtime"),
                             remote_md5=meta.get("md5Checksum", (b or {}).get("remote_md5"))
                             if not is_gdoc else None,
-                            remote_version=str(meta.get("version", (b or {}).get("remote_version", ""))))
+                            remote_version=str(meta.get("version", (b or {}).get("remote_version", ""))),
+                            **self._remote_meta(old, meta,
+                                                mime_fallback=(b or {}).get("remote_mime")))
         self.ids[new_rel] = rid
         self.ids.pop(old, None)
         self.stats.renamed += 1
@@ -946,7 +1118,8 @@ class _ApplyCtx:
                             local_size=(b or {}).get("local_size"),
                             local_mtime=os.path.getmtime(new_path),
                             remote_md5=(self.remote_map.get(new) or {}).get("md5"),
-                            remote_version=(self.remote_map.get(new) or {}).get("version"))
+                            remote_version=(self.remote_map.get(new) or {}).get("version"),
+                            **self._remote_meta(new))
         self.ids[new] = (b or {}).get("remote_id")
         self.ids.pop(old, None)
         self.stats.renamed += 1
@@ -969,13 +1142,15 @@ class _ApplyCtx:
                             local_md5=md5_file(path),
                             local_size=os.path.getsize(path),
                             local_mtime=os.path.getmtime(path),
-                            remote_md5=r["md5"], remote_version=r["version"])
+                            remote_md5=r["md5"], remote_version=r["version"],
+                            **self._remote_meta(rel))
         self.store.base_put(self.pid, copy_rel, "file", remote_id=meta["id"],
                             local_md5=md5_file(copy_path),
                             local_size=os.path.getsize(copy_path),
                             local_mtime=os.path.getmtime(copy_path),
                             remote_md5=meta.get("md5Checksum"),
-                            remote_version=str(meta.get("version", "")))
+                            remote_version=str(meta.get("version", "")),
+                            **self._remote_meta(copy_rel, meta))
         self.ids[copy_rel] = meta["id"]
         self.stats.conflicts += 1
         self.store.log(self.pid, "conflict", rel,
@@ -999,11 +1174,13 @@ class _ApplyCtx:
                             local_size=os.path.getsize(copy_path),
                             local_mtime=os.path.getmtime(copy_path),
                             remote_md5=meta.get("md5Checksum"),
-                            remote_version=str(meta.get("version", "")))
+                            remote_version=str(meta.get("version", "")),
+                            **self._remote_meta(copy_rel, meta))
         # record the new remote state for rel — the conflict is acknowledged
         self.store.base_put(self.pid, rel, "file", remote_id=r["id"],
                             local_md5=None, local_size=None, local_mtime=None,
-                            remote_md5=r["md5"], remote_version=r["version"])
+                            remote_md5=r["md5"], remote_version=r["version"],
+                            **self._remote_meta(rel))
         self.ids[copy_rel] = meta["id"]
         self.stats.conflicts += 1
         self.store.log(self.pid, "conflict", rel,
@@ -1023,7 +1200,8 @@ class _ApplyCtx:
                             local_size=os.path.getsize(copy_path),
                             local_mtime=os.path.getmtime(copy_path),
                             remote_md5=meta.get("md5Checksum"),
-                            remote_version=str(meta.get("version", "")))
+                            remote_version=str(meta.get("version", "")),
+                            **self._remote_meta(copy_rel, meta))
         self.store.base_delete(self.pid, rel)   # remote deletion accepted
         self.ids[copy_rel] = meta["id"]
         self.stats.conflicts += 1
@@ -1035,7 +1213,8 @@ class _ApplyCtx:
         rel = op[1]
         r = self.remote_map[rel]
         self.store.base_put(self.pid, rel, "gdoc", remote_id=r["id"],
-                            remote_md5=None, remote_version=r["version"])
+                            remote_md5=None, remote_version=r["version"],
+                            **self._remote_meta(rel))
         self.store.log(self.pid, "skip", rel,
                        "Google-native document: not downloaded (no md5)")
 
@@ -1056,7 +1235,8 @@ class _ApplyCtx:
                             local_md5=md5_file(path),
                             local_size=os.path.getsize(path),
                             local_mtime=os.path.getmtime(path),
-                            remote_md5=r["md5"], remote_version=r["version"])
+                            remote_md5=r["md5"], remote_version=r["version"],
+                            **self._remote_meta(rel))
         self.store.log(self.pid, "reconcile", rel, "identical changes on both sides")
 
     def op_forget(self, op):

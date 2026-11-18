@@ -17,6 +17,36 @@ UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 
+
+def resolve_folder_entry(item):
+    """Picker-ready {id,name} for a Drive listing row.
+
+    Real folders pass through; shortcuts to folders resolve to their real
+    target id (so sync pairs bind to the folder itself, not the shortcut);
+    files, docs and shortcut-to-file rows return None. Shared by the web
+    dashboard and the desktop GUI folder picker.
+    """
+    if item.get("mimeType") == FOLDER_MIME:
+        return {"id": item["id"], "name": item["name"]}
+    if item.get("mimeType") == SHORTCUT_MIME:
+        details = item.get("shortcutDetails") or {}
+        if details.get("targetMimeType") == FOLDER_MIME:
+            return {"id": details["targetId"], "name": item["name"]}
+    return None
+
+
+def folders_for_parent(drive, parent):
+    """Subfolders of `parent` for folder pickers.
+
+    parent 'shared' lists the account's 'Shared with me' folders; any
+    other value is a folder id ('root' = My Drive). Returns pickable
+    rows only (folders and folder shortcuts).
+    """
+    if parent == "shared":
+        return drive.list_shared_folders()
+    children = drive.list_children(parent)
+    return [f for f in (resolve_folder_entry(c) for c in children) if f]
+
 # Google-native files have no downloadable bytes; Drive converts them on the
 # fly via files/{id}/export. Default target per native type: Office formats
 # a desktop can open directly.
@@ -235,6 +265,42 @@ class Drive:
 
         walk(folder_id, "")
         return items
+
+    # ---- changes feed (incremental scans) --------------------------
+    def changes_start_token(self):
+        """Current changes-feed token — the 'now' marker for later passes."""
+        resp = self._request("GET", f"{API}/changes/startPageToken")
+        return resp.json()["startPageToken"]
+
+    def changes_list(self, page_token):
+        """All account-wide changes since page_token.
+
+        Returns (items, new_token). Each item is
+        {'fileId': …, 'removed': bool, 'file': {metadata}} — the file dict
+        carries the *current* metadata, so deltas never need a follow-up
+        metadata call. new_token only arrives once all pages were consumed;
+        if the feed turns out incomplete, the OLD token is returned so the
+        next pass re-reads (decide() is idempotent on no-op changes).
+        """
+        items, token = [], page_token
+        fields = ("nextPageToken,newStartPageToken,"
+                  "changes(fileId,removed,file(id,name,mimeType,md5Checksum,"
+                  "version,size,modifiedTime,parents,trashed))")
+        while True:
+            params = {
+                "pageToken": token,
+                "pageSize": self.page_size,
+                "fields": fields,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+            }
+            data = self._request("GET", f"{API}/changes", params=params).json()
+            items.extend(data.get("changes", []))
+            if data.get("newStartPageToken"):
+                return items, data["newStartPageToken"]
+            token = data.get("nextPageToken")
+            if not token:
+                return items, page_token  # incomplete: re-read next pass
 
     # ---- mutations ------------------------------------------------
     def mkdir(self, name, parent_id):

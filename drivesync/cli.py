@@ -17,7 +17,7 @@ import sys
 
 from . import __version__
 from .config import app_dir, load_config, update_config
-from .db import Store
+from .db import Store, to_local
 from .server import create_app
 
 
@@ -147,7 +147,7 @@ def cmd_sync(args):
               f"renamed {s['renamed']}, conflicts {s['conflicts']}")
     for e in reversed(store.recent_events(limit=30)):
         lvl = "" if e["level"] == "info" else f" [{e['level']}]"
-        print(f"  {e['ts']}  {e['action']:<22} {e['rel_path']}{lvl} {e['message']}")
+        print(f"  {to_local(e['ts'])}  {e['action']:<22} {e['rel_path']}{lvl} {e['message']}")
     store.close()
     sys.exit(0 if ok else 2)
 
@@ -169,7 +169,7 @@ def cmd_status(args):
     events = store.recent_events(limit=5)
     print("recent activity:")
     for e in events:
-        print(f"  {e['ts']} [{e['level']}] {e['action']} {e['rel_path']} {e['message']}")
+        print(f"  {to_local(e['ts'])} [{e['level']}] {e['action']} {e['rel_path']} {e['message']}")
     store.close()
 
 
@@ -180,7 +180,7 @@ def cmd_config(args):
             value = int(value)
         if key in ("ignore_patterns",):
             value = [v.strip() for v in value.split(",") if v.strip()]
-        if key in ("tray_enabled", "convert_google_docs"):
+        if key in ("tray_enabled", "convert_google_docs", "incremental_scan"):
             value = value.strip().lower() in ("1", "true", "yes", "on")
         cfg = update_config(**{key: value})
         print(f"saved: {key} = {cfg[key]}")
@@ -245,7 +245,9 @@ def cmd_doctor(args):
 def cmd_gui(args):
     try:
         from .gui import run
-    except ImportError as exc:
+    except (ImportError, ValueError) as exc:
+        # ImportError: PyGObject missing; ValueError: gi.require_version
+        # could not find the Gtk/Gdk 3.0 typelibs
         print("The desktop UI needs GTK (PyGObject):\n"
               "  Fedora/Ultramarine: sudo dnf install python3-gobject\n"
               "  Debian/Ubuntu:      sudo apt install python3-gi\n"

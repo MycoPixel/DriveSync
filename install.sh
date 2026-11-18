@@ -58,8 +58,11 @@ if ! "${APP_DIR}/.venv/bin/python" -c "import os, certifi, sys; sys.exit(0 if os
 fi
 
 # 3. launcher script
+# PYTHONPATH is required: the venv only holds the dependencies; `python -m`
+# finds the app package via sys.path, which otherwise starts at the CWD
 cat > "${BIN_DIR}/drivesync" <<EOF
 #!/usr/bin/env bash
+export PYTHONPATH="${APP_DIR}\${PYTHONPATH:+:\${PYTHONPATH}}"
 exec "${APP_DIR}/.venv/bin/python" -m drivesync "\$@"
 EOF
 chmod +x "${BIN_DIR}/drivesync"

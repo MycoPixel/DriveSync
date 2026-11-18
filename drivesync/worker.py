@@ -81,28 +81,55 @@ class Worker:
                 self.status["running"] = False
             return
         try:
-            for pair in self.store.pairs(enabled_only=True):
-                if pair_id is not None and pair["id"] != pair_id:
-                    continue
-                account = self.store.account(pair["account_id"])
+            pairs = self.store.pairs(enabled_only=True)
+            if pair_id is not None:
+                pairs = [p for p in pairs if p["id"] == pair_id]
+            groups = {}
+            for p in pairs:
+                groups.setdefault(p["account_id"], []).append(p)
+            incremental = bool(self.config.get("incremental_scan", True))
+            for acc_id in sorted(groups):
+                account = self.store.account(acc_id)
                 if not account:
-                    self.store.log(pair["id"], "error", message="account missing",
-                                   level="error")
+                    for pair in groups[acc_id]:
+                        self.store.log(pair["id"], "error",
+                                       message="account missing", level="error")
                     continue
                 drive = self.make_drive(account)
-                stats, ok = engine.sync_pair(self.store, self.config, pair, drive)
-                if ok:
-                    self.store.log(pair["id"], "summary", "",
-                                   f"pushed {stats.pushed}, pulled {stats.pulled}, "
-                                   f"deleted {stats.deleted}, renamed {stats.renamed}, "
-                                   f"conflicts {stats.conflicts}")
-                    self.status["last_stats"] = {
-                        "pair_id": pair["id"], "pushed": int(stats.pushed),
-                        "pulled": int(stats.pulled), "deleted": int(stats.deleted),
-                        "renamed": int(stats.renamed),
-                        "conflicts": int(stats.conflicts),
-                    }
-                self.status["last_run"] = time.time()
+                feed, new_token = None, None
+                if incremental:
+                    feed, new_token = self._fetch_changes(drive, acc_id)
+                all_ok = True
+                for pair in groups[acc_id]:
+                    try:
+                        stats, ok = engine.sync_pair(
+                            self.store, self.config, pair, drive, changes=feed)
+                    except Exception as exc:  # keep the worker alive no matter what
+                        self.status["last_error"] = str(exc)
+                        self.store.log(pair["id"], "worker-error", "",
+                                       str(exc), level="error")
+                        all_ok = False
+                        continue
+                    if ok:
+                        self.store.log(pair["id"], "summary", "",
+                                       f"pushed {stats.pushed}, pulled {stats.pulled}, "
+                                       f"deleted {stats.deleted}, renamed {stats.renamed}, "
+                                       f"conflicts {stats.conflicts}")
+                        self.status["last_stats"] = {
+                            "pair_id": pair["id"], "pushed": int(stats.pushed),
+                            "pulled": int(stats.pulled),
+                            "deleted": int(stats.deleted),
+                            "renamed": int(stats.renamed),
+                            "conflicts": int(stats.conflicts),
+                        }
+                    else:
+                        all_ok = False
+                    self.status["last_run"] = time.time()
+                # The feed token advances only when the whole account was
+                # swept clean and unfiltered: a filtered or failing run keeps
+                # re-reading the same feed (decide() no-ops unchanged paths).
+                if incremental and new_token and all_ok and pair_id is None:
+                    self.store.kv_set(f"changes_token:{acc_id}", new_token)
         except Exception as exc:  # keep the worker alive no matter what
             self.status["last_error"] = str(exc)
             self.store.log(None, "worker-error", "", str(exc), level="error")
@@ -110,6 +137,26 @@ class Worker:
             self._release_sync_lock()
             with self._lock:
                 self.status["running"] = False
+
+    def _fetch_changes(self, drive, account_id):
+        """(feed_items | None, new_token | None) for one account.
+
+        None feed = full scan this pass. First run: no token yet — capture
+        the 'now' token BEFORE the full scan so the next delta pass cannot
+        miss anything that happened between the scan and the token. A broken
+        stored token self-heals: it is dropped and re-baselined next pass.
+        """
+        key = f"changes_token:{account_id}"
+        stored = self.store.kv_get(key)
+        try:
+            if stored:
+                items, new_token = drive.changes_list(stored)
+                return items, new_token
+            return None, drive.changes_start_token()
+        except Exception:
+            if stored:
+                self.store.kv_delete(key)
+            return None, None
 
     # ---- cross-process guard ------------------------------------------
     def _acquire_sync_lock(self):

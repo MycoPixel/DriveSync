@@ -6,7 +6,7 @@
 # The package mirrors the .deb layout: python code under the site-packages
 # dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.2.0
+Version:        0.2.2
 Release:        1%{?dist}
 Summary:        Google Drive sync client for Linux desktops
 
@@ -106,6 +106,12 @@ EOF
 %{_userunitdir}/drivesync.service
 
 %changelog
-* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.2.0-1
+* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.2.2-1
+- GUI: Browse Drive… folder picker in the Add-folder dialog (My Drive,
+  Shared with me, shortcut resolution — same flow as the dashboard)
+
+* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.2.1-1
+- GUI launch crash on GTK3 CSS parsing fixed; timestamps shown in local time
+- uninstall.sh mirrors install.sh; pip/deb/rpm installs handled
 - Google Docs/Sheets/Slides/Drawings export to docx/xlsx/pptx/png
 - Package-manager-aware tray dependency hints in install.sh

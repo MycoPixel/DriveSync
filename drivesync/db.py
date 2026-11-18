@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS events (
     rel_path TEXT DEFAULT '',
     message  TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_entries_pair ON entries(pair_id);
 CREATE INDEX IF NOT EXISTS idx_events_pair  ON events(pair_id);
 """
@@ -57,6 +61,18 @@ _POLICIES = ("newer", "local", "remote", "both")
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def to_local(iso: str) -> str:
+    """Render a stored UTC timestamp as local wall-clock time.
+
+    Timestamps are stored in UTC (portable across machines); every place
+    that shows them to a human converts to the viewer's timezone.
+    """
+    dt = datetime.fromisoformat(iso)
+    if dt.tzinfo is None:            # old rows predating the offset suffix
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 class Store:
@@ -78,7 +94,10 @@ class Store:
     _MIGRATIONS = {
         "pairs": ["allow_deletes INTEGER NOT NULL DEFAULT 1"],
         "entries": ["deleted_local INTEGER NOT NULL DEFAULT 0",
-                    "deleted_remote INTEGER NOT NULL DEFAULT 0"],
+                    "deleted_remote INTEGER NOT NULL DEFAULT 0",
+                    "remote_size REAL",
+                    "remote_mtime REAL",
+                    "remote_mime TEXT"],
     }
 
     def _migrate(self):
@@ -185,18 +204,23 @@ class Store:
 
     def base_put(self, pair_id, rel, kind, remote_id=None, local_md5=None,
                  local_size=None, local_mtime=None, remote_md5=None,
-                 remote_version=None):
+                 remote_version=None, remote_size=None, remote_mtime=None,
+                 remote_mime=None):
         self._exec(
             "INSERT INTO entries(pair_id, rel_path, kind, remote_id, local_md5, "
-            "local_size, local_mtime, remote_md5, remote_version) "
-            "VALUES (?,?,?,?,?,?,?,?,?) "
+            "local_size, local_mtime, remote_md5, remote_version, "
+            "remote_size, remote_mtime, remote_mime) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(pair_id, rel_path) DO UPDATE SET "
             "kind=excluded.kind, remote_id=excluded.remote_id, "
             "local_md5=excluded.local_md5, local_size=excluded.local_size, "
             "local_mtime=excluded.local_mtime, remote_md5=excluded.remote_md5, "
-            "remote_version=excluded.remote_version",
+            "remote_version=excluded.remote_version, "
+            "remote_size=excluded.remote_size, remote_mtime=excluded.remote_mtime, "
+            "remote_mime=excluded.remote_mime",
             (pair_id, rel, kind, remote_id, local_md5, local_size,
-             local_mtime, remote_md5, remote_version))
+             local_mtime, remote_md5, remote_version, remote_size,
+             remote_mtime, remote_mime))
 
     def base_delete(self, pair_id, rel):
         self._exec("DELETE FROM entries WHERE pair_id=? AND rel_path=?", (pair_id, rel))
@@ -212,7 +236,8 @@ class Store:
             sets = ("deleted_local=1, local_md5=NULL, local_size=NULL, "
                     "local_mtime=NULL")
         else:
-            sets = "deleted_remote=1, remote_md5=NULL, remote_version=NULL"
+            sets = ("deleted_remote=1, remote_md5=NULL, remote_version=NULL, "
+                    "remote_size=NULL, remote_mtime=NULL, remote_mime=NULL")
         self._exec(f"UPDATE entries SET {sets} WHERE pair_id=? AND rel_path=?",
                    (pair_id, rel))
 
@@ -222,6 +247,19 @@ class Store:
 
     def base_clear(self, pair_id):
         self._exec("DELETE FROM entries WHERE pair_id=?", (pair_id,))
+
+    # ---- key/value (changes-feed tokens, misc state) ---------------
+    def kv_get(self, key):
+        row = self._exec("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def kv_set(self, key, value):
+        self._exec("INSERT INTO kv(key, value) VALUES (?,?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (key, str(value)))
+
+    def kv_delete(self, key):
+        self._exec("DELETE FROM kv WHERE key=?", (key,))
 
     # ---- events ---------------------------------------------------
     def log(self, pair_id, action, rel_path="", message="", level="info"):
