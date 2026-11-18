@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DriveSync
+GenericName=Google Drive Sync Client
+Comment=Sync Google Drive folders on your Linux desktop
+Exec=__BIN__/drivesync gui
+Icon=__ICON__
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=drive;sync;google;backup;

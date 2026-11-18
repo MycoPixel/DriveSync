@@ -1,0 +1,52 @@
+# --- Python bytecode / packaging ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Test / coverage / linter caches ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+
+# --- DriveSync runtime data (SENSITIVE) ---
+# Normally lives in ~/.local/share/drivesync/, but never risk committing it:
+# config.json holds your OAuth client_id/client_secret and state.db holds
+# your account tokens. This matters if you ever run from the repo or set
+# DRIVE_SYNC_HOME to a path inside it.
+config.json
+config.json.tmp
+token*.json
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+*.db
+*.log
+
+# --- package build output ---
+dist/
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db

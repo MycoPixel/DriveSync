@@ -1,0 +1,106 @@
+/* DriveSync dashboard — original styles, matches the app's blue palette */
+:root{
+  --bg:#f5f7fb; --card:#ffffff; --ink:#0b1b3a; --navy:#002f86;
+  --blue:#00b3ff; --blue-press:#009de0; --green:#36c857; --line:#e5e8ef;
+  --muted:#5b6472; --danger:#d64545; --radius:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Excon',ui-sans-serif,system-ui,'Segoe UI',Roboto,Ubuntu,Arial,sans-serif;
+  background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
+a{color:var(--navy)}
+h3{color:var(--navy);margin-bottom:12px;font-size:17px}
+
+.topbar{display:flex;align-items:center;justify-content:space-between;
+  padding:14px 28px;background:#fff;border-bottom:1px solid var(--line);
+  position:sticky;top:0;z-index:10}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;color:var(--navy)}
+.brand .mark{width:30px;height:30px}
+.brand small{font-weight:500;color:var(--muted)}
+
+.tabs{display:flex;gap:4px;padding:10px 28px 0;flex-wrap:wrap}
+.tabs button{border:0;background:none;padding:10px 16px;border-radius:10px 10px 0 0;
+  font:inherit;font-weight:600;color:var(--muted);cursor:pointer}
+.tabs button.active{background:var(--card);color:var(--navy);
+  box-shadow:0 -2px 0 var(--blue) inset;border:1px solid var(--line);border-bottom:0}
+
+main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
+.tab{display:none}
+.tab.active{display:block}
+.grid.two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:20px;margin-bottom:16px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px}
+.kv b{color:var(--muted);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:.04em}
+.pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.pill.on{background:rgba(54,200,87,.15);color:#1d9939}
+.pill.off{background:rgba(214,69,69,.12);color:var(--danger)}
+.acct-cards{display:flex;flex-direction:column;gap:8px}
+.acct{display:flex;justify-content:space-between;align-items:center;
+  border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+
+.btn{border:1px solid transparent;border-radius:8px;padding:10px 18px;font:inherit;
+  font-weight:600;cursor:pointer}
+.btn.primary{background:var(--blue);color:#fff}
+.btn.primary:hover{background:var(--blue-press)}
+.btn.ghost{background:#fff;color:var(--blue);border-color:var(--blue)}
+.btn.small{padding:6px 12px;font-size:13px}
+.btn.danger{background:#fff;color:var(--danger);border-color:var(--danger)}
+.icon-btn{background:none;border:0;font-size:16px;cursor:pointer;color:var(--muted)}
+
+.form-grid{display:grid;gap:14px}
+.form-grid label{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:13.5px}
+.form-grid input,.form-grid select,.form-grid textarea{
+  font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.form-grid textarea{font-family:ui-monospace,'Inconsolata',monospace;font-size:13px}
+.row{display:flex;align-items:center;gap:10px}
+.row.end{justify-content:flex-end}
+.row.between{justify-content:space-between}
+.msg{font-size:13.5px;min-height:1.2em}
+.msg.ok{color:#1d9939}.msg.err{color:var(--danger)}
+
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th{ text-align:left;color:var(--muted);font-size:12px;text-transform:uppercase;
+  letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--line)}
+.tbl td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;
+  word-break:break-all}
+.tbl tr:last-child td{border-bottom:0}
+
+.events{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto}
+.ev{display:flex;gap:10px;padding:7px 10px;border-radius:8px;font-size:13.5px}
+.ev:nth-child(odd){background:var(--bg)}
+.ev .t{color:var(--muted);font-family:ui-monospace,monospace;white-space:nowrap}
+.ev .a{font-weight:700;min-width:150px}
+.ev.conflict .a{color:#b7791f}
+.ev.error .a{color:var(--danger)}
+
+.modal-backdrop{position:fixed;inset:0;background:rgba(11,27,58,.45);display:flex;
+  align-items:center;justify-content:center;z-index:50}
+.modal{background:#fff;border-radius:16px;width:min(560px,92vw);max-height:80vh;
+  display:flex;flex-direction:column;padding:20px;gap:12px}
+.modal-head{display:flex;justify-content:space-between;align-items:center}
+.picker-path{border-bottom:1px solid var(--line);padding-bottom:10px}
+.picker-list{overflow:auto;flex:1;min-height:200px}
+.picker-item{display:flex;justify-content:space-between;align-items:center;
+  padding:10px 12px;border-radius:10px;cursor:pointer}
+.picker-item:hover{background:var(--bg)}
+.picker-item svg{width:18px;height:18px;flex:0 0 auto}
+
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+  background:var(--navy);color:#fff;padding:12px 22px;border-radius:10px;
+  font-weight:600;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.hidden{display:none!important}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+
+@media (max-width:760px){
+  .grid.two{grid-template-columns:1fr}
+  main{padding:14px 14px 50px}
+  .tabs,.topbar{padding-left:14px;padding-right:14px}
+  .tbl th:nth-child(4),.tbl td:nth-child(4),
+  .tbl th:nth-child(5),.tbl td:nth-child(5){display:none}
+}
+
+.form-grid label.check{flex-direction:row;align-items:center;gap:8px;font-weight:400;flex-wrap:wrap}
+.form-grid label.check input{width:auto}
+.form-grid label.check .muted{font-weight:400}

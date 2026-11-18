@@ -1,0 +1,11 @@
+[Unit]
+Description=DriveSync — Google Drive sync client (background worker + dashboard)
+After=network-online.target
+
+[Service]
+ExecStart=__VENV__/bin/python -m drivesync serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

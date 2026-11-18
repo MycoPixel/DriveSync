@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DriveSync — Google Drive sync for Linux</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 48 48" class="mark" aria-hidden="true">
+      <circle cx="24" cy="24" r="22" fill="#00b3ff"/>
+      <path d="M14 20h14l-4.5-4.5M34 28H20l4.5 4.5" stroke="#fff" stroke-width="3.2"
+            fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>DriveSync</span>
+    <small id="version"></small>
+  </div>
+  <button id="syncNowBtn" class="btn primary">Sync now</button>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="dashboard" class="active">Dashboard</button>
+  <button data-tab="pairs">Sync pairs</button>
+  <button data-tab="accounts">Accounts</button>
+  <button data-tab="activity">Activity</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+
+<main>
+  <!-- DASHBOARD -->
+  <section id="tab-dashboard" class="tab active">
+    <div class="grid two">
+      <div class="card">
+        <h3>Background worker</h3>
+        <div id="workerStatus" class="kv">loading…</div>
+      </div>
+      <div class="card">
+        <h3>Accounts</h3>
+        <div id="accountCards" class="acct-cards"></div>
+        <p class="muted small"><a href="#" data-goto="accounts">Add an account →</a></p>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Sync pairs</h3>
+      <div id="pairsSummary" class="muted small">loading…</div>
+    </div>
+    <div class="card">
+      <h3>Recent activity</h3>
+      <div id="recentEvents" class="events"></div>
+    </div>
+  </section>
+
+  <!-- PAIRS -->
+  <section id="tab-pairs" class="tab">
+    <div class="card">
+      <h3>Add a sync pair</h3>
+      <form id="pairForm" class="form-grid">
+        <label>Google account
+          <select id="pairAccount" required></select>
+        </label>
+        <label>Local folder <span class="muted">(absolute path)</span>
+          <input id="pairLocal" type="text" placeholder="/home/you/Drive" required>
+        </label>
+        <label>Drive folder
+          <div class="row">
+            <input id="pairRemoteName" type="text" placeholder="My Drive" readonly>
+            <input id="pairRemoteId" type="hidden">
+            <button type="button" id="pickFolderBtn" class="btn ghost">Browse…</button>
+          </div>
+        </label>
+        <label>Direction
+          <select id="pairDirection">
+            <option value="bidirectional">Two-way (bidirectional)</option>
+            <option value="upload">Upload only (local → Drive)</option>
+            <option value="download">Download only (Drive → local)</option>
+          </select>
+        </label>
+        <label>Conflict policy
+          <select id="pairPolicy">
+            <option value="newer">Keep newer file</option>
+            <option value="local">Keep local copy</option>
+            <option value="remote">Keep remote copy</option>
+            <option value="both">Keep both copies</option>
+          </select>
+        </label>
+        <div class="row end">
+          <button type="submit" class="btn primary">Add pair</button>
+        </div>
+        <p id="pairFormMsg" class="msg"></p>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Current pairs</h3>
+      <table class="tbl" id="pairsTable">
+        <thead><tr><th>#</th><th>Local</th><th>Drive folder</th><th>Direction</th>
+          <th>Conflicts</th><th>Deletes</th><th>State</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ACCOUNTS -->
+  <section id="tab-accounts" class="tab">
+    <div class="card">
+      <h3>Connect a Google account</h3>
+      <p class="muted">DriveSync uses <b>your own OAuth client</b> — nothing of yours
+        flows through third-party servers. Create a “Desktop app” client in the
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank"
+           rel="noreferrer">Google Cloud Console</a> (Drive API enabled), then paste its
+        credentials below. See the README for a 2-minute walkthrough.</p>
+      <form id="authForm" class="form-grid">
+        <label>Client ID
+          <input id="clientId" type="text" placeholder="1234567890-abc.apps.googleusercontent.com">
+        </label>
+        <label>Client secret
+          <input id="clientSecret" type="password" placeholder="GOCSPX-…">
+        </label>
+        <div class="row end">
+          <button type="submit" class="btn primary" id="authBtn">Connect account</button>
+        </div>
+        <p id="authMsg" class="msg"></p>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Connected accounts</h3>
+      <table class="tbl" id="accountsTable">
+        <thead><tr><th>#</th><th>Email</th><th>Storage</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ACTIVITY -->
+  <section id="tab-activity" class="tab">
+    <div class="card">
+      <div class="row between">
+        <h3>Activity log</h3>
+        <div class="row">
+          <select id="eventFilter">
+            <option value="">All levels</option>
+            <option value="conflict">Conflicts only</option>
+            <option value="error">Errors only</option>
+          </select>
+          <button class="btn ghost" id="refreshEvents">Refresh</button>
+        </div>
+      </div>
+      <div id="eventList" class="events"></div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="tab">
+    <div class="card">
+      <h3>Settings</h3>
+      <form id="settingsForm" class="form-grid">
+        <label>Sync interval (seconds)
+          <input id="setInterval" type="number" min="5" max="86400">
+        </label>
+        <label>Default conflict policy
+          <select id="setPolicy">
+            <option value="newer">Keep newer file</option>
+            <option value="local">Keep local copy</option>
+            <option value="remote">Keep remote copy</option>
+            <option value="both">Keep both copies</option>
+          </select>
+        </label>
+        <label>Delete safety limit <span class="muted">(max deletions per pair per
+          pass; 0 = unlimited)</span>
+          <input id="setDeleteLimit" type="number" min="0" max="100000">
+        </label>
+        <label>Parallel transfers <span class="muted">(uploads/downloads at once, 1–16)</span>
+          <input id="setConcurrency" type="number" min="1" max="16">
+        </label>
+        <label class="check">
+          <input id="setConvertDocs" type="checkbox">
+          Convert Google Docs/Sheets/Slides to Office files
+          <span class="muted">(Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .png)</span>
+        </label>
+        <label>Ignore patterns <span class="muted">(one per line, glob style)</span>
+          <textarea id="setIgnores" rows="6" spellcheck="false"></textarea>
+        </label>
+        <div class="row end">
+          <button type="submit" class="btn primary">Save settings</button>
+        </div>
+        <p id="settingsMsg" class="msg"></p>
+      </form>
+    </div>
+    <div class="card">
+      <h3>About</h3>
+      <p class="muted small" id="aboutText"></p>
+    </div>
+  </section>
+</main>
+
+<!-- folder picker modal -->
+<div class="modal-backdrop hidden" id="pickerBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Choose a Drive folder</h3>
+      <button class="icon-btn" id="pickerClose">✕</button>
+    </div>
+    <div class="row picker-path">
+      <button class="btn ghost" id="pickerUp">↑ Up</button>
+      <span id="pickerPath" class="muted">My Drive</span>
+    </div>
+    <div id="pickerList" class="picker-list"><p class="muted">loading…</p></div>
+    <div class="row end">
+      <button class="btn primary" id="pickerChoose">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast hidden" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
