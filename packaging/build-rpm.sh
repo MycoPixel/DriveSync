@@ -17,12 +17,14 @@ echo "==> Building drivesync ${VERSION} RPM"
 TOP="$SOURCES/drivesync-${VERSION}"
 mkdir -p "$TOP"
 cp -r "$ROOT/drivesync" "$ROOT/packaging" "$ROOT/README.md" "$ROOT/LICENSE" \
-      "$ROOT/drivesync.desktop" "$TOP/"
+      "$ROOT/CHANGELOG.md" "$ROOT/drivesync.desktop" \
+      "$ROOT/drivesync.metainfo.xml" "$TOP/"
 # normalize modes: docs/specs read-only, scripts executable — otherwise
 # rpmbuild's shebang-mangling complains about executable files without one
 find "$TOP" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$TOP/.pytest_cache" "$TOP/dist"
 chmod 644 "$TOP/README.md" "$TOP/LICENSE" "$TOP/drivesync.desktop" \
+          "$TOP/drivesync.metainfo.xml" "$TOP/CHANGELOG.md" \
           "$TOP/packaging/drivesync.spec" "$TOP/packaging/README.md"
 find "$TOP" -name '*.py' -exec chmod 644 {} +
 find "$TOP" -name '*.sh' -exec chmod 755 {} +

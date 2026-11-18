@@ -1,7 +1,7 @@
 """Store (SQLite) tests."""
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -96,6 +96,65 @@ def test_events_log_and_filter(store):
     assert len(conflicts) == 1 and conflicts[0]["rel_path"] == "b.txt"
     by_pair = store.recent_events(limit=10, pair_id=pair["id"])
     assert len(by_pair) == 2
+
+
+def test_events_action_time_and_clear(store):
+    store.add_account("a@x.com", {})
+    pair = store.add_pair(1, "/tmp/x", "root123")
+    store.log(pair["id"], "upload", "a.txt")
+    store.log(pair["id"], "download", "b.txt")
+    store.log(pair["id"], "upload", "c.txt", level="error")
+    # newest first within a filtered set
+    uploads = store.recent_events(limit=10, action="upload")
+    assert [r["rel_path"] for r in uploads] == ["c.txt", "a.txt"]
+    errs = store.recent_events(limit=10, action="upload", level="error")
+    assert [r["rel_path"] for r in errs] == ["c.txt"]
+    # time frame: 'since' as UTC datetime — recent rows pass, future cut-off
+    recent = store.recent_events(
+        limit=10, since=datetime.now(timezone.utc) - timedelta(hours=1))
+    assert len(recent) == 3
+    future = store.recent_events(
+        limit=10, since=datetime.now(timezone.utc) + timedelta(hours=1))
+    assert future == []
+    # filter dropdown data + wipe
+    assert store.event_actions() == ["download", "upload"]
+    assert store.count_events() == 3
+    assert store.clear_events() == 3
+    assert store.count_events() == 0
+    assert store.event_actions() == []
+
+
+def test_activity_rows_are_strings(store):
+    """The GUI TreeView model declares str-only columns; a NULL or numeric
+    value from the events table would make the ListStore append raise
+    TypeError and 'drivesync gui' would crash at startup."""
+    store.add_account("a@x.com", {})
+    pair = store.add_pair(1, "/tmp/x", "root123")
+    store.log(pair["id"], "upload", "a.txt", "copied")
+    store.log(pair["id"], "conflict", "b.txt", "both changed",
+              level="conflict")
+    store.log(pair["id"], "test", None, None)      # NULLs must not leak
+    for e in store.recent_events(limit=10):
+        for k in ("ts", "level", "action", "rel_path", "message"):
+            assert isinstance(e[k], str), (k, e[k])
+
+
+def test_prune_events_drops_old_then_caps(store):
+    """Old rows go by age first; the table is then capped at `keep` newest."""
+    old = (datetime.now(timezone.utc) - timedelta(days=40)) \
+        .isoformat(timespec="seconds")
+    for _ in range(3):
+        store._exec("INSERT INTO events(ts, level, action) VALUES (?,?,?)",
+                    (old, "info", "old"))
+    for _ in range(5):
+        store.log(1, "fresh", "f", "m")
+    assert store.prune_events(days=30, keep=5000) == 3
+    assert store.count_events() == 5
+
+    for _ in range(12):
+        store.log(1, "bulk", "", "")
+    assert store.prune_events(days=30, keep=4) == 13
+    assert store.count_events() == 4
 
 
 def test_pair_allow_deletes_and_tombstones(tmp_path):

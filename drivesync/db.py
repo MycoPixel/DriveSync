@@ -3,7 +3,7 @@
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SCHEMA = """
@@ -263,20 +263,65 @@ class Store:
 
     # ---- events ---------------------------------------------------
     def log(self, pair_id, action, rel_path="", message="", level="info"):
+        # the events table feeds str-only GUI TreeViews — never store NULL
         self._exec(
             "INSERT INTO events(ts, pair_id, level, action, rel_path, message) "
             "VALUES (?,?,?,?,?,?)",
-            (utcnow(), pair_id, level, action, rel_path, message))
+            (utcnow(), pair_id, level or "info", action,
+             rel_path or "", message or ""))
 
-    def recent_events(self, limit=200, level=None, pair_id=None):
+    def recent_events(self, limit=200, level=None, pair_id=None, action=None,
+                      since=None):
+        """Newest-first activity rows, optionally filtered.
+
+        since is a UTC datetime (or ISO string): ts is stored as ISO text
+        in one uniform format, so string comparison keeps chrono order.
+        """
         sql = "SELECT * FROM events"
         conds, params = [], []
         if level:
             conds.append("level=?"); params.append(level)
         if pair_id:
             conds.append("pair_id=?"); params.append(pair_id)
+        if action:
+            conds.append("action=?"); params.append(action)
+        if since:
+            if hasattr(since, "isoformat"):
+                since = since.isoformat(timespec="seconds")
+            conds.append("ts>=?"); params.append(since)
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(int(limit))
         return self._exec(sql, tuple(params)).fetchall()
+
+    def event_actions(self):
+        """Distinct actions in the log, for the activity filter dropdown."""
+        return [r[0] for r in
+                self._exec("SELECT DISTINCT action FROM events "
+                           "ORDER BY action").fetchall()]
+
+    def count_events(self):
+        return self._exec("SELECT COUNT(*) FROM events").fetchone()[0]
+
+    def clear_events(self):
+        """Wipe the whole activity log; returns the number of rows removed."""
+        return self._exec("DELETE FROM events").rowcount
+
+    def prune_events(self, days=30, keep=5000):
+        """Bound the activity log: drop rows older than `days`, then cap the
+        table at the `keep` newest rows. The worker calls this on start so a
+        service logging a summary row per pass (~3k/day at the default
+        interval) cannot bloat state.db. Returns rows removed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)) \
+            .isoformat(timespec="seconds")
+        with self._lock:
+            removed = self._conn.execute(
+                "DELETE FROM events WHERE ts < ?", (cutoff,)).rowcount
+            if self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] > keep:
+                removed += self._conn.execute(
+                    "DELETE FROM events WHERE id NOT IN "
+                    "(SELECT id FROM events ORDER BY id DESC LIMIT ?)",
+                    (keep,)).rowcount
+            self._conn.commit()
+            return removed

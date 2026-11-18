@@ -14,15 +14,25 @@
 import argparse
 import os
 import sys
+import threading
 
 from . import __version__
-from .config import app_dir, load_config, update_config
+from .config import DEFAULT_CONFIG, app_dir, load_config, update_config
 from .db import Store, to_local
 from .server import create_app
 
 
 def _open_store():
     return Store(app_dir() / "state.db")
+
+
+def _open_browser(url):
+    """Best-effort 'open the dashboard tab' — never an error when headless."""
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
 
 
 def cmd_serve(args):
@@ -34,12 +44,27 @@ def cmd_serve(args):
     worker.start()
     url = f"http://127.0.0.1:{args.port or cfg['server_port']}"
     print(f"DriveSync {__version__} — dashboard at {url}  (Ctrl+C to stop)")
+    if args.open:
+        threading.Thread(target=_open_browser, args=(url,), daemon=True,
+                         name="drivesync-open").start()
     if cfg.get("tray_enabled", True):
         from . import tray
         _, tray_msg = tray.start(worker, url)
         print(f"  {tray_msg}")
     try:
         run_server(store, worker, host=args.host, port=args.port)
+    except OSError as exc:
+        # the usual cause: the systemd unit (or a stray 'serve') already
+        # owns the port — point at the running instance, not a traceback
+        print(
+            f"error: the dashboard port is unavailable ({exc}).\n"
+            "  A DriveSync service may already be running — its dashboard is "
+            f"probably at {url}.\n"
+            "  Check:    systemctl --user status drivesync\n"
+            "  Stop it:  systemctl --user stop drivesync\n"
+            "  Or move:  drivesync config set server_port=5679",
+            file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass
     finally:
@@ -99,12 +124,19 @@ def cmd_pairs(args):
     store = _open_store()
     cfg = load_config()
     if args.action == "add":
+        if not args.local:
+            sys.exit("usage: drivesync pairs add <local-folder> "
+                     "--remote-id <Drive-folder-ID>")
         local = os.path.realpath(os.path.expanduser(args.local))
         if not os.path.isdir(local):
             sys.exit(f"error: not a directory: {local}")
         if not args.remote_id:
             sys.exit("error: --remote-id is required (a Drive folder ID; "
                      "find it in the folder's URL: .../folders/<ID>)")
+        if not store.account(args.account):
+            sys.exit(f"error: no account #{args.account} — connect one with "
+                     "'drivesync auth' first (see what is connected with "
+                     "'drivesync accounts list')")
         pair = store.add_pair(args.account, local, args.remote_id,
                               remote_path=args.remote_path or "",
                               direction=args.direction,
@@ -118,13 +150,28 @@ def cmd_pairs(args):
                   f"{p['remote_path'] or p['remote_id']} ({state}, "
                   f"conflicts: {p['conflict_policy']})")
     elif args.action == "set":
+        # argparse fills the optional `local` positional before `fields`,
+        # so a lone 'pairs set key=value' lands in args.local — accept both
+        kvs = ([args.local] if args.local else []) + args.fields
         fields = {}
-        for kv in args.fields:
+        for kv in kvs:
             k, _, v = kv.partition("=")
-            if k == "enabled":
+            if not k or k not in {"local_path", "remote_id", "remote_path",
+                                  "direction", "conflict_policy", "enabled",
+                                  "allow_deletes"}:
+                sys.exit(f"error: unknown pair field '{kv}' — valid fields: "
+                         "local_path, remote_id, remote_path, direction, "
+                         "conflict_policy, enabled, allow_deletes")
+            if k in ("enabled", "allow_deletes"):
                 v = 1 if v.lower() in ("1", "true", "yes") else 0
             fields[k] = v
-        pair = store.update_pair(args.pair_id, **fields)
+        if not store.pair(args.pair_id):
+            sys.exit(f"error: no sync pair #{args.pair_id} — list them with "
+                     "'drivesync pairs list'")
+        try:
+            pair = store.update_pair(args.pair_id, **fields)
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
         print(f"updated pair #{pair['id']}")
     elif args.action == "remove":
         store.delete_pair(args.pair_id)
@@ -135,6 +182,17 @@ def cmd_pairs(args):
 def cmd_sync(args):
     from .worker import Worker
     store = _open_store()
+    if args.pair is not None and not store.pair(args.pair):
+        store.close()
+        sys.exit(f"error: no sync pair #{args.pair} — list them with "
+                 "'drivesync pairs list'")
+    if not store.pairs(enabled_only=True):
+        print("No enabled sync pairs yet — nothing to sync.")
+        print("Add one in the dashboard, or:")
+        print("  drivesync pairs add <local-folder> --remote-id <Drive-folder-ID>")
+        print("(find the folder ID in its web URL: .../folders/<ID>)")
+        store.close()
+        return
     worker = Worker(store, load_config())
     stats, ok = worker.run_pass(args.pair)  # one pass, no loop
     pairs = [store.pair(args.pair)] if args.pair else store.pairs()
@@ -161,11 +219,16 @@ def cmd_status(args):
     print(f"accounts: {len(accounts)}")
     for a in accounts:
         print(f"  [{a['id']}] {a['email']}")
+    if not accounts:
+        print("  none yet — connect one with 'drivesync auth' (or 'drivesync gui')")
     pairs = store.pairs()
     print(f"pairs: {len(pairs)}")
     for p in pairs:
         print(f"  [{p['id']}] {p['direction']:<13} {p['local_path']} <-> "
               f"{p['remote_path'] or p['remote_id']}")
+    if not pairs:
+        print("  none yet — add one in the dashboard, or:")
+        print("  drivesync pairs add <local-folder> --remote-id <Drive-folder-ID>")
     events = store.recent_events(limit=5)
     print("recent activity:")
     for e in events:
@@ -176,13 +239,19 @@ def cmd_status(args):
 def cmd_config(args):
     if args.action == "set":
         key, _, value = args.key_value.partition("=")
-        if key == "sync_interval":
-            value = int(value)
-        if key in ("ignore_patterns",):
-            value = [v.strip() for v in value.split(",") if v.strip()]
-        if key in ("tray_enabled", "convert_google_docs", "incremental_scan"):
-            value = value.strip().lower() in ("1", "true", "yes", "on")
-        cfg = update_config(**{key: value})
+        if key not in DEFAULT_CONFIG:
+            sys.exit("error: unknown setting '{}' — valid settings:\n  {}".format(
+                key, "\n  ".join(sorted(DEFAULT_CONFIG))))
+        try:
+            if key == "sync_interval":
+                value = int(value)
+            if key == "ignore_patterns":
+                value = [v.strip() for v in value.split(",") if v.strip()]
+            if key in ("tray_enabled", "convert_google_docs", "incremental_scan"):
+                value = value.strip().lower() in ("1", "true", "yes", "on")
+            cfg = update_config(**{key: value})
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
         print(f"saved: {key} = {cfg[key]}")
     else:
         for k, v in load_config().items():
@@ -261,7 +330,7 @@ def build_parser():
                                 description="Google Drive sync client for Linux")
     p.add_argument("--version", action="version",
                    version=f"drivesync {__version__}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     s = sub.add_parser("gui", help="open the desktop app (GTK window)")
     s.set_defaults(fn=cmd_gui)
@@ -269,6 +338,8 @@ def build_parser():
     s = sub.add_parser("serve", help="run dashboard + background worker")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=None)
+    s.add_argument("--open", action="store_true",
+                   help="open the dashboard in a browser once it is up")
     s.add_argument("--interval", type=int, default=None,
                    help="override sync interval (seconds)")
     s.set_defaults(fn=cmd_serve)
@@ -311,6 +382,22 @@ def build_parser():
     return p
 
 
+def _getting_started():
+    """Shown by bare 'drivesync' — the first thing a new user runs."""
+    print(f"DriveSync {__version__} — Google Drive sync for Linux desktops")
+    print(f"data dir: {app_dir()}")
+    print("\nNext steps:")
+    print("  drivesync gui       open the desktop app (setup, sign-in, folders)")
+    print("  drivesync auth      connect a Google account from the terminal")
+    print("  drivesync serve     headless: dashboard + background worker")
+    print("  drivesync doctor    check this installation")
+    print("\nAll commands: drivesync --help")
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "cmd", None) is None:
+        _getting_started()
+        return
     args.fn(args)

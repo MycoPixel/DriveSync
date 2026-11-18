@@ -30,6 +30,7 @@ mkdir -p "$D" \
          "$PKG/usr/bin" \
          "$PKG/usr/lib/python3/dist-packages" \
          "$PKG/usr/share/applications" \
+         "$PKG/usr/share/metainfo" \
          "$PKG/usr/share/icons/hicolor/scalable/apps" \
          "$PKG/usr/lib/systemd/user" \
          "$PKG/usr/share/doc/drivesync"
@@ -57,6 +58,10 @@ sed "s|__BIN__|/usr/bin|g; s|__ICON__|drivesync|g" "$ROOT/drivesync.desktop" \
 cp "$ROOT/drivesync/static/mark.svg" \
    "$PKG/usr/share/icons/hicolor/scalable/apps/drivesync.svg"
 
+# AppStream metadata: what Discover / GNOME Software show about the app
+cp "$ROOT/drivesync.metainfo.xml" \
+   "$PKG/usr/share/metainfo/drivesync.metainfo.xml"
+
 # systemd *user* unit (users enable it themselves: systemctl --user enable)
 cat > "$PKG/usr/lib/systemd/user/drivesync.service" <<'EOF'
 [Unit]
@@ -73,7 +78,8 @@ WantedBy=default.target
 EOF
 
 # docs
-cp "$ROOT/README.md" "$ROOT/LICENSE" "$PKG/usr/share/doc/drivesync/"
+cp "$ROOT/README.md" "$ROOT/LICENSE" "$ROOT/CHANGELOG.md" \
+   "$PKG/usr/share/doc/drivesync/"
 chmod 644 "$PKG/usr/share/doc/drivesync"/*
 
 # ---- package metadata --------------------------------------------------
@@ -108,6 +114,12 @@ echo "  1. Create a Google OAuth 'Desktop app' client (see /usr/share/doc/drives
 echo "  2. Run 'drivesync auth' to connect your Google account"
 echo "  3. Optional autostart: systemctl --user enable --now drivesync"
 echo "  4. Open the dashboard at http://127.0.0.1:5678"
+# refresh the caches Discover/GNOME Software read so the menu entry, icon
+# and app metadata appear right after install (best-effort)
+command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+    gtk-update-icon-cache -fqt /usr/share/icons/hicolor >/dev/null 2>&1 || true
 exit 0
 EOF
 chmod 755 "$D/postinst"

@@ -24,7 +24,8 @@ tokens and files stay on your machine and talk to Google directly.
 - **Rename detection** — moving/renaming locally or on Drive updates the
   other side without re-uploading
 - **Selective sync via ignore patterns** (glob style, per app)
-- **Activity log** with conflicts and errors surfaced in the dashboard
+- **Activity log** with conflicts and errors surfaced in the dashboard —
+  auto-pruned (30 days, capped at 5,000 rows) so the state database stays small
 - **Background worker** on a timer + "Sync now" button; systemd user unit
   for autostart
 - **Local dashboard** at `http://127.0.0.1:5678` — bound to localhost only
@@ -41,8 +42,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.2.2-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.2.2-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.3.0-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.3.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -123,6 +124,7 @@ lets you click through your Drive folders.
 ```bash
 drivesync gui                   # desktop app: setup, sign-in, folders, activity
 drivesync serve                 # foreground headless: dashboard + worker
+drivesync serve --open          # same, and it opens the dashboard in a browser
 systemctl --user enable --now drivesync   # or as a login service
 ```
 
@@ -143,7 +145,7 @@ Open <http://127.0.0.1:5678> — status, pairs, activity and settings.
 
 ```
 drivesync gui                         native desktop app (GTK window)
-drivesync serve                       dashboard + background worker
+drivesync serve [--open]              dashboard + background worker
 drivesync auth                        authorize a Google account
 drivesync accounts list|remove
 drivesync pairs add|list|set|remove   manage sync pairs
@@ -240,6 +242,36 @@ the window only hides it — the tray icon stays, with **Open**, **Sync now**,
 app. A second launch while it runs shows an "already running" notice instead
 of opening a duplicate.
 
+## Troubleshooting
+
+Start with `drivesync doctor` — it checks dependencies, credentials and the
+Drive API, and names the fix for each problem it finds. The common ones:
+
+**Dashboard port busy** — the systemd service may already be running; its
+dashboard is then already at <http://127.0.0.1:5678>. Stop it with
+`systemctl --user stop drivesync`, or move the manual instance with
+`drivesync config set server_port=5679`. `drivesync serve` prints this
+instead of a traceback.
+
+**Two copies installed (pip + package)** — a `pip install` copy lives in
+`/usr/local/lib/python3.*/site-packages` and *shadows* the distro package's
+copy in `/usr/lib/...`: the classic symptom is `drivesync --version` not
+changing after a package upgrade. Remove the stray copy with
+`python3 -m pip uninstall drivesync` (add `sudo` if it was installed as
+root), or simply run `./uninstall.sh`.
+
+**Tray icon missing** — needs `pystray` + `pillow` in the venv; on KDE
+Plasma also `libayatana-appindicator-gtk3`. `drivesync serve` prints what
+it lacks and how to install it.
+
+**Transfers fail with TLS errors** — the venv's CA bundle is broken; the
+message `drivesync serve` prints includes the exact commands to rebuild
+the venv.
+
+**Desktop app won't open** — `drivesync gui` needs GTK 3 bindings:
+`sudo dnf install python3-gobject` (Fedora) or `sudo apt install python3-gi`
+(Debian). On a headless machine, use `drivesync serve` and the dashboard.
+
 ## Current limitations (honest list)
 
 - **Polling, not inotify** — changes are picked up on the next scan (default
@@ -255,13 +287,18 @@ of opening a duplicate.
 ## Development
 
 ```bash
-python3 -m pytest tests/        # 94 tests: engine, store, config, API
+python3 -m pytest tests/        # engine, store, config, CLI, API, GUI
 drivesync doctor                # environment check
 ```
 
 The engine's decision step is a pure function (maps in, ops out) tested
 against a mock Drive — see `tests/test_engine.py` for the full matrix
 (uploads, downloads, conflicts, deletes, renames, directions, ignores).
+
+## Changelog
+
+Release history and what changed in each version:
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

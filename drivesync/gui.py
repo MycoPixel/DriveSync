@@ -18,6 +18,8 @@ machines without GTK are unaffected.
 
 import sys
 import threading
+import time
+from datetime import datetime, timedelta, timezone
 
 import gi
 
@@ -38,6 +40,20 @@ from .worker import Worker  # noqa: E402
 
 DIRECTIONS = ("bidirectional", "upload", "download")
 POLICIES = ("newer", "local", "remote", "both")
+
+# Activity tab time-frame presets: combo index → seconds back from now.
+_TIMEFRAME_SECS = {1: 15 * 60, 2: 3600, 3: 24 * 3600, 4: 7 * 24 * 3600}
+
+
+def _activity_row(e):
+    """One activity-list row. The hidden 6th column carries the raw UTC ts
+    so a selected row can be re-found after each refresh repaint. Every
+    value is coerced to str: the TreeView model declares str-only columns,
+    and sqlite can hand back NULL for rel_path/message — a non-str value
+    makes the ListStore append raise TypeError (this once crashed startup:
+    the hidden column was declared float while the raw ts is a string)."""
+    return [to_local(e["ts"]), e["level"] or "info", e["action"],
+            e["rel_path"] or "", e["message"] or "", e["ts"]]
 
 SETUP_HINT = (
     "DriveSync talks to Google with your own OAuth \u201cDesktop app\u201d client, so "
@@ -716,10 +732,49 @@ class DesktopApp:
         row.pack_start(apply_btn, False, False, 0)
         box.pack_start(row, False, False, 0)
 
-        self.evt_store, self.evt_view, scroll = _list_view(
+        # filter / sort bar — combos re-list instantly; Clear wipes the log
+        frow = Gtk.Box(spacing=6)
+        self.cmb_action = Gtk.ComboBoxText()
+        self.cmb_action.append_text("All actions")
+        self.cmb_action.set_active(0)
+        self.cmb_action.set_tooltip_text("Filter by action")
+        self.cmb_action.connect("changed", self._on_activity_filter)
+        frow.pack_start(self.cmb_action, False, False, 0)
+        self.cmb_level = Gtk.ComboBoxText()
+        for lv in ("All levels", "info", "conflict", "error"):
+            self.cmb_level.append_text(lv)
+        self.cmb_level.set_active(0)
+        self.cmb_level.set_tooltip_text("Filter by level")
+        self.cmb_level.connect("changed", self._on_activity_filter)
+        frow.pack_start(self.cmb_level, False, False, 0)
+        self.cmb_time = Gtk.ComboBoxText()
+        for tf in ("Any time", "Last 15 minutes", "Last hour",
+                   "Last 24 hours", "Last 7 days"):
+            self.cmb_time.append_text(tf)
+        self.cmb_time.set_active(0)
+        self.cmb_time.set_tooltip_text("Time frame")
+        self.cmb_time.connect("changed", self._on_activity_filter)
+        frow.pack_start(self.cmb_time, False, False, 0)
+        self.cmb_sort = Gtk.ComboBoxText()
+        self.cmb_sort.append_text("Newest first")
+        self.cmb_sort.append_text("Oldest first")
+        self.cmb_sort.set_active(0)
+        self.cmb_sort.set_tooltip_text("Sort order")
+        self.cmb_sort.connect("changed", self._on_activity_filter)
+        frow.pack_start(self.cmb_sort, False, False, 0)
+        btn_clear = Gtk.Button(label="Clear activity\u2026")
+        btn_clear.get_style_context().add_class("destructive-action")
+        btn_clear.connect("clicked", self._on_clear_activity)
+        frow.pack_end(btn_clear, False, False, 0)
+        box.pack_start(frow, False, False, 0)
+
+        # the 6th (hidden) store column keeps the raw UTC ts so the row the
+        # user is reading can be re-found after each refresh repaint
+        self.evt_store, self.evt_view, self.evt_scroll = _list_view(
             ["Time", "Level", "Action", "Path", "Detail"],
-            (str, str, str, str, str))
-        box.pack_start(scroll, True, True, 0)
+            (str, str, str, str, str, str))
+        box.pack_start(self.evt_scroll, True, True, 0)
+        self._action_items = ["All actions"]
 
         self._refresh_activity()
         return _card(box)
@@ -741,7 +796,7 @@ class DesktopApp:
     def _refresh_activity(self, *_args):
         s = self.worker.status
         last = "never" if not s["last_run"] else \
-            f"{int(max(0, __import__('time').time() - s['last_run']))}s ago"
+            f"{int(max(0, time.time() - s['last_run']))}s ago"
         stats = ""
         if s["last_stats"]:
             st = s["last_stats"]
@@ -753,11 +808,92 @@ class DesktopApp:
         self.lbl_status.set_text(
             f"Worker {state} \u2014 last pass: {last}{stats}{err}")
         self.hb.set_subtitle(f"sync {state} \u2014 last pass {last}")
+
+        # apply the filter bar (rebuilding the action combo may nest here;
+        # see _sync_action_combo — the guard stops signal ping-pong)
+        self._sync_action_combo()
+        action = self.cmb_action.get_active_text()
+        level = self.cmb_level.get_active_text()
+        idx = self.cmb_time.get_active()
+        since = None
+        if idx in _TIMEFRAME_SECS:
+            since = datetime.now(timezone.utc) - \
+                timedelta(seconds=_TIMEFRAME_SECS[idx])
+        events = self.store.recent_events(
+            limit=200,
+            level=None if level in (None, "All levels") else level,
+            action=None if action in (None, "All actions") else action,
+            since=since)
+        if self.cmb_sort.get_active() == 1:
+            events = list(reversed(events))        # oldest at the top
+
+        # repaint without yanking the view: remember the row the user is
+        # reading (raw ts + action + path) and the scroll offset, restore
+        # both after the refill — a periodic tick must not jump to the top
+        sel = self.evt_view.get_selection()
+        _model, sel_path = sel.get_selected()
+        sel_key = None
+        if sel_path is not None:
+            sel_key = (self.evt_store[sel_path][5],     # raw ts
+                       self.evt_store[sel_path][2],     # action
+                       self.evt_store[sel_path][3])     # rel_path
+        adj = self.evt_scroll.get_vadjustment()
+        offset = adj.get_value()
+
         self.evt_store.clear()
-        for e in reversed(self.store.recent_events(limit=200)):
-            self.evt_store.append([to_local(e["ts"]), e["level"], e["action"],
-                                   e["rel_path"], e["message"]])
+        for e in events:
+            self.evt_store.append(_activity_row(e))
+        if sel_key:
+            for i, row in enumerate(self.evt_store):
+                if (row[5], row[2], row[3]) == sel_key:
+                    path = Gtk.TreePath.new_from_indices([i])
+                    sel.select_path(path)
+                    self.evt_view.scroll_to_cell(path, None, False, 0, 0)
+                    break
+        else:
+            GLib.idle_add(self._restore_scroll, adj, offset)
         return False
+
+    @staticmethod
+    def _restore_scroll(adj, offset):
+        """Reapply the previous scroll offset after the rows have laid out."""
+        upper = adj.get_upper() - adj.get_page_size()
+        adj.set_value(min(max(offset, 0), max(0, upper)))
+        return False
+
+    def _sync_action_combo(self):
+        """Keep the action filter's options in step with the log contents
+        without resetting the user's choice (or recursing via 'changed')."""
+        actions = self.store.event_actions()
+        items = ["All actions"] + actions
+        if items == getattr(self, "_action_items", None):
+            return
+        self._action_items = items          # set first: stops re-entry
+        self._combo_quiet = True
+        try:
+            active = self.cmb_action.get_active_text()
+            self.cmb_action.remove_all()
+            for it in items:
+                self.cmb_action.append_text(it)
+            self.cmb_action.set_active(
+                items.index(active) if active in items else 0)
+        finally:
+            self._combo_quiet = False
+
+    def _on_activity_filter(self, _combo=None):
+        if getattr(self, "_combo_quiet", False):
+            return
+        self._refresh_activity()
+
+    def _on_clear_activity(self, _btn):
+        n = self.store.count_events()
+        if not n:
+            self._info("The activity log is already empty.")
+            return
+        if self._confirm(f"Delete all {n} activity entries? "
+                         "This cannot be undone."):
+            self.store.clear_events()
+            self._refresh_activity()
 
     def _tick(self):
         """Periodic UI refresh while the app is alive (even when hidden)."""

@@ -6,12 +6,12 @@
 # The package mirrors the .deb layout: python code under the site-packages
 # dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.2.2
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Google Drive sync client for Linux desktops
 
 License:        MIT
-URL:            https://github.com/YOUR_USERNAME/drivesync
+URL:            https://github.com/MycoPixel/DriveSync
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
@@ -59,6 +59,7 @@ on the machine and talk to Google directly.
 mkdir -p %{buildroot}%{appdir} \
          %{buildroot}%{_bindir} \
          %{buildroot}%{_datadir}/applications \
+         %{buildroot}%{_datadir}/metainfo \
          %{buildroot}%{_datadir}/icons/hicolor/scalable/apps \
          %{buildroot}%{_userunitdir} \
          %{buildroot}%{_docdir}/%{name}
@@ -80,6 +81,10 @@ sed "s|__BIN__|/usr/bin|g; s|__ICON__|drivesync|g" drivesync.desktop \
 cp drivesync/static/mark.svg \
    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/drivesync.svg
 
+# AppStream metadata: what Discover / GNOME Software show about the app
+cp drivesync.metainfo.xml \
+   %{buildroot}%{_datadir}/metainfo/drivesync.metainfo.xml
+
 cat > %{buildroot}%{_userunitdir}/drivesync.service <<'EOF'
 [Unit]
 Description=DriveSync — Google Drive sync client (background worker + dashboard)
@@ -97,15 +102,42 @@ EOF
 # README/LICENSE are packaged via the %doc lines below (rpmbuild copies
 # them from the source tree into %_docdir itself)
 
+# refresh the caches Discover/GNOME Software read so the menu entry, icon
+# and app metadata appear right after install (best-effort)
+%post
+/usr/bin/update-desktop-database >/dev/null 2>&1 || :
+/usr/bin/gtk-update-icon-cache -fqt %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+
+%postun
+/usr/bin/update-desktop-database >/dev/null 2>&1 || :
+/usr/bin/gtk-update-icon-cache -fqt %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+
 %files
-%doc README.md LICENSE
+%doc README.md LICENSE CHANGELOG.md
 %{_bindir}/drivesync
 %{appdir}
 %{_datadir}/applications/drivesync.desktop
+%{_datadir}/metainfo/drivesync.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/drivesync.svg
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.3.0-1
+- Friendlier CLI: bare 'drivesync' shows next steps; config/pairs validate
+  input with actionable errors; 'sync' guides first-time users
+- serve: port-busy hint (detects the running systemd instance) and --open
+- Activity log auto-prune (30 days / 5k rows) when the worker starts
+- CHANGELOG.md shipped in the packages
+
+* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.2.4-1
+- Fixed 'drivesync gui' startup crash (activity hidden column type)
+- AppStream metainfo + icon/desktop-db cache refresh on (un)install:
+  Discover/GNOME Software now show developer, release notes and the icon
+
+* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.2.3-1
+- GUI Activity tab: newest-first list that keeps scroll/selection across
+  refreshes, filter by action/level/time frame, sort toggle, clear-log
+
 * %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.2.2-1
 - GUI: Browse Drive… folder picker in the Add-folder dialog (My Drive,
   Shared with me, shortcut resolution — same flow as the dashboard)

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what GNOME Software / KDE Discover show about the
+     app (developer, description, release notes). Installed to
+     /usr/share/metainfo/drivesync.metainfo.xml by both the .deb and RPM.
+     Update <releases> when bumping the version — newest entry first. -->
+<component type="desktop-application">
+  <id>drivesync</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>DriveSync</name>
+  <summary>Two-way Google Drive sync for Linux desktops</summary>
+  <description>
+    <p>
+      DriveSync keeps local folders and Google Drive in sync, with
+      upload-only and download-only modes, conflict policies and an
+      optional system tray icon.
+    </p>
+    <p>
+      A local web dashboard and a native desktop UI cover setup, account
+      authorization and live activity; a background worker syncs on a
+      schedule or on demand. Everything runs on your machine: tokens are
+      stored locally and talk to Google directly with your own OAuth
+      client.
+    </p>
+    <ul>
+      <li>Bidirectional, upload-only and download-only sync per folder</li>
+      <li>Conflict detection with keep-newer/local/remote/both policies</li>
+      <li>Google Docs/Sheets/Slides/Drawings exported to open formats</li>
+      <li>Per-file activity log, filterable by action, level and time</li>
+      <li>Background worker with systemd user unit and tray integration</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">drivesync.desktop</launchable>
+  <developer_name>DriveSync contributors</developer_name>
+  <url type="homepage">https://github.com/MycoPixel/DriveSync</url>
+  <url type="bugtracker">https://github.com/MycoPixel/DriveSync/issues</url>
+  <icon type="stock">drivesync</icon>
+  <releases>
+    <release version="0.3.0" date="2026-11-18">
+      <description>
+        <p>
+          Friendlier command line: bare drivesync prints next steps, the
+          config and pairs commands validate input with helpful errors,
+          serve explains a busy dashboard port and can open the dashboard
+          with --open, and the activity log now auto-prunes.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.4" date="2026-11-18">
+      <description>
+        <p>
+          Fixed a crash when launching the desktop UI (activity list
+          column type mismatch). Added software-center metadata so
+          Discover and GNOME Software show developer info, release notes
+          and the DriveSync icon.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.3" date="2026-11-18">
+      <description>
+        <p>
+          Activity tab: newest-first list that keeps its place across
+          refreshes, filters (action, level, time frame), sort toggle and
+          a clear-log button.
+        </p>
+      </description>
+    </release>
+  </releases>
+  <provides>
+    <binary>drivesync</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

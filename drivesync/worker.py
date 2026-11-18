@@ -29,6 +29,13 @@ class Worker:
                        "last_error": None, "last_stats": None}
         self._lock = threading.Lock()
         self._lockfh = None
+        # keep the activity log bounded: every pass logs a summary row, so a
+        # service at the default interval writes ~3k rows/day. Best-effort —
+        # a broken store must not stop the worker from starting.
+        try:
+            self.store.prune_events()
+        except Exception:
+            pass
 
     def start(self):
         self._thread.start()
