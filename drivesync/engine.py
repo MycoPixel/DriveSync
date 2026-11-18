@@ -21,12 +21,12 @@ import hashlib
 import os
 import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import app_dir
-from .db import utcnow
+from .db import parse_include_patterns, utcnow
 from .drive import FOLDER_MIME, resolve_export_formats
 
 GDOC_PREFIX = "application/vnd.google-apps."
@@ -124,10 +124,34 @@ def ignored(rel, patterns):
     return False
 
 
-def scan_local(root, patterns):
+def included(rel, include, is_file=False):
+    """True if rel is inside the pair's selective-sync scope.
+
+    include is a list of subfolder path prefixes ("docs", "photos/2024");
+    empty list = everything is in scope. A rel matches when it IS a chosen
+    prefix, lies under one, or is a directory an included path lives in
+    (the ancestor clause keeps the local walk and Drive listing from
+    pruning a parent that excluded children still need). Loose files in
+    the pair root (rel without '/') always mirror — the scope limits
+    subfolders, which is what the pickers promise. is_file must reflect
+    the item kind so the rule stays identical across full and delta scans.
+    """
+    if not include:
+        return True
+    if "/" not in rel and is_file:
+        return True
+    for p in include:
+        if rel == p or rel.startswith(p + "/") or p.startswith(rel + "/"):
+            return True
+    return False
+
+
+def scan_local(root, patterns, include=None):
     """Walk the local root -> {rel: {'kind','size','mtime','md5'}}.
 
     md5 starts as None and is computed on demand via md5_of(rel).
+    Paths outside the pair's include scope (selective sync) are skipped —
+    excluded subfolders stay on disk untouched and invisible to decide().
     """
     root = str(root)
     items = {}
@@ -137,18 +161,19 @@ def scan_local(root, patterns):
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == ".":
             rel_dir = ""
-        # drop ignored directories from the walk entirely
+        # drop ignored/out-of-scope directories from the walk entirely
         keep = []
         for d in sorted(dirnames):
             rel = f"{rel_dir}/{d}" if rel_dir else d
-            if ignored(rel, patterns):
+            if ignored(rel, patterns) or not included(rel, include):
                 continue
             keep.append(d)
             items[rel] = {"kind": "dir", "size": None, "mtime": None, "md5": None}
         dirnames[:] = keep
         for f in sorted(filenames):
             rel = f"{rel_dir}/{f}" if rel_dir else f
-            if ignored(rel, patterns):
+            if ignored(rel, patterns) or not included(rel, include,
+                                                      is_file=True):
                 continue
             full = os.path.join(dirpath, f)
             try:
@@ -160,18 +185,20 @@ def scan_local(root, patterns):
     return items
 
 
-def scan_remote(drive, root_id, patterns, export_map=None):
+def scan_remote(drive, root_id, patterns, export_map=None, include=None):
     """Drive list_tree -> {rel: {'kind','id','md5','version','mtime','size'}}.
 
     Google-native docs that have a convertible export format also carry
-    "export": (export_mime, file_extension).
+    "export": (export_mime, file_extension). Paths outside the include
+    scope are left out so selective-sync pairs never track them.
     """
     raw = drive.list_tree(root_id)
     items = {}
     for rel, f in raw.items():
-        if rel and ignored(rel, patterns):
-            continue
         k = kind_of(f.get("mimeType", ""))
+        if rel and (ignored(rel, patterns) or
+                    not included(rel, include, is_file=(k != "dir"))):
+            continue
         item = {
             "kind": k,
             "id": f.get("id"),
@@ -231,7 +258,8 @@ def remote_item_from_base(b, export_map):
     return item
 
 
-def scan_remote_delta(pair, base_rows, export_map, patterns, changes):
+def scan_remote_delta(pair, base_rows, export_map, patterns, changes,
+                      include=None):
     """Remote map for one pair: base snapshot + the account's changes feed.
 
     File-level changes (create / edit / delete / rename / move) are applied
@@ -254,6 +282,9 @@ def scan_remote_delta(pair, base_rows, export_map, patterns, changes):
     for r in rows:
         if r.get("deleted_remote"):
             continue                          # acknowledged deletion
+        if r["rel_path"] and not included(
+                r["rel_path"], include, is_file=(r["kind"] != "dir")):
+            continue   # out-of-scope base row (scope shrank): decide forgets it
         remote[r["rel_path"]] = remote_item_from_base(r, export_map)
 
     def drop(rel):
@@ -309,13 +340,21 @@ def scan_remote_delta(pair, base_rows, export_map, patterns, changes):
                 if is_dir:
                     raise DeltaUnsupported(f"tracked dir changed rel: {old_rel}")
                 drop(old_rel)
+            if ignored(new_rel, patterns) or \
+                    not included(new_rel, include, is_file=True):
+                # renamed/edited out of scope: full scans answer the same way
+                # (base row is forgotten by decide, local copy follows the
+                # delete policy) — do not keep tracking it here
+                index.pop(fid, None)
+                continue
             remote[new_rel] = feed_item(entry)
             index[fid] = new_rel
         else:
             if kind_of(entry.get("mimeType", "")) == "dir":
                 raise DeltaUnsupported(
                     f"new remote dir under tracked parent: {new_rel}")
-            if ignored(new_rel, patterns):
+            if ignored(new_rel, patterns) or \
+                    not included(new_rel, include, is_file=True):
                 continue
             remote[new_rel] = feed_item(entry)
             index[fid] = new_rel
@@ -691,6 +730,7 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
         return stats, False
 
     patterns = list(cfg.get("ignore_patterns", []))
+    include = parse_include_patterns(pair["include_patterns"])
     export_map = resolve_export_formats(cfg)
     base_rows = store.base_entries(pair["id"])
 
@@ -698,7 +738,7 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
     if changes is not None and not force_full:
         try:
             remote = scan_remote_delta(pair, base_rows, export_map, patterns,
-                                       changes)
+                                       changes, include=include)
         except DeltaUnsupported:
             remote = None
         except Exception as exc:
@@ -707,14 +747,15 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
             remote = None
     if remote is None:
         try:
-            remote = scan_remote(drive, pair["remote_id"], patterns, export_map)
+            remote = scan_remote(drive, pair["remote_id"], patterns, export_map,
+                                 include=include)
         except Exception as exc:
             store.log(pair["id"], "error", message=f"Drive listing failed: {exc}",
                       level="error")
             stats.errors += 1
             return stats, False
 
-    local = scan_local(local_root, patterns)
+    local = scan_local(local_root, patterns, include=include)
     base = base_map(base_rows)
 
     # exported Google-native docs live under rel+ext locally: align the maps
@@ -1255,3 +1296,139 @@ class _ApplyCtx:
         self.store.base_mark_deleted(self.pid, rel, "remote")
         self.store.log(self.pid, "delete-kept", rel,
                        "deletes off — local copy kept, deletion acknowledged")
+
+
+# ---------------------------------------------------------------- on-demand
+class OnDemandSkip(Exception):
+    """A Drive item cannot be fetched locally (unconvertible Google doc)."""
+
+
+def _set_remote_mtime(dest, iso):
+    """Best effort: stamp the fetched file with the Drive modifiedTime."""
+    ts = parse_remote_mtime(iso)
+    if ts:
+        try:
+            os.utime(dest, (ts, ts))
+        except OSError:
+            pass
+
+
+def download_item(drive, entry, dest_path, export_map=None):
+    """Fetch one Drive file to dest_path; returns the written path.
+
+    entry is a files.list style metadata dict (id, name, mimeType,
+    modifiedTime). Google-native docs are exported with the configured
+    format and the extension is appended unless the name already carries
+    it. Raises OnDemandSkip for native docs with no convertible format.
+    """
+    mime = entry.get("mimeType", "")
+    name = entry.get("name", "file")
+    if mime == FOLDER_MIME:
+        raise ValueError("use download_tree() for folders")
+    if mime.startswith(GDOC_PREFIX):
+        exp = (export_map or {}).get(mime)
+        if not exp:
+            raise OnDemandSkip(
+                f"{name}: this Google Docs type has no configured export "
+                "format (see the convert_google_docs setting)")
+        dest_path = export_lex(dest_path, exp[1])
+        drive.export(entry["id"], exp[0], dest_path)
+    else:
+        drive.download(entry["id"], dest_path)
+    _set_remote_mtime(dest_path, entry.get("modifiedTime"))
+    return dest_path
+
+
+def _tree_note(stats, notes, rel, outcome):
+    """Fold one fetch outcome into stats and the serial log notes."""
+    kind, detail = outcome
+    if kind == "ok":
+        stats["downloaded"] += 1
+        stats["bytes"] += detail
+        notes.append((rel, "saved", "info"))
+    elif kind == "skip":
+        stats["skipped"] += 1
+        notes.append((rel, detail, "info"))
+    else:
+        stats["errors"] += 1
+        notes.append((rel, detail, "error"))
+
+
+def download_tree(drive, folder_id, dest_dir, export_map=None, concurrency=4,
+                  log=None, progress=None):
+    """Fetch a whole Drive folder into dest_dir (contents at the top level).
+
+    Files download in parallel; unconvertible Google docs are skipped and
+    counted — never silently dropped. log(rel, message, level) receives
+    per-file results when given (replayed serially at the end). progress
+    (done, total, rel, kind) is called as each file completes so callers
+    can show live progress; kind is 'ok' | 'skip' | 'error'. Returns
+    {'downloaded': n, 'skipped': n, 'errors': n, 'bytes': n}.
+    """
+    dest_dir = str(dest_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+    tree = drive.list_tree(folder_id)
+    stats = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+    notes = []                          # (rel, message, level), logged serially
+
+    def note(rel, message, level="info"):
+        notes.append((rel, message, level))
+
+    # materialize the directory structure first so empty folders land too
+    for rel in sorted(tree):
+        if rel and tree[rel].get("mimeType") == FOLDER_MIME:
+            os.makedirs(os.path.join(dest_dir, *rel.split("/")), exist_ok=True)
+
+    def fetch(rel):
+        """Download one file; returns ('ok'|'skip'|'error', detail)."""
+        meta = tree[rel]
+        try:
+            dest = download_item(drive, meta, os.path.join(dest_dir, rel),
+                                 export_map)
+        except OnDemandSkip as exc:
+            return "skip", str(exc)
+        except Exception as exc:
+            return "error", f"download failed: {exc}"
+        size = 0
+        try:
+            size = os.path.getsize(dest)
+        except OSError:
+            pass
+        return "ok", size
+
+    files = [rel for rel in sorted(tree)
+             if rel and tree[rel].get("mimeType") != FOLDER_MIME]
+    workers = max(1, int(concurrency or 1))
+    done = 0
+    if workers == 1 or len(files) < 2:
+        for rel in files:
+            outcome = fetch(rel)
+            done += 1
+            _tree_note(stats, notes, rel, outcome)
+            if progress:
+                try:
+                    progress(done, len(files), rel, outcome[0])
+                except Exception:
+                    pass
+    else:
+        # as_completed (not pool.map) so callers get live per-file progress
+        # instead of waiting for the whole folder
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(fetch, rel): rel for rel in files}
+            for fut in as_completed(futures):
+                rel = futures[fut]
+                outcome = fut.result()
+                done += 1
+                _tree_note(stats, notes, rel, outcome)
+                if progress:
+                    try:
+                        progress(done, len(files), rel, outcome[0])
+                    except Exception:
+                        pass
+    if log:
+        for rel, message, level in notes:
+            try:
+                log(rel, message, level)
+            except Exception:
+                pass
+    return stats

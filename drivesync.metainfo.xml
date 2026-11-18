@@ -24,6 +24,9 @@
     </p>
     <ul>
       <li>Bidirectional, upload-only and download-only sync per folder</li>
+      <li>Selective sync: choose which subfolders a pair mirrors</li>
+      <li>On-demand downloads: browse all of Drive, fetch files or whole
+          folders when you need them — no mount required</li>
       <li>Conflict detection with keep-newer/local/remote/both policies</li>
       <li>Google Docs/Sheets/Slides/Drawings exported to open formats</li>
       <li>Per-file activity log, filterable by action, level and time</li>
@@ -31,11 +34,47 @@
     </ul>
   </description>
   <launchable type="desktop-id">drivesync.desktop</launchable>
-  <developer_name>DriveSync contributors</developer_name>
+  <!-- AppStream ≥ 0.15: structured developer info (what Discover shows as
+       the author); <developer_name> kept for older software centers -->
+  <developer>
+    <name>MycoPixel</name>
+    <url>https://github.com/MycoPixel</url>
+  </developer>
+  <developer_name>MycoPixel (DriveSync contributors)</developer_name>
   <url type="homepage">https://github.com/MycoPixel/DriveSync</url>
   <url type="bugtracker">https://github.com/MycoPixel/DriveSync/issues</url>
+  <!-- type="theme" resolves the icon through the installed hicolor icon
+       (drivesync.svg); type="stock" kept as a fallback for old tools -->
+  <icon type="theme">drivesync</icon>
   <icon type="stock">drivesync</icon>
   <releases>
+    <release version="0.5.1" date="2026-11-18">
+      <description>
+        <p>
+          Drive-tab downloads now show live progress: a spinner and a
+          per-file line in the tab, with the result summary kept on screen
+          afterwards. Starting a second download while one is running no
+          longer silently does nothing — downloads run concurrently.
+          Selected rows are now visibly highlighted on every system theme,
+          and a Select all button was added for bulk downloads. The RPM
+          spec builds again (stale Version tag and a malformed changelog
+          date fixed; build-rpm.sh injects the real version).
+        </p>
+      </description>
+    </release>
+    <release version="0.5.0" date="2026-11-18">
+      <description>
+        <p>
+          On-demand downloads: a new Drive tab lists your whole Drive and
+          downloads any file or folder to a destination you pick — like a
+          virtual drive without the mount. Selective sync per pair: choose
+          which subfolders mirror; the rest stays on Drive and on disk.
+          Also fixed the desktop app always opening on the Setup tab on
+          newer GTK, and launch crashes are now logged and shown instead
+          of failing silently.
+        </p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-18">
       <description>
         <p>

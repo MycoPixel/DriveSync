@@ -23,6 +23,13 @@ tokens and files stay on your machine and talk to Google directly.
 - **Multiple Google accounts**, multiple clouds folders, many pairs at once
 - **Rename detection** — moving/renaming locally or on Drive updates the
   other side without re-uploading
+- **Selective sync** — per pair: choose which subfolders mirror; the rest
+  stays on Drive and on disk untouched, and can be fetched any time from the
+  Drive tab (nothing is deleted by narrowing a scope)
+- **On-demand downloads** — the desktop app's Drive tab lists your whole
+  Drive (My Drive + Shared with me) like a virtual drive without the mount:
+  browse, then download a file or a whole folder to any destination, on
+  your say-so, without creating a sync pair
 - **Selective sync via ignore patterns** (glob style, per app)
 - **Activity log** with conflicts and errors surfaced in the dashboard —
   auto-pruned (30 days, capped at 5,000 rows) so the state database stays small
@@ -49,8 +56,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.4.0-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.4.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.5.1-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.5.1-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -120,8 +127,14 @@ stores them and starts the same consent flow in one step.
 ```bash
 # find the Drive folder ID in its web URL: .../folders/<ID>
 drivesync pairs add ~/DriveDocuments --remote-id 1a2B3cD4eF5g \
-    --remote-path "My Drive/Documents"
+    --remote-path "My Drive/Documents" \
+    --include "Documents/Projects,Documents/Archive"
 ```
+
+`--include` (or **Folders → Subfolders…** in the desktop app) turns on
+selective sync: only the chosen subfolders mirror; loose files in the pair
+root always sync. Everything else stays on Drive and on disk untouched and
+can be downloaded on demand from the Drive tab.
 
 or use **Sync pairs → Add a sync pair → Browse…** in the dashboard, which
 lets you click through your Drive folders.
@@ -136,13 +149,17 @@ systemctl --user enable --now drivesync   # or as a login service
 ```
 
 The desktop app (`drivesync gui`) is what the menu launcher opens: one GTK
-window with Setup / Accounts / Folders / Activity tabs, so a fresh machine
-is configured entirely without the browser — except Google's own consent
-page, which must open in a browser once per account (that step happens on
-google.com by design). Adding a pair needs no manual folder IDs: the
-“Browse Drive…” button walks My Drive and Shared-with-me folders — the
-same picker the dashboard uses. `serve` and the systemd unit are the headless/service
-mode; running both is safe — a cross-process lock means only one syncs at a
+window with Setup / Accounts / Folders / Drive / Activity tabs, so a fresh
+machine is configured entirely without the browser — except Google's own
+consent page, which must open in a browser once per account (that step
+happens on google.com by design). Adding a pair needs no manual folder IDs:
+the “Browse Drive…” button walks My Drive and Shared-with-me folders — the
+same picker the dashboard uses. The **Drive tab** is the on-demand side:
+it lists your whole Drive with sizes and dates and downloads any file or
+folder to wherever you point it — no pair needed, like Google Drive on
+Windows minus the mount. **Folders → Subfolders…** narrows what a pair
+mirrors. `serve` and the systemd unit are the headless/service mode;
+running both is safe — a cross-process lock means only one syncs at a
 time. Headless machines without GTK: `drivesync gui` prints the package to
 install and exits.
 
@@ -156,6 +173,7 @@ drivesync serve [--open]              dashboard + background worker
 drivesync auth                        authorize a Google account
 drivesync accounts list|remove
 drivesync pairs add|list|set|remove   manage sync pairs
+                                      (--include docs,photos = selective sync)
 drivesync sync [--pair N] [--full]    run one sync pass now and exit
 drivesync status                      accounts, pairs, recent activity
 drivesync config get|set              interval, conflict policy, ignores

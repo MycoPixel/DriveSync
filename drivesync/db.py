@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS pairs (
     direction       TEXT NOT NULL DEFAULT 'bidirectional',
     conflict_policy TEXT NOT NULL DEFAULT 'newer',
     enabled         INTEGER NOT NULL DEFAULT 1,
-    allow_deletes   INTEGER NOT NULL DEFAULT 1
+    allow_deletes   INTEGER NOT NULL DEFAULT 1,
+    include_patterns TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS entries (
     pair_id         INTEGER NOT NULL REFERENCES pairs(id),
@@ -59,6 +60,61 @@ _DIRECTIONS = ("bidirectional", "upload", "download")
 _POLICIES = ("newer", "local", "remote", "both")
 
 
+def normalize_include_patterns(value) -> str:
+    """Canonical storage form for a pair's selective-sync scope.
+
+    Accepts None / '' (everything), a list of subfolder paths
+    ("docs", "photos/2024"), or a comma-separated string, and returns the
+    canonical JSON list string ('[]' means 'no scope chosen' -> everything
+    syncs). Raises ValueError when the value cannot be understood so callers
+    get an error instead of silently syncing nothing.
+    """
+    if value is None:
+        return "[]"
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return "[]"
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = [part.strip() for part in text.split(",")]
+        if not isinstance(decoded, list):
+            raise ValueError("include_patterns must be a list of subfolder "
+                             "paths or a comma-separated string")
+        items = decoded
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        raise ValueError("include_patterns must be a list of subfolder paths "
+                         "or a comma-separated string")
+    if not all(isinstance(x, str) for x in items):
+        raise ValueError("include_patterns entries must be strings")
+    cleaned = []
+    for item in items:
+        parts = "/".join(p for p in item.strip().split("/") if p and p != ".")
+        if parts and parts not in cleaned and parts not in (".", ".."):
+            cleaned.append(parts)
+    return json.dumps(sorted(cleaned))
+
+
+def parse_include_patterns(value) -> list:
+    """Stored include_patterns column -> list of subfolder paths.
+
+    Broken or legacy values degrade to [] (= everything syncs) — a scope
+    must never silently hide the whole pair because of a bad string.
+    """
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(decoded, list) and all(isinstance(x, str) for x in decoded):
+        return decoded
+    return []
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -92,7 +148,8 @@ class Store:
 
     # Columns added after the first release; ALTER is idempotent per launch.
     _MIGRATIONS = {
-        "pairs": ["allow_deletes INTEGER NOT NULL DEFAULT 1"],
+        "pairs": ["allow_deletes INTEGER NOT NULL DEFAULT 1",
+                  "include_patterns TEXT NOT NULL DEFAULT ''"],
         "entries": ["deleted_local INTEGER NOT NULL DEFAULT 0",
                     "deleted_remote INTEGER NOT NULL DEFAULT 0",
                     "remote_size REAL",
@@ -147,18 +204,19 @@ class Store:
     # ---- pairs ----------------------------------------------------
     def add_pair(self, account_id, local_path, remote_id, remote_path="",
                  direction="bidirectional", conflict_policy="newer", enabled=1,
-                 allow_deletes=1):
+                 allow_deletes=1, include_patterns=None):
         if direction not in _DIRECTIONS:
             raise ValueError(f"direction must be one of {_DIRECTIONS}")
         if conflict_policy not in _POLICIES:
             raise ValueError(f"conflict_policy must be one of {_POLICIES}")
+        scope = normalize_include_patterns(include_patterns)
         cur = self._exec(
             "INSERT INTO pairs(account_id, local_path, remote_id, remote_path, "
-            "direction, conflict_policy, enabled, allow_deletes) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "direction, conflict_policy, enabled, allow_deletes, "
+            "include_patterns) VALUES (?,?,?,?,?,?,?,?,?)",
             (account_id, str(local_path), remote_id, remote_path,
              direction, conflict_policy, int(bool(enabled)),
-             int(bool(allow_deletes))))
+             int(bool(allow_deletes)), scope))
         return self.pair(cur.lastrowid)
 
     def pairs(self, enabled_only=False):
@@ -172,7 +230,8 @@ class Store:
 
     def update_pair(self, pair_id, **fields):
         allowed = {"local_path", "remote_id", "remote_path", "direction",
-                   "conflict_policy", "enabled", "allow_deletes"}
+                   "conflict_policy", "enabled", "allow_deletes",
+                   "include_patterns"}
         keys = [k for k in fields if k in allowed]
         if not keys:
             return self.pair(pair_id)
@@ -184,6 +243,9 @@ class Store:
             fields["enabled"] = int(bool(fields["enabled"]))
         if "allow_deletes" in fields:
             fields["allow_deletes"] = int(bool(fields["allow_deletes"]))
+        if "include_patterns" in fields:
+            fields["include_patterns"] = \
+                normalize_include_patterns(fields["include_patterns"])
         sets = ", ".join(f"{k}=?" for k in keys)
         self._exec(f"UPDATE pairs SET {sets} WHERE id=?",
                    tuple(fields[k] for k in keys) + (pair_id,))

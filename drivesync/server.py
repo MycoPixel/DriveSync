@@ -14,7 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from . import __version__
 from .auth import AuthError, access_token, interactive_auth, token_from_json, whoami
 from .config import db_path, load_config, save_config
-from .db import Store, to_local
+from .db import Store, parse_include_patterns, to_local
 from .drive import Drive, DriveError, FOLDER_MIME, SHORTCUT_MIME
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -134,13 +134,39 @@ def create_app(store: Store, worker=None):
             folders = [{"id": "shared", "name": "Shared with me"}] + folders
         return jsonify({"ok": True, "current": current, "folders": folders})
 
+    @app.get("/api/drive/<int:account_id>/children")
+    def drive_children(account_id):
+        """Full child listing (files AND folders) for on-demand downloads.
+
+        parent=root lists My Drive; parent=shared lists 'Shared with me'
+        folders. Rows carry the metadata the browser needs (id, name,
+        mimeType, size, modifiedTime); Google-native docs have no size.
+        """
+        parent = request.args.get("parent", "root")
+        try:
+            drive = drive_for(account_id)
+            if parent == "shared":
+                items = drive.list_shared_folders()
+                current = {"id": "shared", "name": "Shared with me"}
+            else:
+                items = drive.list_children(parent)
+                current = None
+                if parent != "root":
+                    current = drive.get(parent, fields="id,name,parents")
+        except DriveError as exc:
+            return api_error(exc, 502)
+        return jsonify({"ok": True, "current": current, "items": items})
+
     # ---- pairs ------------------------------------------------------
     def pair_json(p):
         return {"id": p["id"], "account_id": p["account_id"],
                 "local_path": p["local_path"], "remote_id": p["remote_id"],
                 "remote_path": p["remote_path"], "direction": p["direction"],
-                "conflict_policy": p["conflict_policy"], "enabled": bool(p["enabled"]),
-                "allow_deletes": bool(p["allow_deletes"])}
+                "conflict_policy": p["conflict_policy"],
+                "enabled": bool(p["enabled"]),
+                "allow_deletes": bool(p["allow_deletes"]),
+                "include_patterns": parse_include_patterns(
+                    p["include_patterns"])}
 
     @app.get("/api/pairs")
     def pairs_list():
@@ -160,7 +186,8 @@ def create_app(store: Store, worker=None):
                 direction=data.get("direction", "bidirectional"),
                 conflict_policy=data.get("conflict_policy")
                 or load_config()["conflict_policy"],
-                enabled=data.get("enabled", 1))
+                enabled=data.get("enabled", 1),
+                include_patterns=data.get("include_patterns"))
         except KeyError as exc:
             return api_error(f"missing field: {exc}")
         except ValueError as exc:

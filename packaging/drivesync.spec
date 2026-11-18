@@ -6,7 +6,7 @@
 # The package mirrors the .deb layout: python code under the site-packages
 # dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.4.0
+Version:        0.5.1
 Release:        1%{?dist}
 Summary:        Google Drive sync client for Linux desktops
 
@@ -41,8 +41,14 @@ Recommends:     libnotify
 %{!?_userunitdir:%global _userunitdir /usr/lib/systemd/user}
 
 # changelog date generated at build time so the weekday always matches
-# (rpmbuild rejects changelog entries whose weekday != actual weekday)
-%global chlogdate %(date "+%a %b %-d %Y")
+# (rpmbuild rejects changelog entries whose weekday != actual date).
+# NOTE the doubled percent escapes below: rpm macro-expands the shell
+# command before running it, so a bare percent sequence there is read as
+# an rpm macro — and undefined ones simply vanish. That is exactly what
+# once produced "Wed Nov  2026" and the 'bad date in changelog' error.
+# Doubled percent reaches the shell as one literal percent, so date(1)
+# gets its own format string back.
+%global chlogdate %(date "+%%a %%b %%d %%Y")
 
 %description
 Two-way sync between local folders and Google Drive (upload-only and
@@ -126,6 +132,32 @@ EOF
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.5.1-1
+- Drive-tab downloads show live progress: spinner + per-file strip in the
+  tab, headerbar mirror, and a persistent result summary; folder downloads
+  stream per-file counts as the tree downloads (engine progress callback)
+- A second download now runs concurrently instead of being silently
+  swallowed until the app was restarted
+- Selected rows are highlighted on every system theme (Material-3 tonal
+  fill for treeview.view:selected) plus a Select all button
+- Fixed the RPM build itself: a stale hardcoded Version tag pointed %prep
+  at the old tarball and an unescaped date macro produced 'bad date in
+  %changelog'
+
+* %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.5.0-1
+- On-demand downloads: the GUI Drive tab lists your whole Drive and
+  downloads any file or folder to a picked destination — no sync pair,
+  no mount (Google Docs exported with the configured format)
+- Selective sync per pair: Subfolders… dialog / 'pairs add --include' /
+  'pairs set include_patterns=' restrict a pair to chosen subfolders;
+  narrowing a scope deletes nothing, widening downloads on the next pass
+- Dashboard API: GET /api/drive/<account>/children (files AND folders)
+- Fixed: desktop app always opened on the Setup tab (GTK >= 3.24.49
+  ignores set_current_page pre-show); startup page now applied post-show
+- Fixed: launch failures print, log to gui-crash.log and show a dialog
+  instead of dying silently; hand-edited config values cannot crash the
+  window; the Drive tab loads lazily with inline listing errors
+
 * %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.4.0-1
 - Instant local-change sync: inotify watcher (watchdog, optional) pokes
   the worker so local edits push in ~1s instead of the scan interval

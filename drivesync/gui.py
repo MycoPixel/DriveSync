@@ -1,11 +1,13 @@
 """Native GTK3 desktop UI for DriveSync (PyGObject) — Material 3 styled.
 
 A local window covering everything a fresh install needs: first-run setup
-(your own Google OAuth client), account sign-in, sync pair management and
-live activity — no browser dashboard required. The app is a resident
-desktop citizen: a system tray icon (when pystray is installed) keeps it
-alive with the window closed; the tray reopens the window, triggers syncs
-and quits. Without a tray, closing the window exits the app.
+(your own Google OAuth client), account sign-in, sync pair management with
+selective sync (per-pair subfolder scopes), an on-demand Drive browser
+(like a virtual drive without the mount: browse everything, download what
+you need) and live activity — no browser dashboard required. The app is a
+resident desktop citizen: a system tray icon (when pystray is installed)
+keeps it alive with the window closed; the tray reopens the window,
+triggers syncs and quits. Without a tray, closing the window exits the app.
 
 One step still opens a browser on purpose: Google's consent page during
 account authorization (installed-app OAuth flow, loopback redirect on
@@ -16,9 +18,11 @@ Requires python3-gobject (RPM) / python3-gi (deb). Import is lazy —
 machines without GTK are unaffected.
 """
 
+import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 
 import gi
@@ -28,20 +32,26 @@ gi.require_version("Gtk", "3.0")
 # the newest typelib (Gdk 4.0) and Gtk 3.0's Gdk 3.0 dependency then fails
 # with "Requiring namespace 'Gdk' version '3.0', but '4.0' is already loaded".
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from . import engine
 from . import notify
 
 from . import __version__  # noqa: E402
 from .auth import access_token, interactive_auth, token_from_json, whoami  # noqa: E402
 from .config import app_dir, load_config, update_config  # noqa: E402
-from .db import Store, to_local  # noqa: E402
-from .drive import Drive, folders_for_parent  # noqa: E402
+from .db import Store, parse_include_patterns, to_local  # noqa: E402
+from .drive import Drive, folders_for_parent, resolve_export_formats  # noqa: E402
 from .tray import _icon_image  # noqa: E402
 from .worker import Worker  # noqa: E402
 
 DIRECTIONS = ("bidirectional", "upload", "download")
 POLICIES = ("newer", "local", "remote", "both")
+
+# Notebook pages, in append order (Setup, Accounts, Folders, Drive, Activity)
+PAGE_DRIVE = 3
+PAGE_ACTIVITY = 4
 
 # Activity tab time-frame presets: combo index → seconds back from now.
 _TIMEFRAME_SECS = {1: 15 * 60, 2: 3600, 3: 24 * 3600, 4: 7 * 24 * 3600}
@@ -57,6 +67,48 @@ def _activity_row(e):
     return [to_local(e["ts"]), e["level"] or "info", e["action"],
             e["rel_path"] or "", e["message"] or "", e["ts"]]
 
+
+def _drive_bytes(n):
+    """Byte count in human units ("" for unknown/zero-size rows)."""
+    n = float(n or 0)
+    if n <= 0:
+        return ""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return ""
+
+
+def _drive_row(item):
+    """Drive listing row -> browser columns (+ hidden id/mime/size).
+
+    Folder shortcuts resolve to their target so double-click descends to
+    the real folder; Google-native docs show no size (the API has none).
+    """
+    name = item.get("name", "?")
+    mime = item.get("mimeType", "")
+    details = item.get("shortcutDetails") or {}
+    modified = _drive_local_time(item.get("modifiedTime"))
+    if details.get("targetMimeType") == "application/vnd.google-apps.folder":
+        return [name, "Folder", "", modified,
+                details.get("targetId", ""), mime, ""]
+    if mime == "application/vnd.google-apps.folder":
+        return [name, "Folder", "", modified, item.get("id", ""), mime, ""]
+    if mime.startswith("application/vnd.google-apps."):
+        return [name, "Doc", "", modified, item.get("id", ""), mime, ""]
+    size = str(item.get("size") or "")
+    return [name, "File", _drive_bytes(item.get("size")), modified,
+            item.get("id", ""), mime, size]
+
+
+def _drive_local_time(iso):
+    """Drive modifiedTime ISO string -> local 'YYYY-MM-DD HH:MM' (or '')."""
+    ts = engine.parse_remote_mtime(iso or "")
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
 SETUP_HINT = (
     "DriveSync talks to Google with your own OAuth \u201cDesktop app\u201d client, so "
     "your tokens never pass through a third-party server. Create one once:\n"
@@ -65,6 +117,33 @@ SETUP_HINT = (
     "  3. Credentials \u2192 Create credentials \u2192 OAuth client ID \u2192 Desktop app\n"
     "  4. Paste the client ID and secret below."
 )
+
+
+def _cfg_int(cfg, key, default):
+    """Config value as an int for GTK widgets; junk degrades to default.
+
+    load_config trusts config.json as-is, so a hand-edited "sync_interval":
+    "30" (string) must not raise TypeError inside set_value() and kill the
+    whole window at launch.
+    """
+    try:
+        return int(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def startup_page(cfg, accounts):
+    """Notebook page to open on launch: Setup / Accounts / Activity.
+
+    Computed in __init__ but applied only AFTER the window is shown:
+    GTK >= 3.24.49 silently ignores Gtk.Notebook.set_current_page() on a
+    not-yet-shown window, which made every launch open on Setup.
+    """
+    if not cfg.get("client_id"):
+        return 0
+    if not accounts:
+        return 1
+    return PAGE_ACTIVITY
 
 TRAY_HINT = ("Closing this window keeps DriveSync running in the system tray "
              "(open it again from the tray icon).")
@@ -116,6 +195,15 @@ notebook tab:checked { background-color: #C2E7FF; color: #001D35; }
 notebook stack { background: transparent; border: none; }
 treeview { background-color: #FFFFFF; }
 treeview:hover { background-color: #F0F4F9; }
+/* explicit selection styling: without it some system themes leave the
+   selected row looking identical to the rest of the list. The .view class
+   is required to out-specify Adwaita's `.view:selected` rule (a plain
+   `treeview:selected` loses the cascade and the default blue shows). */
+treeview.view:selected { background-color: #C2E7FF; color: #001D35; }
+treeview.view:selected:backdrop { background-color: #D8E2EF; color: #001D35; }
+label.drive-prog { color: #444746; font-size: 95%; }
+label.drive-prog.ok { color: #146C2E; }
+label.drive-prog.err { color: #B3261E; }
 treeview header button {
   background-color: #F0F4F9; border: none; box-shadow: none;
   border-radius: 10px; padding: 4px 8px;
@@ -170,7 +258,7 @@ def _card(child):
 
 
 class DesktopApp:
-    """Main window: Setup / Accounts / Folders / Activity + resident tray."""
+    """Main window: Setup / Accounts / Folders / Drive / Activity + tray."""
 
     def __init__(self):
         self.store = Store(app_dir() / "state.db")
@@ -198,6 +286,7 @@ class DesktopApp:
         self.nb.append_page(self._setup_tab(), Gtk.Label(label="Setup"))
         self.nb.append_page(self._accounts_tab(), Gtk.Label(label="Accounts"))
         self.nb.append_page(self._folders_tab(), Gtk.Label(label="Folders"))
+        self.nb.append_page(self._drive_tab(), Gtk.Label(label="Drive"))
         self.nb.append_page(self._activity_tab(), Gtk.Label(label="Activity"))
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
@@ -205,12 +294,7 @@ class DesktopApp:
         outer.pack_start(self.nb, True, True, 0)
         self.win.add(outer)
 
-        if not self.cfg.get("client_id"):
-            self.nb.set_current_page(0)
-        elif not self.store.accounts():
-            self.nb.set_current_page(1)
-        else:
-            self.nb.set_current_page(3)
+        self._startup_page = startup_page(self.cfg, self.store.accounts())
         self.tray = self._start_tray()
         self._notify_gate = notify.Gate(lambda: self.win.get_visible())
         GLib.timeout_add_seconds(3, self._tick)
@@ -334,7 +418,7 @@ class DesktopApp:
         table.attach(Gtk.Label(label="Client ID:", halign=Gtk.Align.END),
                      0, 0, 1, 1)
         self.ent_client_id = Gtk.Entry(hexpand=True)
-        self.ent_client_id.set_text(self.cfg.get("client_id", ""))
+        self.ent_client_id.set_text(str(self.cfg.get("client_id") or ""))
         table.attach(self.ent_client_id, 1, 0, 1, 1)
 
         table.attach(Gtk.Label(label="Client secret:", halign=Gtk.Align.END),
@@ -462,8 +546,9 @@ class DesktopApp:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                       border_width=6)
         self.pair_store, self.pair_view, scroll = _list_view(
-            ["#", "Direction", "Local folder", "Drive folder", "State"],
-            (int, str, str, str, str))
+            ["#", "Direction", "Local folder", "Drive folder", "Scope",
+             "State"],
+            (int, str, str, str, str, str))
         box.pack_start(scroll, True, True, 0)
 
         row = Gtk.Box(spacing=6)
@@ -477,6 +562,13 @@ class DesktopApp:
         btn_sync = Gtk.Button(label="Sync selected now")
         btn_sync.connect("clicked", self._on_sync_pair)
         row.pack_start(btn_sync, False, False, 0)
+        btn_scope = Gtk.Button(label="Subfolders\u2026")
+        btn_scope.set_tooltip_text(
+            "Selective sync: choose which subfolders of this pair mirror; "
+            "the rest stays on Drive and on disk, downloadable on demand "
+            "from the Drive tab")
+        btn_scope.connect("clicked", self._on_pair_subfolders)
+        row.pack_start(btn_scope, False, False, 0)
         btn_rm = Gtk.Button(label="Remove")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_pair)
@@ -711,8 +803,488 @@ class DesktopApp:
         for p in self.store.pairs():
             remote = p["remote_path"] or p["remote_id"]
             state = "active" if p["enabled"] else "paused"
+            scope = parse_include_patterns(p["include_patterns"])
+            scope_txt = ("everything" if not scope
+                         else f"{len(scope)} subfolders")
             self.pair_store.append([p["id"], p["direction"], p["local_path"],
-                                    remote, state])
+                                    remote, scope_txt, state])
+
+    def _on_pair_subfolders(self, _btn):
+        """Selective-sync dialog: pick which subfolders of the selected
+        pair mirror. The rest stays on Drive and on disk, untouched by
+        passes; it can be fetched on demand from the Drive tab."""
+        pair_id = self._selected_pair()
+        if pair_id is None:
+            return
+        pair = self.store.pair(pair_id)
+        if not pair:
+            return
+        stored = parse_include_patterns(pair["include_patterns"])
+        dlg = Gtk.Dialog(title=f"Selective sync — pair #{pair_id}",
+                         transient_for=self.win, modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                        "Save", Gtk.ResponseType.OK)
+        dlg.set_default_size(520, 440)
+        box = dlg.get_content_area()
+
+        radio_all = Gtk.RadioButton.new_with_label_from_widget(
+            None, "Sync everything in the Drive folder")
+        box.pack_start(radio_all, False, False, 4)
+        radio_pick = Gtk.RadioButton.new_with_label_from_widget(
+            radio_all, "Only the chosen subfolders")
+        if stored:
+            radio_pick.set_active(True)
+        box.pack_start(radio_pick, False, False, 4)
+
+        sel_store = Gtk.ListStore(bool, str)
+        view = Gtk.TreeView(model=sel_store)
+        cell_toggle = Gtk.CellRendererToggle()
+        cell_toggle.connect("toggled", self._on_scope_toggled, sel_store)
+        col_check = Gtk.TreeViewColumn("Sync", cell_toggle, active=0)
+        view.append_column(col_check)
+        cell_text = Gtk.CellRendererText()
+        col_name = Gtk.TreeViewColumn("Subfolder", cell_text, text=1)
+        view.append_column(col_name)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(view)
+        scroll.set_vexpand(True)
+        box.pack_start(scroll, True, True, 4)
+
+        box.pack_start(self._dim_label(
+            "Files directly in the Drive folder always sync. Unchosen "
+            "subfolders stay on Drive and on disk untouched — choosing one "
+            "downloads it on the next pass. Nothing is ever deleted by "
+            "narrowing the scope."), False, False, 4)
+
+        state = {"open": True, "loading": False}
+
+        def set_sensitive():
+            view.set_sensitive(radio_pick.get_active())
+
+        radio_pick.connect("toggled", lambda _r: set_sensitive())
+
+        def work():
+            try:
+                return folders_for_parent(
+                    self._drive_for(pair["account_id"]), pair["remote_id"])
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def done(res):
+            if not state["open"]:
+                return
+            state["loading"] = False
+            if isinstance(res, dict):        # error marker from work()
+                self._error(f"Drive listing failed — {res.get('error', '?')}")
+                return
+            for f in sorted(res, key=lambda x: x["name"].lower()):
+                chosen = any(p == f["name"] or p.startswith(f["name"] + "/")
+                             for p in stored)
+                sel_store.append([chosen, f["name"]])
+            set_sensitive()
+
+        state["loading"] = True
+        self._bg(work, done)
+
+        dlg.show_all()
+        set_sensitive()
+        while True:
+            resp = dlg.run()
+            if resp != Gtk.ResponseType.OK:
+                break
+            if radio_pick.get_active():
+                chosen = [row[1] for row in sel_store if row[0]]
+                if not chosen:
+                    self._error("Pick at least one subfolder, or switch "
+                                "back to \u201cSync everything\u201d.")
+                    continue
+                self.store.update_pair(pair_id, include_patterns=chosen)
+                self.store.log(pair_id, "pair-scope", "",
+                               "mirroring subfolders: " + ", ".join(chosen))
+            else:
+                self.store.update_pair(pair_id, include_patterns=[])
+                self.store.log(pair_id, "pair-scope", "",
+                               "scope reset: mirroring everything")
+            self._refresh_pairs()
+            break
+        state["open"] = False
+        dlg.destroy()
+
+    @staticmethod
+    def _on_scope_toggled(_cell, path_str, store):
+        row = store[path_str]
+        row[0] = not row[0]
+
+    # ---- Drive tab (on-demand downloads) ------------------------------
+    def _drive_tab(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      border_width=6)
+        box.pack_start(self._dim_label(
+            "Everything in your Drive, downloadable on demand — like a "
+            "virtual drive without the mount. Nothing here touches your "
+            "sync pairs: chosen files land exactly where you point them."),
+            False, False, 0)
+
+        top = Gtk.Box(spacing=6)
+        top.pack_start(Gtk.Label(label="Account:"), False, False, 0)
+        self.drive_acc_combo = Gtk.ComboBoxText()
+        for a in self.store.accounts():
+            self.drive_acc_combo.append_text(f"#{a['id']}  {a['email']}")
+        if self.store.accounts():
+            self.drive_acc_combo.set_active(0)
+        self.drive_acc_combo.connect("changed",
+                                     lambda _c: self._drive_refresh())
+        top.pack_start(self.drive_acc_combo, False, False, 0)
+        btn_refresh = Gtk.Button(label="Refresh")
+        btn_refresh.connect("clicked", lambda _b: self._drive_refresh())
+        top.pack_start(btn_refresh, False, False, 0)
+        box.pack_start(top, False, False, 0)
+
+        self.drive_crumb = self._dim_label("My Drive")
+        box.pack_start(self.drive_crumb, False, False, 0)
+
+        # hidden columns carry id, mimeType and the raw byte size so a
+        # selected row can be downloaded without re-querying Drive
+        self.drive_store, self.drive_view, self.drive_scroll = _list_view(
+            ["Name", "Kind", "Size", "Modified"],
+            (str, str, str, str, str, str, str))
+        self.drive_view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
+        self.drive_view.connect("row-activated", self._on_drive_row_activated)
+        box.pack_start(self.drive_scroll, True, True, 0)
+
+        # live download strip (spinner + one line): an on-demand download
+        # must never be silent — the old build only blinked the headerbar
+        # subtitle, so a running download looked like a frozen app
+        prog = Gtk.Box(spacing=8)
+        self.drive_spinner = Gtk.Spinner()
+        prog.pack_start(self.drive_spinner, False, False, 0)
+        self.drive_prog = Gtk.Label(label="")
+        self.drive_prog.set_xalign(0.0)
+        self.drive_prog.set_ellipsize(Pango.EllipsizeMode.END)
+        self.drive_prog.get_style_context().add_class("drive-prog")
+        prog.pack_start(self.drive_prog, True, True, 0)
+        box.pack_start(prog, False, False, 0)
+
+        row = Gtk.Box(spacing=6)
+        btn_up = Gtk.Button(label="Up one level")
+        btn_up.connect("clicked", lambda _b: self._drive_up())
+        row.pack_start(btn_up, False, False, 0)
+        btn_selall = Gtk.Button(label="Select all")
+        btn_selall.connect(
+            "clicked",
+            lambda _b: self.drive_view.get_selection().select_all())
+        row.pack_start(btn_selall, False, False, 0)
+        btn_dl = Gtk.Button(label="Download selected\u2026")
+        btn_dl.get_style_context().add_class("suggested-action")
+        btn_dl.connect("clicked", self._on_drive_download_selected)
+        row.pack_start(btn_dl, False, False, 0)
+        btn_dlf = Gtk.Button(label="Download this folder\u2026")
+        btn_dlf.connect("clicked", self._on_drive_download_folder)
+        row.pack_start(btn_dlf, False, False, 0)
+        box.pack_start(row, False, False, 0)
+
+        # busy counts RUNNING download jobs (not a bool): downloads may be
+        # started concurrently and no click is ever silently swallowed
+        self._drive_state = {"stack": [("root", "My Drive", "My Drive")],
+                             "loading": False, "open": True, "busy": 0,
+                             "loaded": False}
+        # lazy: list Drive only when the user first opens the tab, so a
+        # stale token or offline network never pops a dialog at launch
+        self.nb.connect("switch-page", self._on_nb_switch)
+        return _card(box)
+
+    def _on_nb_switch(self, _nb, _page, page_num):
+        if page_num == PAGE_DRIVE and not self._drive_state["loaded"]:
+            self._drive_state["loaded"] = True
+            self._drive_load()
+
+    def _drive_account_id(self):
+        accounts = self.store.accounts()
+        if not accounts:
+            return None
+        idx = self.drive_acc_combo.get_active()
+        return accounts[idx if idx >= 0 else 0]["id"]
+
+    # ---- on-demand download progress strip --------------------------
+    def _drive_prog_show(self, text, cls=""):
+        """Update the Drive tab's live status line (GTK thread)."""
+        ctx = self.drive_prog.get_style_context()
+        for c in ("ok", "err"):
+            ctx.remove_class(c)
+        if cls:
+            ctx.add_class(cls)
+        self.drive_prog.set_text(text)
+
+    def _drive_job_started(self):
+        st = self._drive_state
+        st["busy"] += 1
+        if st["busy"] == 1:
+            self.drive_spinner.start()
+        self._drive_prog_show(
+            f"{st['busy']} download(s) running\u2026")
+
+    def _drive_job_ended(self, summary, cls="ok"):
+        st = self._drive_state
+        st["busy"] = max(0, st["busy"] - 1)
+        if st["busy"] == 0:
+            self.drive_spinner.stop()
+            self._drive_prog_show(summary, cls)
+        else:
+            self._drive_prog_show(
+                f"{summary}  \u00b7  {st['busy']} other download(s) "
+                "still running\u2026", cls)
+
+    def _drive_refresh(self):
+        self._drive_state["stack"] = [("root", "My Drive", "My Drive")]
+        self._drive_load()
+
+    def _drive_up(self):
+        st = self._drive_state
+        if st["loading"] or len(st["stack"]) < 2:
+            return
+        st["stack"].pop()
+        self._drive_load()
+
+    def _drive_load(self):
+        """Fill the Drive browser rows for the current stack position."""
+        st = self._drive_state
+        if not self.store.accounts():
+            self.drive_crumb.set_text("No account yet — authorize one on "
+                                      "the Accounts tab first.")
+            self.drive_store.clear()
+            return
+        fid, _name, path = st["stack"][-1]
+        self.drive_crumb.set_text(path)
+        self.drive_store.clear()
+        st["loading"] = True
+
+        def work():
+            try:
+                drive = self._drive_for(self._drive_account_id())
+                if fid == "shared":
+                    return drive.list_shared_folders()
+                return drive.list_children(fid)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def done(res):
+            if not st["open"]:
+                return
+            st["loading"] = False
+            if isinstance(res, dict):        # error marker from work()
+                # shown in the list area, not a modal: a broken token or
+                # offline network must not hijack the app at tab switch
+                self.drive_crumb.set_text(
+                    f"Drive listing failed — {res.get('error', '?')}")
+                return
+            rows = ([{"id": "shared", "name": "Shared with me",
+                      "mimeType": "application/vnd.google-apps.folder"}]
+                    if fid == "root" else [])
+            entries = rows + sorted(res, key=lambda x: (
+                0 if x.get("mimeType") == "application/vnd.google-apps.folder"
+                or (x.get("shortcutDetails") or {}).get("targetMimeType")
+                == "application/vnd.google-apps.folder" else 1,
+                x.get("name", "").lower()))
+            for item in entries:
+                self.drive_store.append(_drive_row(item))
+
+        self._bg(work, done)
+
+    def _on_drive_row_activated(self, _view, treepath, _col):
+        st = self._drive_state
+        if st["loading"]:
+            return
+        row = self.drive_store[treepath]
+        name, kind, _size, _mod, fid = row[0], row[1], row[2], row[3], row[4]
+        if kind == "Folder":
+            if fid == "shared":
+                st["stack"].append(("shared", "Shared with me",
+                                    "Shared with me"))
+            else:
+                st["stack"].append((fid, name,
+                                    f"{st['stack'][-1][2]}/{name}"))
+            self._drive_load()
+            return
+        # double-click on a file = quick download to a picked destination
+        entry = {"id": fid, "name": name, "mimeType": row[5],
+                 "size": row[6]}
+        self._drive_download_entries([entry])
+
+    def _on_drive_download_selected(self, _btn):
+        st = self._drive_state
+        if st["loading"]:
+            return
+        model, paths = self.drive_view.get_selection().get_selected_rows()
+        entries, folders = [], 0
+        for path in paths:
+            row = self.drive_store[path]
+            if row[1] == "Folder":
+                folders += 1
+                continue
+            entries.append({"id": row[4], "name": row[0],
+                            "mimeType": row[5], "size": row[6]})
+        if folders:
+            self._info(f"{folders} folder(s) in the selection were skipped — "
+                       "use \u201cDownload this folder\u2026\u201d for those.")
+        if not entries:
+            if not folders:
+                self._info("Select files to download (or double-click one).")
+            return
+        self._drive_download_entries(entries)
+
+    def _drive_download_entries(self, entries):
+        """Pick destination(s) and fetch the given file entries on demand."""
+        if not self.store.accounts():
+            self._error("No account yet — authorize one on the Accounts "
+                        "tab first.")
+            return
+        if len(entries) == 1:
+            dlg = Gtk.FileChooserDialog(
+                title="Save file", transient_for=self.win, modal=True,
+                action=Gtk.FileChooserAction.SAVE)
+            dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                            "Save", Gtk.ResponseType.ACCEPT)
+            dlg.set_current_name(entries[0]["name"])
+            dlg.set_do_overwrite_confirmation(True)
+        else:
+            dlg = Gtk.FileChooserDialog(
+                title=f"Choose where to save {len(entries)} files",
+                transient_for=self.win, modal=True,
+                action=Gtk.FileChooserAction.SELECT_FOLDER)
+            dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                            "Select", Gtk.ResponseType.ACCEPT)
+        dest = dlg.get_filename() if dlg.run() == Gtk.ResponseType.ACCEPT \
+            else None
+        dlg.destroy()
+        if not dest:
+            return
+        acc_id = self._drive_account_id()
+        export_map = resolve_export_formats(self.cfg)
+        total = len(entries)
+        self.hb.set_subtitle(f"downloading {total} file(s)\u2026")
+        self._drive_job_started()
+
+        def work():
+            drive = self._drive_for(acc_id)
+            ok, failed = [], []
+            for i, entry in enumerate(entries, 1):
+                target = dest if len(entries) == 1 \
+                    else os.path.join(dest, entry["name"])
+                GLib.idle_add(self._drive_prog_show,
+                              f"downloading {i}/{total}: "
+                              f"{entry['name']}")
+                try:
+                    written = engine.download_item(drive, entry, target,
+                                                   export_map)
+                    ok.append(os.path.basename(written))
+                    self.store.log(None, "ondemand-download",
+                                   entry["name"],
+                                   f"saved to {os.path.dirname(written)}")
+                except engine.OnDemandSkip as exc:
+                    failed.append(str(exc))
+                    self.store.log(None, "ondemand-skip", entry["name"],
+                                   str(exc))
+                except Exception as exc:
+                    failed.append(f"{entry['name']}: {exc}")
+                    self.store.log(None, "ondemand-error", entry["name"],
+                                   str(exc), level="error")
+                GLib.idle_add(self._drive_prog_show,
+                              f"{len(ok)}/{total} done, "
+                              f"{len(failed)} failed so far\u2026")
+            return ok, failed
+
+        def done(result):
+            ok, failed = result
+            self._refresh_activity()
+            if failed and not ok:
+                summary = f"Download failed \u2014 {failed[0]}"
+                cls = "err"
+            elif failed:
+                summary = (f"Downloaded {len(ok)}, {len(failed)} failed "
+                           f"\u2192 {dest} (details in Activity)")
+                cls = "err"
+            else:
+                summary = f"Downloaded {len(ok)} file(s) \u2192 {dest}"
+                cls = "ok"
+            self.hb.set_subtitle(summary)
+            self._drive_job_ended(summary, cls)
+            if failed:
+                # failures stay silent otherwise — surface them modally
+                lines = ["Failed/skipped:\n  "
+                         + "\n  ".join(failed[:8])]
+                if ok:
+                    lines.insert(0, f"Downloaded {len(ok)} file(s) "
+                                    f"\u2192 {dest}")
+                self._info("\n\n".join(lines))
+
+        self._bg(work, done)
+
+    def _on_drive_download_folder(self, _btn):
+        st = self._drive_state
+        if st["loading"]:
+            return
+        fid, fname, fpath = st["stack"][-1]
+        if fid == "shared":
+            self._info("Open a concrete folder first (double-click one in "
+                       "\u201cShared with me\u201d).")
+            return
+        if not self.store.accounts():
+            self._error("No account yet — authorize one on the Accounts "
+                        "tab first.")
+            return
+        dlg = Gtk.FileChooserDialog(
+            title="Choose where to save the folder contents",
+            transient_for=self.win, modal=True,
+            action=Gtk.FileChooserAction.SELECT_FOLDER)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                        "Select", Gtk.ResponseType.ACCEPT)
+        dlg.set_current_name(fname)
+        dest = dlg.get_filename() if dlg.run() == Gtk.ResponseType.ACCEPT \
+            else None
+        dlg.destroy()
+        if not dest:
+            return
+        acc_id = self._drive_account_id()
+        export_map = resolve_export_formats(self.cfg)
+        self.hb.set_subtitle(f"downloading {fpath}…")
+        self._drive_job_started()
+
+        def ondemand_log(rel, message, level="info"):
+            self.store.log(None, "ondemand-error" if level == "error"
+                           else "ondemand-download", rel, message,
+                           level=level)
+
+        def ondemand_progress(done_count, total, rel, kind):
+            GLib.idle_add(self._drive_prog_show,
+                          f"downloading {fpath}: {done_count}/{total}"
+                          f" — {rel}")
+
+        def work():
+            drive = self._drive_for(acc_id)
+            return engine.download_tree(
+                drive, fid, dest, export_map=export_map,
+                concurrency=max(1, _cfg_int(self.cfg,
+                                            "transfer_concurrency", 4)),
+                log=ondemand_log, progress=ondemand_progress)
+
+        def done(stats):
+            summary = (f"Downloaded {stats['downloaded']} file(s) "
+                       f"({_drive_bytes(stats['bytes'])}), skipped "
+                       f"{stats['skipped']}, errors {stats['errors']} "
+                       f"— {dest}")
+            cls = "err" if (stats["errors"] and not stats["downloaded"]) \
+                else "ok"
+            self.hb.set_subtitle(summary)
+            self._drive_job_ended(summary, cls)
+            self._refresh_activity()
+            self._info(
+                f"Downloaded {stats['downloaded']} file(s) "
+                f"({_drive_bytes(stats['bytes'])}), skipped "
+                f"{stats['skipped']}, errors {stats['errors']}.\n"
+                f"Destination: {dest}")
+
+        self._bg(work, done)
 
     # ---- Activity tab -------------------------------------------------
     def _activity_tab(self):
@@ -728,7 +1300,7 @@ class DesktopApp:
         row.pack_start(btn, False, False, 0)
         row.pack_start(Gtk.Label(label="Interval (s):"), False, False, 0)
         self.spin = Gtk.SpinButton.new_with_range(5, 86400, 5)
-        self.spin.set_value(self.cfg.get("sync_interval", 30))
+        self.spin.set_value(_cfg_int(self.cfg, "sync_interval", 30))
         row.pack_start(self.spin, False, False, 0)
         apply_btn = Gtk.Button(label="Apply")
         apply_btn.connect("clicked", self._on_apply_interval)
@@ -950,6 +1522,9 @@ class DesktopApp:
 
     def show(self):
         self.win.show_all()
+        # set_current_page only works once the window is shown (GTK >=
+        # 3.24.49 ignores it pre-show) — apply the startup tab here
+        self.nb.set_current_page(self._startup_page)
 
 
 def _instance_lock():
@@ -983,12 +1558,52 @@ def _already_running_notice():
     dlg.destroy()
 
 
+def _launch_failure():
+    """The window could not be built: show why instead of dying silently.
+
+    Menu launches have no terminal, so a bare traceback would vanish
+    unseen. Print it, append it to gui-crash.log in the data dir and show
+    the tail in a dialog (best effort: without a display even that fails,
+    but the log file remains for 'drivesync doctor'-style debugging).
+    """
+    text = traceback.format_exc()
+    print(text, file=sys.stderr)
+    log_path = None
+    try:
+        app_dir().mkdir(parents=True, exist_ok=True)
+        log_path = app_dir() / "gui-crash.log"
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"\n[{stamp}]\n{text}")
+    except OSError:
+        pass
+    tail = "\n".join(text.strip().splitlines()[-6:])
+    try:
+        dlg = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR,
+                                buttons=Gtk.ButtonsType.CLOSE,
+                                text="DriveSync could not start")
+        dlg.format_secondary_text(
+            tail + (f"\n\nFull traceback: {log_path}" if log_path else ""))
+        dlg.run()
+        dlg.destroy()
+    except Exception:
+        pass
+
+
 def run():
-    lock = _instance_lock()
-    if lock is None:
-        _apply_css()
-        _already_running_notice()
+    try:
+        lock = _instance_lock()
+    except Exception:
+        _launch_failure()
         return
     _apply_css()
-    DesktopApp().show()
+    if lock is None:
+        _already_running_notice()
+        return
+    try:
+        app = DesktopApp()
+    except Exception:
+        _launch_failure()
+        return
+    app.show()
     Gtk.main()

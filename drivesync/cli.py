@@ -19,7 +19,7 @@ import threading
 
 from . import __version__
 from .config import DEFAULT_CONFIG, app_dir, load_config, update_config
-from .db import Store, to_local
+from .db import Store, parse_include_patterns, to_local
 from .server import create_app
 
 
@@ -149,14 +149,18 @@ def cmd_pairs(args):
                               remote_path=args.remote_path or "",
                               direction=args.direction,
                               conflict_policy=args.conflict_policy
-                              or cfg["conflict_policy"])
+                              or cfg["conflict_policy"],
+                              include_patterns=args.include)
         print(f"added pair #{pair['id']}: {local} <-> {args.remote_path or args.remote_id}")
     elif args.action == "list":
         for p in store.pairs():
             state = "enabled" if p["enabled"] else "disabled"
+            scope = parse_include_patterns(p["include_patterns"])
+            scope_txt = ("everything" if not scope
+                         else f"subfolders: {', '.join(scope)}")
             print(f"[{p['id']}] {p['direction']:<13} {p['local_path']} <-> "
                   f"{p['remote_path'] or p['remote_id']} ({state}, "
-                  f"conflicts: {p['conflict_policy']})")
+                  f"conflicts: {p['conflict_policy']}, scope: {scope_txt})")
     elif args.action == "set":
         # argparse fills the optional `local` positional before `fields`,
         # so a lone 'pairs set key=value' lands in args.local — accept both
@@ -166,10 +170,11 @@ def cmd_pairs(args):
             k, _, v = kv.partition("=")
             if not k or k not in {"local_path", "remote_id", "remote_path",
                                   "direction", "conflict_policy", "enabled",
-                                  "allow_deletes"}:
+                                  "allow_deletes", "include_patterns"}:
                 sys.exit(f"error: unknown pair field '{kv}' — valid fields: "
                          "local_path, remote_id, remote_path, direction, "
-                         "conflict_policy, enabled, allow_deletes")
+                         "conflict_policy, enabled, allow_deletes, "
+                         "include_patterns")
             if k in ("enabled", "allow_deletes"):
                 v = 1 if v.lower() in ("1", "true", "yes") else 0
             fields[k] = v
@@ -383,6 +388,9 @@ def build_parser():
     s.add_argument("--direction", default="bidirectional",
                    choices=["bidirectional", "upload", "download"])
     s.add_argument("--conflict-policy", default=None)
+    s.add_argument("--include", default=None,
+                   help="selective sync: comma-separated subfolder paths to "
+                        "mirror, e.g. docs,photos (default: everything)")
     s.add_argument("--pair-id", type=int, help="pair id (for set/remove)")
     s.add_argument("fields", nargs="*", help="key=value fields (for set)")
     s.set_defaults(fn=cmd_pairs)

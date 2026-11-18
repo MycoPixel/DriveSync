@@ -34,6 +34,18 @@ RPMROOT="$SOURCES/rpmbuild"
 mkdir -p "$RPMROOT"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 cp "$SOURCES/drivesync-${VERSION}.tar.gz" "$RPMROOT/SOURCES/"
 cp "$HERE/drivesync.spec" "$RPMROOT/SPECS/"
+# the spec's Version tag must match drivesync/__init__.py: a stale
+# hardcode silently makes %prep look for the OLD tarball ("No such file
+# or directory") and names the built rpm wrongly. Inject it every build.
+sed -i "s/^Version:.*/Version:        ${VERSION}/" "$RPMROOT/SPECS/drivesync.spec"
+# the top %changelog entry should describe this release — warn, not fail
+TOPENTRY="$(sed -n 's/^\* .* - \([0-9][0-9.]*\)-1$/\1/p' \
+            "$RPMROOT/SPECS/drivesync.spec" | head -1)"
+if [ "$TOPENTRY" != "$VERSION" ]; then
+  echo "warning: spec %changelog top entry is ${TOPENTRY}-1 but the " \
+       "package version is ${VERSION}-1 — add a ${VERSION}-1 entry to " \
+       "packaging/drivesync.spec" >&2
+fi
 
 rpmbuild --define "_topdir $RPMROOT" -bb "$RPMROOT/SPECS/drivesync.spec"
 
