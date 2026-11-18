@@ -6,7 +6,7 @@
 # The package mirrors the .deb layout: python code under the site-packages
 # dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.3.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Google Drive sync client for Linux desktops
 
@@ -26,6 +26,10 @@ Requires:       python3-gobject
 Recommends:     python3-pystray
 Recommends:     libayatana-appindicator-gtk3
 Recommends:     python3-pillow
+# instant local-change sync (watch.py degrades to polling without it)
+Recommends:     python3-watchdog
+# desktop notifications for conflicts/errors while the window is hidden
+Recommends:     libnotify
 
 # python site-packages dir, computed on the build machine at spec-parse time
 # — avoids a hard dependency on python-rpm-macros (which ships
@@ -122,6 +126,14 @@ EOF
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.4.0-1
+- Instant local-change sync: inotify watcher (watchdog, optional) pokes
+  the worker so local edits push in ~1s instead of the scan interval
+- Desktop notifications for new conflicts/errors while the GUI is hidden
+- 'drivesync sync --full' re-lists Drive and rehashes local files
+- Bandwidth cap (bandwidth_limit_kb) and daily sync window (active_from/to)
+- doctor reports watchdog/libnotify availability
+
 * %{chlogdate} DriveSync contributors <drivesync@localhost> - 0.3.0-1
 - Friendlier CLI: bare 'drivesync' shows next steps; config/pairs validate
   input with actionable errors; 'sync' guides first-time users

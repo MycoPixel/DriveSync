@@ -7,7 +7,7 @@ exc.value.code (same convention as the gui-hint test).
 
 import pytest
 
-from drivesync.cli import _open_browser, main
+from drivesync.cli import _open_browser, build_parser, main
 
 
 @pytest.fixture
@@ -169,3 +169,28 @@ def test_worker_init_prunes_activity_log(tmp_path):
     Worker(s, {"sync_interval": 30})                # not started; init prunes
     assert s.count_events() == 1
     s.close()
+
+
+# ---- 0.4.0 additions ----------------------------------------------------
+def test_sync_full_flag_parses():
+    args = build_parser().parse_args(["sync", "--full", "--pair", "3"])
+    assert args.full and args.pair == 3
+
+
+def test_config_set_bandwidth(home, capsys):
+    main(["config", "set", "bandwidth_limit_kb=512"])
+    assert "saved: bandwidth_limit_kb = 512" in capsys.readouterr().out
+    from drivesync.config import load_config
+    assert load_config()["bandwidth_limit_kb"] == 512
+
+
+def test_config_rejects_negative_bandwidth(home):
+    with pytest.raises(SystemExit) as exc:
+        main(["config", "set", "bandwidth_limit_kb=-5"])
+    assert "unlimited" in str(exc.value.code)
+
+
+def test_config_rejects_bad_schedule(home):
+    with pytest.raises(SystemExit) as exc:
+        main(["config", "set", "active_from=8am"])
+    assert "HH:MM" in str(exc.value.code)

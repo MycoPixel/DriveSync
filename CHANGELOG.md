@@ -3,6 +3,30 @@
 All notable changes to DriveSync, newest first. Dates are release dates.
 Older entries below 0.2.1 are summarized from the git history.
 
+## [0.4.0] - 2026-11-18
+
+### Added
+- **Instant local-change sync**: the worker watches each pair's local tree
+  with inotify (watchdog) and pushes edits in about a second instead of
+  waiting for the scan interval. Optional dependency — without `watchdog`
+  the periodic scan still applies exactly as before
+  (`drivesync config set watch_enabled=false` disables it)
+- **Desktop notifications** in the tray-resident desktop app: new
+  conflicts/errors pop a libnotify notification while the window is hidden
+  (at most one per 5 minutes; anything already seen in the Activity tab
+  never repeats)
+- **`drivesync sync --full`**: re-list Drive and rehash local files even
+  when size+mtime look unchanged — the recovery for editors that save with
+  an unchanged mtime
+- **Bandwidth throttle**: `bandwidth_limit_kb` caps uploads + downloads
+  combined (token bucket; applies to downloads, uploads and Google Docs
+  exports); `0` = unlimited (default)
+- **Sync schedule window**: `active_from`/`active_to` (HH:MM) restrict
+  background passes to that window; overnight windows ("22:00"–"06:00")
+  work, and explicit `drivesync sync` runs are never schedule-blocked
+- `*.drivesync` temp files ignored by default (download scratch files no
+  longer poke the watcher)
+
 ## [0.3.0] - 2026-11-18
 
 ### Added

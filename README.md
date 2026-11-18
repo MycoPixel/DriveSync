@@ -28,6 +28,13 @@ tokens and files stay on your machine and talk to Google directly.
   auto-pruned (30 days, capped at 5,000 rows) so the state database stays small
 - **Background worker** on a timer + "Sync now" button; systemd user unit
   for autostart
+- **Instant local-change sync** — an inotify watcher (watchdog) pushes local
+  edits in about a second; polling remains the fallback, so nothing breaks
+  without it
+- **Desktop notifications** when new conflicts or errors arrive while the
+  desktop app is hidden to the tray
+- **Bandwidth cap + sync window** — limit transfers (`bandwidth_limit_kb`)
+  and restrict background syncing to a daily window (`active_from`/`active_to`)
 - **Local dashboard** at `http://127.0.0.1:5678` — bound to localhost only
 
 ## Requirements
@@ -42,8 +49,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.3.0-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.3.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.4.0-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.4.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -149,7 +156,7 @@ drivesync serve [--open]              dashboard + background worker
 drivesync auth                        authorize a Google account
 drivesync accounts list|remove
 drivesync pairs add|list|set|remove   manage sync pairs
-drivesync sync [--pair N]             run one sync pass now and exit
+drivesync sync [--pair N] [--full]    run one sync pass now and exit
 drivesync status                      accounts, pairs, recent activity
 drivesync config get|set              interval, conflict policy, ignores
 drivesync doctor                      sanity-check the installation
@@ -164,6 +171,9 @@ drivesync doctor                      sanity-check the installation
 | Ignore patterns | `*.tmp`, `*.swp`, … | Globs skipped on both sides |
 | Convert Google Docs | on | Native docs downloaded as Office files |
 | Incremental scan | on | 1–2 API calls per pass via the changes feed |
+| Watch local changes | on | Instant push via inotify (needs watchdog) |
+| Bandwidth limit | 0 (unlimited) | KB/s cap on uploads + downloads combined |
+| Sync window | always | `active_from`/`active_to` HH:MM; overnight works |
 | Server port | 5678 | Local dashboard port |
 
 ### Google Docs conversion
@@ -240,7 +250,9 @@ icon when pystray is installed (`sudo dnf install python3-pystray`). Closing
 the window only hides it — the tray icon stays, with **Open**, **Sync now**,
 **Pause/Resume** and **Quit**. Without pystray, closing the window exits the
 app. A second launch while it runs shows an "already running" notice instead
-of opening a duplicate.
+of opening a duplicate. While the window is hidden, new conflicts or errors
+surface as desktop notifications (libnotify, best-effort — without it the
+Activity tab is still the source of truth).
 
 ## Troubleshooting
 
@@ -274,14 +286,15 @@ the venv.
 
 ## Current limitations (honest list)
 
-- **Polling, not inotify** — changes are picked up on the next scan (default
-  30 s), not instantly
+- **Remote changes are polled** — local edits push instantly via the
+  inotify watcher, but changes made on Drive arrive on the next scan
+  (default 30 s)
 - **Google-native exports are re-downloaded in full** when the doc changes —
   a large Sheet edited in the browser transfers its whole export again
 - **Local mtimes must differ for change detection** — if an editor writes a
-  same-size file with the same mtime, run `drivesync sync` (or the dashboard)
-  after a `touch`-only save; a `--full` rehash mode is planned
-- No bandwidth throttling or end-to-end encryption
+  same-size file with the same mtime, run `drivesync sync --full` (re-lists
+  Drive and rehashes local files regardless of mtime)
+- No end-to-end encryption
 - The dashboard is localhost-only by design; don't expose it
 
 ## Development

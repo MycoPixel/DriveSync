@@ -1,3 +1,4 @@
 flask>=2.2
 requests>=2.28
+watchdog>=4.0        # instant local-change sync (missing is fine: polling applies)
 # optional (system tray icon): pystray pillow

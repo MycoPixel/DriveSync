@@ -2,6 +2,7 @@
 
 import threading
 import time
+from datetime import datetime
 
 try:
     import fcntl  # Unix only: cross-process sync lock
@@ -12,6 +13,35 @@ from . import engine
 from .auth import access_token, token_from_json
 from .config import app_dir
 from .drive import Drive
+from .limits import TokenBucket
+
+
+def _hhmm(s):
+    h, _, m = s.strip().partition(":")
+    return int(h) * 60 + int(m)
+
+
+def in_window(now_time, start_s, end_s):
+    """True when now_time is inside the optional HH:MM sync window.
+
+    Empty bounds are unbounded; start > end wraps past midnight; invalid
+    values degrade to 'always sync' rather than silently pausing forever.
+    """
+    try:
+        lo = _hhmm(start_s) if start_s else None
+        hi = _hhmm(end_s) if end_s else None
+    except ValueError:
+        return True
+    cur = now_time.hour * 60 + now_time.minute
+    if lo is None and hi is None:
+        return True
+    if lo is None:
+        return cur < hi
+    if hi is None:
+        return cur >= lo
+    if lo <= hi:
+        return lo <= cur < hi
+    return cur >= lo or cur < hi      # window spans midnight
 
 
 class Worker:
@@ -26,9 +56,13 @@ class Worker:
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name="drivesync-worker")
         self.status = {"running": False, "paused": False, "last_run": None,
-                       "last_error": None, "last_stats": None}
+                       "last_error": None, "last_stats": None,
+                       "waiting_until": None}
         self._lock = threading.Lock()
         self._lockfh = None
+        limit_kb = int(config.get("bandwidth_limit_kb", 0) or 0)
+        self.limiter = TokenBucket(limit_kb * 1024) if limit_kb > 0 else None
+        self._pending = set()           # pair ids requested via sync_now()
         # keep the activity log bounded: every pass logs a summary row, so a
         # service at the default interval writes ~3k rows/day. Best-effort —
         # a broken store must not stop the worker from starting.
@@ -63,8 +97,9 @@ class Worker:
 
     def sync_now(self, pair_id=None):
         """Request an immediate sync pass (optionally one pair only)."""
+        if pair_id is not None:
+            self._pending.add(pair_id)
         self.wake.set()
-        self._pending_pair = pair_id
 
     def make_drive(self, account_row):
         token = token_from_json(account_row["token_json"])
@@ -75,10 +110,16 @@ class Worker:
             self.store.update_account_tokens(account_row["id"], token)
             return tok
 
-        return Drive(provider)
+        return Drive(provider, limiter=self.limiter)
 
-    def run_pass(self, pair_id=None):
-        """One sync sweep across all enabled pairs (or a single pair)."""
+    def run_pass(self, pair_id=None, force_full=False):
+        """One sync sweep across all enabled pairs (or the given pair/ids).
+
+        pair_id: None (all pairs), one id, or a list of ids (inotify bursts
+        coalesced by the watcher). force_full re-lists Drive and rehashes
+        local files even when size+mtime look unchanged — the recovery for
+        same-mtime saves ('drivesync sync --full').
+        """
         with self._lock:
             if self.status["running"]:
                 return
@@ -89,8 +130,9 @@ class Worker:
             return
         try:
             pairs = self.store.pairs(enabled_only=True)
-            if pair_id is not None:
-                pairs = [p for p in pairs if p["id"] == pair_id]
+            if pair_id:
+                wanted = {pair_id} if isinstance(pair_id, int) else set(pair_id)
+                pairs = [p for p in pairs if p["id"] in wanted]
             groups = {}
             for p in pairs:
                 groups.setdefault(p["account_id"], []).append(p)
@@ -110,7 +152,8 @@ class Worker:
                 for pair in groups[acc_id]:
                     try:
                         stats, ok = engine.sync_pair(
-                            self.store, self.config, pair, drive, changes=feed)
+                            self.store, self.config, pair, drive,
+                            force_full=force_full, changes=feed)
                     except Exception as exc:  # keep the worker alive no matter what
                         self.status["last_error"] = str(exc)
                         self.store.log(pair["id"], "worker-error", "",
@@ -203,6 +246,14 @@ class Worker:
             self.wake.clear()
             if self.stop_flag.is_set():
                 break
-            pair_id = getattr(self, "_pending_pair", None)
-            self._pending_pair = None
-            self.run_pass(pair_id)
+            ids = list(self._pending)
+            self._pending.clear()
+            if not in_window(datetime.now().time(),
+                             self.config.get("active_from", ""),
+                             self.config.get("active_to", "")):
+                self.status["waiting_until"] = \
+                    self.config.get("active_to") \
+                    or self.config.get("active_from") or None
+                continue
+            self.status["waiting_until"] = None
+            self.run_pass(ids or None)

@@ -30,6 +30,8 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
+from . import notify
+
 from . import __version__  # noqa: E402
 from .auth import access_token, interactive_auth, token_from_json, whoami  # noqa: E402
 from .config import app_dir, load_config, update_config  # noqa: E402
@@ -210,6 +212,7 @@ class DesktopApp:
         else:
             self.nb.set_current_page(3)
         self.tray = self._start_tray()
+        self._notify_gate = notify.Gate(lambda: self.win.get_visible())
         GLib.timeout_add_seconds(3, self._tick)
 
     # ---- small helpers --------------------------------------------
@@ -900,7 +903,19 @@ class DesktopApp:
         if self._closing:
             return False
         self._refresh_activity()
+        self._check_problems()
         return True
+
+    def _check_problems(self):
+        """Desktop notification when new conflicts/errors arrive while the
+        window is hidden to the tray. Best-effort libnotify (no session bus
+        or missing GIR just disables it); drivesync.notify.Gate keeps the
+        rate sane and never repeats what the user already saw in the app."""
+        rows = self.store.recent_events(limit=50)
+        body = self._notify_gate.consider(notify.problems(rows),
+                                          rows[0]["ts"] if rows else None)
+        if body:
+            notify.send("DriveSync — sync problems", body)
 
     # ---- lifecycle ----------------------------------------------------
     def _on_delete(self, _win, _event):

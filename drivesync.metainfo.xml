@@ -36,6 +36,16 @@
   <url type="bugtracker">https://github.com/MycoPixel/DriveSync/issues</url>
   <icon type="stock">drivesync</icon>
   <releases>
+    <release version="0.4.0" date="2026-11-18">
+      <description>
+        <p>
+          Instant local-change sync via inotify (watchdog), desktop
+          notifications for conflicts and errors while the window is
+          hidden, a --full rehash mode for same-mtime saves, a bandwidth
+          cap and a daily sync window.
+        </p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-18">
       <description>
         <p>

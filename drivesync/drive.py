@@ -166,10 +166,15 @@ def _explain(resp):
 class Drive:
     """A Drive client bound to one account's access token."""
 
-    def __init__(self, token_provider, page_size=1000):
-        """token_provider: callable returning a bearer token string."""
+    def __init__(self, token_provider, page_size=1000, limiter=None):
+        """token_provider: callable returning a bearer token string.
+
+        limiter: optional limits.TokenBucket capping transfer speed on
+        uploads and downloads combined (None = unlimited).
+        """
         self.token_provider = token_provider
         self.page_size = page_size
+        self.limiter = limiter
         self._session = requests.Session()
 
     def _headers(self, extra=None):
@@ -321,7 +326,7 @@ class Drive:
                         "fields": "id,name,mimeType,version,md5Checksum,"
                                   "size,modifiedTime"},
                 headers={"Content-Type": MULTIPART_CT},
-                data=_multipart(meta, fh, mime))
+                data=_multipart(meta, fh, mime, self.limiter))
         return resp.json()
 
     def update_content(self, file_id, local_path):
@@ -333,7 +338,7 @@ class Drive:
                 params={"uploadType": "media",
                         "fields": "id,version,md5Checksum,size,modifiedTime"},
                 headers={"Content-Type": mime},
-                data=fh)
+                data=_Throttled(fh, self.limiter) if self.limiter else fh)
         return resp.json()
 
     def rename(self, file_id, new_name, add_parent=None, remove_parent=None):
@@ -376,6 +381,8 @@ class Drive:
                 resp.raise_for_status()
                 with open(tmp, "wb") as out:
                     for chunk in resp.iter_content(chunk_size=1 << 16):
+                        if self.limiter:
+                            self.limiter.consume(len(chunk))
                         out.write(chunk)
             os.replace(tmp, dest_path)
         finally:
@@ -396,7 +403,7 @@ _MULTIPART_BOUNDARY = "drivesync2938jk"
 MULTIPART_CT = f"multipart/related; boundary={_MULTIPART_BOUNDARY}"
 
 
-def _multipart(meta, fh, mime):
+def _multipart(meta, fh, mime, limiter=None):
     """Build a multipart/related body (metadata + media) for uploads."""
     boundary = _MULTIPART_BOUNDARY
     meta_bytes = (json_dumps(meta)).encode("utf-8")
@@ -406,14 +413,15 @@ def _multipart(meta, fh, mime):
            (f"\r\n--{boundary}\r\n"
             f"Content-Type: {mime}\r\n\r\n").encode("utf-8")
     tail = f"\r\n--{boundary}--".encode("utf-8")
-    return _GeneratorBody(head, fh, tail)
+    return _GeneratorBody(head, fh, tail, limiter)
 
 
 class _GeneratorBody:
     """Streaming iterable body so large files are not read fully into RAM."""
 
-    def __init__(self, head, fh, tail):
+    def __init__(self, head, fh, tail, limiter=None):
         self.head, self.fh, self.tail = head, fh, tail
+        self.limiter = limiter
 
     def __iter__(self):
         yield self.head
@@ -421,8 +429,25 @@ class _GeneratorBody:
             chunk = self.fh.read(1 << 16)
             if not chunk:
                 break
+            if self.limiter:
+                self.limiter.consume(len(chunk))
             yield chunk
         yield self.tail
+
+
+class _Throttled:
+    """read()-only wrapper that bills every byte to the limiter, so plain
+    file-object upload bodies (requests streams them) throttle too."""
+
+    def __init__(self, fh, limiter):
+        self.fh = fh
+        self.limiter = limiter
+
+    def read(self, n=-1):
+        data = self.fh.read(n)
+        if data and self.limiter:
+            self.limiter.consume(len(data))
+        return data
 
 
 def json_dumps(obj):

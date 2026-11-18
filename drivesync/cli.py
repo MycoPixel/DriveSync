@@ -5,7 +5,8 @@
   drivesync auth            authorize a Google account from the terminal
   drivesync accounts        list / remove accounts
   drivesync pairs           add / list / edit / remove sync pairs
-  drivesync sync            run one sync pass now (optionally one pair)
+  drivesync sync            run one sync pass now (optionally one pair; --full
+                            rehashes files saved with an unchanged mtime)
   drivesync status          show accounts, pairs and recent activity
   drivesync config          get / set settings
   drivesync doctor          sanity-check the installation
@@ -51,6 +52,11 @@ def cmd_serve(args):
         from . import tray
         _, tray_msg = tray.start(worker, url)
         print(f"  {tray_msg}")
+    watch_handle = None
+    if cfg.get("watch_enabled", True):
+        from . import watch
+        watch_handle, watch_msg = watch.start(worker, store, cfg)
+        print(f"  {watch_msg}")
     try:
         run_server(store, worker, host=args.host, port=args.port)
     except OSError as exc:
@@ -68,6 +74,8 @@ def cmd_serve(args):
     except KeyboardInterrupt:
         pass
     finally:
+        if watch_handle:
+            watch_handle.stop()
         worker.stop()
         store.close()
 
@@ -194,7 +202,7 @@ def cmd_sync(args):
         store.close()
         return
     worker = Worker(store, load_config())
-    stats, ok = worker.run_pass(args.pair)  # one pass, no loop
+    stats, ok = worker.run_pass(args.pair, force_full=args.full)  # one pass
     pairs = [store.pair(args.pair)] if args.pair else store.pairs()
     _ = pairs
     worker.status  # noqa: B018 — populated by run_pass
@@ -243,11 +251,12 @@ def cmd_config(args):
             sys.exit("error: unknown setting '{}' — valid settings:\n  {}".format(
                 key, "\n  ".join(sorted(DEFAULT_CONFIG))))
         try:
-            if key == "sync_interval":
+            if key in ("sync_interval", "bandwidth_limit_kb"):
                 value = int(value)
             if key == "ignore_patterns":
                 value = [v.strip() for v in value.split(",") if v.strip()]
-            if key in ("tray_enabled", "convert_google_docs", "incremental_scan"):
+            if key in ("tray_enabled", "convert_google_docs",
+                       "incremental_scan", "watch_enabled"):
                 value = value.strip().lower() in ("1", "true", "yes", "on")
             cfg = update_config(**{key: value})
         except ValueError as exc:
@@ -274,6 +283,19 @@ def cmd_doctor(args):
     except ImportError:
         ok = False
         print("  requests   : MISSING (pip install requests)")
+    try:
+        import watchdog  # noqa: F401
+        print("  watchdog   : OK (instant local-change sync)")
+    except ImportError:
+        print("  watchdog   : optional — install python3-watchdog for "
+              "instant local-change sync")
+    try:
+        from . import notify
+        state = "OK (desktop notifications)" if notify.available() \
+            else "unavailable — desktop notifications disabled"
+        print(f"  libnotify  : {state}")
+    except Exception:
+        print("  libnotify  : unavailable — desktop notifications disabled")
     cfg = load_config()
     has_client = bool(cfg.get("client_id")) or bool(os.environ.get("GOOGLE_CLIENT_ID"))
     print(f"  oauth client: {'configured' if has_client else 'NOT set (see README)'}")
@@ -367,6 +389,9 @@ def build_parser():
 
     s = sub.add_parser("sync", help="run one sync pass and exit")
     s.add_argument("--pair", type=int, default=None)
+    s.add_argument("--full", action="store_true",
+                   help="re-list Drive and rehash local files — the recovery "
+                        "for editors that save with an unchanged mtime")
     s.set_defaults(fn=cmd_sync)
 
     s = sub.add_parser("status", help="show summary")

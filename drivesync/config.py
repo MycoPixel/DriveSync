@@ -11,7 +11,12 @@ DEFAULT_CONFIG = {
     "delete_safety_limit": 10,    # max deletes per pair per pass; 0 = unlimited
     "transfer_concurrency": 4,    # parallel uploads/downloads per pass (1-16)
     "tray_enabled": True,         # system tray icon (needs pystray + pillow)
-    "ignore_patterns": ["*.tmp", "*.swp", "*.partial", ".DS_Store", "Thumbs.db"],
+    "watch_enabled": True,        # instant local-change sync (needs watchdog)
+    "bandwidth_limit_kb": 0,      # uploads+downloads cap in KB/s; 0 = unlimited
+    "active_from": "",            # HH:MM — background sync only inside the
+    "active_to": "",              # window (empty = always; may span midnight)
+    "ignore_patterns": ["*.tmp", "*.swp", "*.partial", "*.drivesync",
+                        ".DS_Store", "Thumbs.db"],
     "server_port": 5678,
     "auth_port": 53137,           # loopback port for the OAuth redirect
     "client_id": "",              # user's own Google OAuth desktop client
@@ -21,6 +26,15 @@ DEFAULT_CONFIG = {
     "incremental_scan": True,     # use the Drive changes feed instead of
                                   # re-listing the whole tree every pass
 }
+
+
+def _valid_hhmm(v):
+    """'HH:MM' with 0<=HH<=23, 0<=MM<=59."""
+    try:
+        h, _, m = v.partition(":")
+        return 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+    except ValueError:
+        return False
 
 
 def app_dir() -> Path:
@@ -88,6 +102,21 @@ def save_config(cfg: dict) -> dict:
     merged["transfer_concurrency"] = conc
     merged["tray_enabled"] = bool(merged["tray_enabled"])
     merged["incremental_scan"] = bool(merged["incremental_scan"])
+    merged["watch_enabled"] = bool(merged["watch_enabled"])
+
+    try:
+        bw = int(merged["bandwidth_limit_kb"])
+    except (TypeError, ValueError):
+        raise ValueError("bandwidth_limit_kb must be an integer (KB/s)")
+    if bw < 0:
+        raise ValueError("bandwidth_limit_kb must be 0 (unlimited) or higher")
+    merged["bandwidth_limit_kb"] = bw
+
+    for k in ("active_from", "active_to"):
+        v = str(merged[k] or "").strip()
+        if v and not _valid_hhmm(v):
+            raise ValueError(f"{k} must be empty or HH:MM (e.g. 08:00)")
+        merged[k] = v
 
     if not isinstance(merged["ignore_patterns"], list) or \
             not all(isinstance(x, str) for x in merged["ignore_patterns"]):
