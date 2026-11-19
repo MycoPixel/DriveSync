@@ -91,7 +91,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Installed-Size: ${SIZE_KB}
-Depends: python3 (>= 3.9), python3-flask (>= 2.2), python3-requests (>= 2.28), python3-gi
+Depends: python3 (>= 3.9), python3-flask (>= 2.2), python3-requests (>= 2.28), python3-gi, gir1.2-gtk-3.0
 Recommends: python3-pystray, gir1.2-ayatanaappindicator3-0.1, python3-pil, python3-watchdog, gir1.2-notify-0.7
 Suggests: systemd
 Maintainer: DriveSync contributors <drivesync@localhost>

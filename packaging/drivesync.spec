@@ -7,7 +7,10 @@
 # dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
 Version:        0.5.1
-Release:        1%{?dist}
+# No distro release suffix: this is a noarch, pure-python package and a
+# host-specific tag made the artifact name differ per build machine for no
+# benefit. Keep release/name stable everywhere.
+Release:        1
 Summary:        Google Drive sync client for Linux desktops
 
 License:        MIT
@@ -21,6 +24,9 @@ Requires:       python3-flask >= 2.2
 Requires:       python3-requests >= 2.28
 # native desktop UI ('drivesync gui', also the menu launcher target)
 Requires:       python3-gobject
+# Gtk 3 typelib needed by PyGObject (python3-gobject does not pull it on
+# every rpm distro, and pip cannot provide it)
+Requires:       gtk3
 # optional tray icon support (pystray + pillow drive the icon;
 # ayatana-appindicator is the backend it talks to on GNOME/KDE)
 Recommends:     python3-pystray
@@ -35,7 +41,10 @@ Recommends:     libnotify
 # — avoids a hard dependency on python-rpm-macros (which ships
 # %{python3_sitelib} but is not installed on every rpm distro).
 # /usr/bin/python3 pins the *system* interpreter even if a venv is active.
-%global py_purelib %(/usr/bin/python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+# Explicit base/platbase keep the path under /usr/lib even when the build
+# host's python was configured with a /usr/local prefix (otherwise the
+# package would install to /usr/local/lib and the launcher could not see it).
+%global py_purelib %(/usr/bin/python3 -c "import sysconfig; print(sysconfig.get_path('purelib', vars={'base': '/usr', 'platbase': '/usr'}))")
 %global appdir %{py_purelib}/drivesync
 # some minimal build environments lack systemd-rpm-macros too
 %{!?_userunitdir:%global _userunitdir /usr/lib/systemd/user}

@@ -61,7 +61,9 @@ function loadTab(name) {
 }
 
 /* ---------- state ---------- */
-let state = { accounts: [], pairs: [], picker: { stack: [], current: { id: "root", name: "My Drive" } } };
+let state = { accounts: [], pairs: [], newScope: [],
+  picker: { stack: [], current: { id: "root", name: "My Drive" } },
+  scope: { accountId: null, remoteId: null, selected: [], target: "new" } };
 
 /* ---------- dashboard ---------- */
 async function loadDashboard() {
@@ -138,7 +140,10 @@ async function loadAccounts() {
         loadAccounts();
       }));
     const sel = $("#pairAccount");
+    const prev = sel.value;
     sel.innerHTML = accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`).join("");
+    // keep the user's choice across refreshes instead of snapping to #1
+    if (prev && accounts.some((a) => String(a.id) === prev)) sel.value = prev;
   } catch (e) { /* ignore */ }
 }
 
@@ -167,21 +172,27 @@ async function loadPairs() {
     const { pairs } = await api("/api/pairs");
     state.pairs = pairs;
     $("#pairsTable tbody").innerHTML = pairs.length
-      ? pairs.map((p) => `<tr>
+      ? pairs.map((p) => {
+        const scopeTxt = (p.include_patterns && p.include_patterns.length)
+          ? `${p.include_patterns.length} subfolder(s)` : "everything";
+        return `<tr>
           <td>#${p.id}</td><td>${esc(p.local_path)}</td>
           <td>${esc(p.remote_path || p.remote_id)}</td><td>${esc(p.direction)}</td>
           <td>${esc(p.conflict_policy)}</td>
           <td>${p.allow_deletes
             ? `<button class="btn ghost small" data-nodel="${p.id}" title="Deletions are allowed (files go to trash)">On</button>`
             : `<button class="btn ghost small" data-yodel="${p.id}" title="Deletions blocked — files are kept on both sides">Off</button>`}</td>
+          <td>${scopeTxt}
+            <button class="btn ghost small" data-scope="${p.id}" data-account="${p.account_id}" data-remote="${esc(p.remote_id)}">Edit</button></td>
           <td>${p.enabled
             ? `<button class="btn ghost small" data-pause="${p.id}">Pause</button>`
             : `<button class="btn ghost small" data-resume="${p.id}">Resume</button>`}</td>
           <td>
             <button class="btn ghost small" data-sync="${p.id}">Sync</button>
             <button class="btn danger small" data-del="${p.id}">Remove</button>
-          </td></tr>`).join("")
-      : '<tr><td colspan="8" class="muted">No sync pairs yet.</td></tr>';
+          </td></tr>`;
+      }).join("")
+      : '<tr><td colspan="9" class="muted">No sync pairs yet.</td></tr>';
 
     document.querySelectorAll("[data-nodel],[data-yodel]").forEach((b) =>
       b.addEventListener("click", async () => {
@@ -201,6 +212,12 @@ async function loadPairs() {
         await api(`/api/pairs/${id}`, { method: "PATCH", body: { enabled: b.dataset.resume ? 1 : 0 } });
         loadPairs();
       }));
+    document.querySelectorAll("[data-scope]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const pair = state.pairs.find((p) => p.id === +b.dataset.scope);
+        openScope(+b.dataset.account, b.dataset.remote,
+                  (pair && pair.include_patterns) || [], b.dataset.scope);
+      }));
     bindSyncButtons();
   } catch (e) { /* ignore */ }
 }
@@ -219,9 +236,14 @@ $("#pairForm").addEventListener("submit", async (e) => {
         remote_path: $("#pairRemoteName").value,
         direction: $("#pairDirection").value,
         conflict_policy: $("#pairPolicy").value,
+        include_patterns: state.newScope,
       },
     });
-    setMsg("#pairFormMsg", "Pair added — first sync starts in the background.", "ok");
+    const scopeMsg = state.newScope.length
+      ? ` Only ${state.newScope.length} chosen subfolder(s) will sync.` : "";
+    setMsg("#pairFormMsg", "Pair added — first sync starts in the background." + scopeMsg, "ok");
+    state.newScope = [];
+    $("#pairScopeSummary").value = "Everything in this folder";
     loadPairs();
   } catch (err) { setMsg("#pairFormMsg", err.message, "err"); }
 });
@@ -241,9 +263,94 @@ $("#pickerUp").addEventListener("click", () => {
   if (prev) { state.picker.current = prev; renderPicker(); }
 });
 $("#pickerChoose").addEventListener("click", () => {
-  $("#pairRemoteId").value = state.picker.current.id;
-  $("#pairRemoteName").value = state.picker.current.name;
+  setPairRemote(state.picker.current.id, state.picker.current.name);
   $("#pickerBackdrop").classList.add("hidden");
+});
+
+/* ---------- selective-sync scope ---------- */
+function setPairRemote(id, name) {
+  $("#pairRemoteId").value = id;
+  $("#pairRemoteName").value = name;
+  $("#pairScopeBtn").disabled = !id;
+  state.newScope = [];
+  $("#pairScopeSummary").value = id
+    ? "Everything in this folder" : "Pick a Drive folder first";
+}
+
+async function openScope(accountId, remoteId, selected, target) {
+  if (!remoteId) { toast("Pick a Drive folder first."); return; }
+  state.scope = { accountId, remoteId, selected: [...selected], target };
+  $("#scopeTitle").textContent = target === "new"
+    ? "Choose subfolders to sync"
+    : `Subfolders — pair #${target}`;
+  $("#scopeBackdrop").classList.remove("hidden");
+  $("#scopeList").innerHTML = '<p class="muted">loading…</p>';
+  $("#scopeSave").disabled = true;
+  try {
+    const { folders } = await api(
+      `/api/drive/${accountId}/folders?parent=${encodeURIComponent(remoteId)}`);
+    $("#scopeList").innerHTML = folders.length
+      ? folders.map((f) => {
+        const on = selected.some((p) => p === f.name
+          || p.startsWith(f.name + "/"));
+        return `<label class="picker-item"><span>
+          <input type="checkbox" value="${esc(f.name)}"${on ? " checked" : ""}>
+          ${esc(f.name)}</span></label>`;
+      }).join("")
+      : '<p class="muted">This Drive folder has no subfolders.</p>';
+    $("#scopeSave").disabled = false;
+  } catch (e) {
+    $("#scopeList").innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
+    // the folder list failed, but "no boxes ticked" still means the safe
+    // default (sync everything), so let the user save that
+    $("#scopeSave").disabled = false;
+  }
+}
+
+$("#pairScopeBtn").addEventListener("click", () => {
+  const acct = +$("#pairAccount").value
+    || (state.accounts[0] && state.accounts[0].id);
+  openScope(acct, $("#pairRemoteId").value, state.newScope, "new");
+});
+$("#pairAccount").addEventListener("change", () => {
+  // the chosen Drive folder belongs to the previous account — clear it so
+  // a pair can never be created against another account's folder id
+  setPairRemote("", "");
+});
+$("#scopeClose").addEventListener("click",
+  () => $("#scopeBackdrop").classList.add("hidden"));
+$("#scopeBackdrop").addEventListener("click", (e) => {
+  if (e.target === $("#scopeBackdrop")) {
+    $("#scopeBackdrop").classList.add("hidden");
+  }
+});
+$("#scopeAll").addEventListener("click", () =>
+  document.querySelectorAll("#scopeList input[type=checkbox]")
+    .forEach((c) => { c.checked = true; }));
+$("#scopeNone").addEventListener("click", () =>
+  document.querySelectorAll("#scopeList input[type=checkbox]")
+    .forEach((c) => { c.checked = false; }));
+$("#scopeSave").addEventListener("click", async () => {
+  const chosen = [...document.querySelectorAll(
+    "#scopeList input[type=checkbox]:checked")].map((c) => c.value);
+  const sc = state.scope;
+  if (sc.target === "new") {
+    state.newScope = chosen;
+    $("#pairScopeSummary").value = chosen.length
+      ? `${chosen.length} subfolder(s): ${chosen.slice(0, 3).join(", ")}${chosen.length > 3 ? "…" : ""}`
+      : "Everything in this folder";
+    $("#scopeBackdrop").classList.add("hidden");
+    return;
+  }
+  try {
+    await api(`/api/pairs/${sc.target}`,
+              { method: "PATCH", body: { include_patterns: chosen } });
+    toast(chosen.length
+      ? `Only ${chosen.length} subfolder(s) will sync`
+      : "Scope reset — everything syncs");
+    $("#scopeBackdrop").classList.add("hidden");
+    loadPairs();
+  } catch (e) { toast("Could not save scope: " + e.message); }
 });
 
 async function renderPicker() {
@@ -266,8 +373,7 @@ async function renderPicker() {
     document.querySelectorAll(".picker-item").forEach((item) =>
       item.addEventListener("click", () => {
         if (item.dataset.choose) {
-          $("#pairRemoteId").value = item.dataset.id;
-          $("#pairRemoteName").value = item.dataset.name;
+          setPairRemote(item.dataset.id, item.dataset.name);
           $("#pickerBackdrop").classList.add("hidden");
         } else {
           state.picker.stack.push(state.picker.current);

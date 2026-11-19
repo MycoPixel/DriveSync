@@ -213,6 +213,7 @@ treeview header button {
 scrolledwindow { border: none; }
 label.dim { color: #5E5E5E; font-size: 92%; }
 label.hint { color: #444746; font-size: 95%; }
+label.error-text { color: #B3261E; }
 """
 
 
@@ -256,6 +257,19 @@ def _card(child):
                     spacing=8, border_width=12)
     outer.pack_start(card, True, True, 0)
     return outer
+
+
+class _TrayHandle:
+    """One stop() hook for whichever tray backend is active."""
+
+    def __init__(self, stop):
+        self._stop = stop
+
+    def stop(self):
+        try:
+            self._stop()
+        except Exception:
+            pass
 
 
 class DesktopApp:
@@ -352,6 +366,62 @@ class DesktopApp:
 
     # ---- system tray (resident mode) -------------------------------
     def _start_tray(self):
+        """Start a tray icon, or return None when none can work here.
+
+        Prefer the native AppIndicator binding, which lives inside GTK's
+        own main loop. pystray 0.17's GTK/AppIndicator backends call
+        signal.signal() in their run loop, which raises when started from
+        a worker thread and used to leave the window hidden with no icon
+        to reopen it; only use pystray where that is safe.
+        """
+        indicator = self._start_appindicator()
+        if indicator is not None:
+            return indicator
+        return self._start_pystray()
+
+    def _start_appindicator(self):
+        try:
+            import gi
+            ns = None
+            for candidate in ("AyatanaAppIndicator3", "AppIndicator3"):
+                try:
+                    gi.require_version(candidate, "0.1")
+                    ns = candidate
+                    break
+                except ValueError:
+                    continue
+            if ns is None:
+                return None
+            repo = __import__("gi.repository", fromlist=[ns])
+            AppIndicator3 = getattr(repo, ns)
+            icon_path = os.path.join(os.path.dirname(__file__), "static",
+                                     "mark.svg")
+            indicator = AppIndicator3.Indicator.new(
+                "drivesync", icon_path,
+                AppIndicator3.IndicatorCategory.APPLICATION_STATUS)
+            indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            indicator.set_title("DriveSync")
+            menu = Gtk.Menu()
+            for label, callback in (
+                    ("Open DriveSync", lambda _i: self._tray_open()),
+                    ("Sync all now", lambda _i: self._tray_sync()),
+                    ("Pause / resume background sync",
+                     lambda _i: self._tray_toggle())):
+                item = Gtk.MenuItem(label=label)
+                item.connect("activate", callback)
+                menu.append(item)
+            menu.append(Gtk.SeparatorMenuItem())
+            item = Gtk.MenuItem(label="Quit DriveSync")
+            item.connect("activate", lambda _i: self._tray_quit())
+            menu.append(item)
+            menu.show_all()
+            indicator.set_menu(menu)
+            return _TrayHandle(lambda: indicator.set_status(
+                AppIndicator3.IndicatorStatus.PASSIVE))
+        except Exception:
+            return None
+
+    def _start_pystray(self):
         try:
             import pystray
             from PIL import Image, ImageDraw  # noqa: F401
@@ -379,14 +449,36 @@ class DesktopApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit DriveSync", idle(self._tray_quit)),
         )
+
+        def run_tray():
+            try:
+                icon.run()
+            except Exception:
+                pass
+
         try:
             icon = pystray.Icon("DriveSync",
                                 _icon_image(Image, ImageDraw),
                                 "DriveSync — local Drive sync", menu)
-            if hasattr(icon, "run_detached") and icon.run_detached():
-                return icon
-            threading.Thread(target=icon.run, daemon=True,
-                             name="drivesync-tray").start()
+            detached = getattr(icon, "run_detached", None)
+            if detached is not None:
+                try:
+                    if detached():
+                        return icon
+                except Exception:
+                    pass
+            backend = type(icon).__module__.rsplit(".", 1)[-1]
+            # these backends own the main thread; claiming a tray here would
+            # make window-close hide the app behind an icon that never shows
+            if backend in ("gtk", "appindicator", "dummy"):
+                return None
+            thread = threading.Thread(target=run_tray, daemon=True,
+                                      name="drivesync-tray")
+            thread.start()
+            # give the backend a moment to fail before promising a tray
+            thread.join(timeout=0.2)
+            if not thread.is_alive() and getattr(icon, "visible", True) is False:
+                return None
             return icon
         except Exception:
             return None
@@ -438,9 +530,15 @@ class DesktopApp:
         save.get_style_context().add_class("suggested-action")
         save.connect("clicked", self._on_save_setup)
         table.attach(save, 1, 2, 1, 1)
+        cloud = Gtk.LinkButton.new_with_label(
+            "https://console.cloud.google.com/apis/credentials",
+            "Open Google Cloud Console")
+        cloud.set_halign(Gtk.Align.START)
+        cloud.set_tooltip_text("Create the Desktop-app OAuth client there")
+        table.attach(cloud, 1, 3, 1, 1)
         self.setup_status = Gtk.Label(xalign=0)
         self.setup_status.get_style_context().add_class("hint")
-        table.attach(self.setup_status, 1, 3, 1, 1)
+        table.attach(self.setup_status, 1, 4, 1, 1)
         box.pack_start(table, False, False, 0)
         box.pack_start(self._dim_label(TRAY_HINT), False, False, 0)
         self._refresh_setup_status()
@@ -550,13 +648,24 @@ class DesktopApp:
             ["#", "Direction", "Local folder", "Drive folder", "Scope",
              "State"],
             (int, str, str, str, str, str))
+        self.pair_view.connect(
+            "row-activated", lambda *_a: self._on_open_pair_folder())
         box.pack_start(scroll, True, True, 0)
+
+        self.pairs_hint = self._dim_label("")
+        box.pack_start(self.pairs_hint, False, False, 0)
 
         row = Gtk.Box(spacing=6)
         btn_add = Gtk.Button(label="Add folder\u2026")
         btn_add.get_style_context().add_class("suggested-action")
         btn_add.connect("clicked", self._on_add_pair)
         row.pack_start(btn_add, False, False, 0)
+        btn_open = Gtk.Button(label="Open local folder")
+        btn_open.set_tooltip_text(
+            "Open the selected pair's local folder in your file manager "
+            "(double-clicking a row does the same)")
+        btn_open.connect("clicked", self._on_open_pair_folder)
+        row.pack_start(btn_open, False, False, 0)
         btn_toggle = Gtk.Button(label="Pause / resume")
         btn_toggle.connect("clicked", self._on_toggle_pair)
         row.pack_start(btn_toggle, False, False, 0)
@@ -633,6 +742,62 @@ class DesktopApp:
             pol_combo.append_text(p)
         pol_combo.set_active(0)
         grid.attach(pol_combo, 1, 5, 1, 1)
+
+        # selective scope is chosen BEFORE the pair exists, so the first
+        # pass never downloads subfolders the user did not pick
+        grid.attach(Gtk.Label(label="Sync scope:", halign=Gtk.Align.END),
+                    0, 6, 1, 1)
+        scope_row = Gtk.Box(spacing=6)
+        scope_lbl = Gtk.Label(label="Everything", xalign=0)
+        scope_lbl.get_style_context().add_class("hint")
+        scope_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        scope_row.pack_start(scope_lbl, True, True, 0)
+        btn_scope = Gtk.Button(label="Choose subfolders\u2026")
+        btn_scope.set_tooltip_text(
+            "Pick which Drive subfolders sync from the start; the rest stay "
+            "on Drive until you choose them (on demand from the Drive tab)")
+        scope_row.pack_start(btn_scope, False, False, 0)
+        grid.attach(scope_row, 1, 6, 1, 1)
+        chk_paused = Gtk.CheckButton(
+            label="Start paused (review the pair before its first sync)")
+        chk_paused.set_tooltip_text(
+            "Creates the pair disabled — press \u201cPause / resume\u201d on "
+            "the Folders tab when you are ready")
+        grid.attach(chk_paused, 1, 7, 1, 1)
+
+        scope = {"pick": False, "paths": []}
+
+        def reset_scope(*_args):
+            scope["pick"], scope["paths"] = False, []
+            scope_lbl.set_text("Everything")
+
+        def choose_scope(_btn):
+            remote_id = ent_remote.get_text().strip()
+            if not remote_id:
+                self._error("Choose the Drive folder first \u2014 its "
+                            "subfolders are what selective sync picks from.")
+                return
+            idx = acc_combo.get_active()
+            acc = accounts[idx if idx >= 0 else 0]
+            result = self._scope_dialog(
+                acc["id"], remote_id,
+                scope["paths"] if scope["pick"] else [],
+                "Choose subfolders to sync")
+            if result is None:
+                return
+            pick, paths = result
+            scope["pick"], scope["paths"] = pick, paths
+            if pick:
+                shown = ", ".join(paths[:3]) + ("\u2026" if len(paths) > 3
+                                                else "")
+                scope_lbl.set_text(f"{len(paths)} subfolder(s): {shown}")
+            else:
+                scope_lbl.set_text("Everything")
+
+        ent_remote.connect("changed", reset_scope)
+        acc_combo.connect("changed", reset_scope)
+        btn_scope.connect("clicked", choose_scope)
+
         dlg.get_content_area().pack_start(grid, True, True, 0)
         dlg.show_all()
 
@@ -646,15 +811,27 @@ class DesktopApp:
                     raise ValueError("the Drive folder ID is required "
                                      "(…/folders/<ID> in its web URL)")
                 acc_ids = [a["id"] for a in accounts]
+                paused = chk_paused.get_active()
                 pair = self.store.add_pair(
                     acc_ids[acc_combo.get_active()], local, remote_id,
                     remote_path=ent_path.get_text().strip(),
                     direction=DIRECTIONS[dir_combo.get_active()],
-                    conflict_policy=POLICIES[pol_combo.get_active()])
+                    conflict_policy=POLICIES[pol_combo.get_active()],
+                    enabled=0 if paused else 1,
+                    include_patterns=(scope["paths"] if scope["pick"]
+                                      else []))
                 self._refresh_pairs()
-                self._info(f"Pair #{pair['id']} added. First sync runs "
-                           f"within ~{self.cfg['sync_interval']}s, or press "
-                           "\u201cSync selected now\u201d.")
+                if paused:
+                    self._info(f"Pair #{pair['id']} added paused and will "
+                               "not sync until you press “Pause / resume” "
+                               "on the Folders tab.")
+                else:
+                    scope_txt = (f" Only {len(scope['paths'])} chosen "
+                                 "subfolder(s) will sync."
+                                 if scope["pick"] else "")
+                    self._info(f"Pair #{pair['id']} added.{scope_txt} First "
+                               f"sync runs within ~{self.cfg['sync_interval']}s, "
+                               "or press \u201cSync selected now\u201d.")
             except Exception as exc:
                 self._error(str(exc))
         dlg.destroy()
@@ -802,7 +979,8 @@ class DesktopApp:
 
     def _refresh_pairs(self):
         self.pair_store.clear()
-        for p in self.store.pairs():
+        pairs = self.store.pairs()
+        for p in pairs:
             remote = p["remote_path"] or p["remote_id"]
             state = "active" if p["enabled"] else "paused"
             scope = parse_include_patterns(p["include_patterns"])
@@ -810,6 +988,160 @@ class DesktopApp:
                          else f"{len(scope)} subfolders")
             self.pair_store.append([p["id"], p["direction"], p["local_path"],
                                     remote, scope_txt, state])
+        hint = getattr(self, "pairs_hint", None)
+        if hint is not None:
+            if pairs:
+                hint.set_visible(False)
+            else:
+                hint.set_text(
+                    "No sync folders yet \u2014 press \u201cAdd "
+                    "folder\u2026\u201d to link a local folder to Drive. "
+                    "Choose subfolders there before the first sync so "
+                    "unwanted folders are never downloaded.")
+                hint.set_visible(True)
+
+    def _on_open_pair_folder(self, _btn=None):
+        pair_id = self._selected_pair()
+        if pair_id is None:
+            return
+        pair = self.store.pair(pair_id)
+        if not pair:
+            return
+        path = pair["local_path"]
+        if not os.path.isdir(path):
+            self._error(f"The local folder no longer exists:\n{path}")
+            return
+        try:
+            uri = GLib.filename_to_uri(os.path.abspath(path), None)
+            Gtk.show_uri_on_window(self.win, uri, Gdk.CURRENT_TIME)
+        except Exception as exc:
+            self._error(f"Could not open {path}: {exc}")
+
+    def _scope_dialog(self, acc_id, remote_id, stored, title):
+        """Checklist of the Drive folder's immediate subfolders.
+
+        Returns ``(pick_only, paths)``: (False, []) means sync everything,
+        (True, [...]) means only those subfolder names, and None means the
+        user cancelled. Safe to call before the pair exists, so the first
+        sync never downloads folders the user did not choose.
+        """
+        dlg = Gtk.Dialog(title=title, transient_for=self.win, modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                        "Save", Gtk.ResponseType.OK)
+        dlg.set_response_sensitive(Gtk.ResponseType.OK, False)
+        dlg.set_default_size(540, 460)
+        box = dlg.get_content_area()
+        box.set_spacing(6)
+
+        radio_all = Gtk.RadioButton.new_with_label_from_widget(
+            None, "Sync everything in the Drive folder")
+        box.pack_start(radio_all, False, False, 0)
+        radio_pick = Gtk.RadioButton.new_with_label_from_widget(
+            radio_all, "Only the chosen subfolders")
+        if stored:
+            radio_pick.set_active(True)
+        box.pack_start(radio_pick, False, False, 0)
+
+        tools = Gtk.Box(spacing=6)
+        btn_all = Gtk.Button(label="Select all")
+        btn_none = Gtk.Button(label="Select none")
+        tools.pack_start(btn_all, False, False, 0)
+        tools.pack_start(btn_none, False, False, 0)
+        box.pack_start(tools, False, False, 0)
+
+        sel_store = Gtk.ListStore(bool, str)
+        view = Gtk.TreeView(model=sel_store)
+        cell_toggle = Gtk.CellRendererToggle()
+
+        def on_toggle(cell, path_str, store):
+            self._on_scope_toggled(cell, path_str, store)
+            set_sensitive()
+
+        cell_toggle.connect("toggled", on_toggle, sel_store)
+        view.append_column(
+            Gtk.TreeViewColumn("Sync", cell_toggle, active=0))
+        view.append_column(
+            Gtk.TreeViewColumn("Subfolder", Gtk.CellRendererText(), text=1))
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(view)
+        scroll.set_vexpand(True)
+        box.pack_start(scroll, True, True, 0)
+
+        status = self._dim_label("Loading subfolders\u2026")
+        box.pack_start(status, False, False, 0)
+        box.pack_start(self._dim_label(
+            "Files directly in the Drive folder always sync. Unchosen "
+            "subfolders stay on Drive and on disk untouched \u2014 choosing "
+            "one downloads it on the next pass. Nothing is ever deleted by "
+            "narrowing the scope."), False, False, 0)
+
+        state = {"open": True, "loaded": False}
+
+        def set_sensitive():
+            picked = radio_pick.get_active()
+            view.set_sensitive(picked)
+            btn_all.set_sensitive(picked and len(sel_store) > 0)
+            btn_none.set_sensitive(
+                picked and any(row[0] for row in sel_store))
+            # "sync everything" needs no listing; a picked subset does, so
+            # Save stays disabled until the subfolders have loaded
+            dlg.set_response_sensitive(Gtk.ResponseType.OK,
+                                       state["loaded"] or not picked)
+
+        def set_all(value):
+            for row in sel_store:
+                row[0] = value
+            set_sensitive()
+
+        radio_pick.connect("toggled", lambda _r: set_sensitive())
+        btn_all.connect("clicked", lambda _b: set_all(True))
+        btn_none.connect("clicked", lambda _b: set_all(False))
+
+        def work():
+            try:
+                return folders_for_parent(self._drive_for(acc_id), remote_id)
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def done(res):
+            if not state["open"]:
+                return
+            if isinstance(res, dict):        # error marker from work()
+                status.set_text(
+                    f"Could not list subfolders \u2014 {res.get('error', '?')}")
+                return
+            for f in sorted(res, key=lambda x: x["name"].lower()):
+                chosen = any(p == f["name"] or p.startswith(f["name"] + "/")
+                             for p in stored)
+                sel_store.append([chosen, f["name"]])
+            status.set_text(
+                "This Drive folder has no subfolders." if not res else
+                f"{len(res)} subfolder(s) \u2014 tick the ones that should "
+                "sync.")
+            state["loaded"] = True
+            set_sensitive()
+
+        set_sensitive()
+        dlg.show_all()
+        self._bg(work, done)
+        result = None
+        while True:
+            if dlg.run() != Gtk.ResponseType.OK:
+                break
+            if radio_pick.get_active():
+                chosen = [row[1] for row in sel_store if row[0]]
+                if not chosen:
+                    self._error("Pick at least one subfolder, or switch back "
+                                "to \u201cSync everything\u201d.")
+                    continue
+                result = (True, chosen)
+            else:
+                result = (False, [])
+            break
+        state["open"] = False
+        dlg.destroy()
+        return result
 
     def _on_pair_subfolders(self, _btn):
         """Selective-sync dialog: pick which subfolders of the selected
@@ -822,96 +1154,21 @@ class DesktopApp:
         if not pair:
             return
         stored = parse_include_patterns(pair["include_patterns"])
-        dlg = Gtk.Dialog(title=f"Selective sync — pair #{pair_id}",
-                         transient_for=self.win, modal=True)
-        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
-                        "Save", Gtk.ResponseType.OK)
-        dlg.set_default_size(520, 440)
-        box = dlg.get_content_area()
-
-        radio_all = Gtk.RadioButton.new_with_label_from_widget(
-            None, "Sync everything in the Drive folder")
-        box.pack_start(radio_all, False, False, 4)
-        radio_pick = Gtk.RadioButton.new_with_label_from_widget(
-            radio_all, "Only the chosen subfolders")
-        if stored:
-            radio_pick.set_active(True)
-        box.pack_start(radio_pick, False, False, 4)
-
-        sel_store = Gtk.ListStore(bool, str)
-        view = Gtk.TreeView(model=sel_store)
-        cell_toggle = Gtk.CellRendererToggle()
-        cell_toggle.connect("toggled", self._on_scope_toggled, sel_store)
-        col_check = Gtk.TreeViewColumn("Sync", cell_toggle, active=0)
-        view.append_column(col_check)
-        cell_text = Gtk.CellRendererText()
-        col_name = Gtk.TreeViewColumn("Subfolder", cell_text, text=1)
-        view.append_column(col_name)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroll.add(view)
-        scroll.set_vexpand(True)
-        box.pack_start(scroll, True, True, 4)
-
-        box.pack_start(self._dim_label(
-            "Files directly in the Drive folder always sync. Unchosen "
-            "subfolders stay on Drive and on disk untouched — choosing one "
-            "downloads it on the next pass. Nothing is ever deleted by "
-            "narrowing the scope."), False, False, 4)
-
-        state = {"open": True, "loading": False}
-
-        def set_sensitive():
-            view.set_sensitive(radio_pick.get_active())
-
-        radio_pick.connect("toggled", lambda _r: set_sensitive())
-
-        def work():
-            try:
-                return folders_for_parent(
-                    self._drive_for(pair["account_id"]), pair["remote_id"])
-            except Exception as exc:
-                return {"error": str(exc)}
-
-        def done(res):
-            if not state["open"]:
-                return
-            state["loading"] = False
-            if isinstance(res, dict):        # error marker from work()
-                self._error(f"Drive listing failed — {res.get('error', '?')}")
-                return
-            for f in sorted(res, key=lambda x: x["name"].lower()):
-                chosen = any(p == f["name"] or p.startswith(f["name"] + "/")
-                             for p in stored)
-                sel_store.append([chosen, f["name"]])
-            set_sensitive()
-
-        state["loading"] = True
-        self._bg(work, done)
-
-        dlg.show_all()
-        set_sensitive()
-        while True:
-            resp = dlg.run()
-            if resp != Gtk.ResponseType.OK:
-                break
-            if radio_pick.get_active():
-                chosen = [row[1] for row in sel_store if row[0]]
-                if not chosen:
-                    self._error("Pick at least one subfolder, or switch "
-                                "back to \u201cSync everything\u201d.")
-                    continue
-                self.store.update_pair(pair_id, include_patterns=chosen)
-                self.store.log(pair_id, "pair-scope", "",
-                               "mirroring subfolders: " + ", ".join(chosen))
-            else:
-                self.store.update_pair(pair_id, include_patterns=[])
-                self.store.log(pair_id, "pair-scope", "",
-                               "scope reset: mirroring everything")
-            self._refresh_pairs()
-            break
-        state["open"] = False
-        dlg.destroy()
+        result = self._scope_dialog(
+            pair["account_id"], pair["remote_id"], stored,
+            f"Selective sync \u2014 pair #{pair_id}")
+        if result is None:
+            return
+        pick, chosen = result
+        if pick:
+            self.store.update_pair(pair_id, include_patterns=chosen)
+            self.store.log(pair_id, "pair-scope", "",
+                           "mirroring subfolders: " + ", ".join(chosen))
+        else:
+            self.store.update_pair(pair_id, include_patterns=[])
+            self.store.log(pair_id, "pair-scope", "",
+                           "scope reset: mirroring everything")
+        self._refresh_pairs()
 
     @staticmethod
     def _on_scope_toggled(_cell, path_str, store):
@@ -946,6 +1203,21 @@ class DesktopApp:
         self.drive_crumb = self._dim_label("My Drive")
         box.pack_start(self.drive_crumb, False, False, 0)
 
+        nav = Gtk.Box(spacing=6)
+        btn_home = Gtk.Button(label="My Drive")
+        btn_home.set_tooltip_text("Jump back to the top of your Drive")
+        btn_home.connect("clicked", lambda _b: self._drive_home())
+        nav.pack_start(btn_home, False, False, 0)
+        btn_up = Gtk.Button(label="Up one level")
+        btn_up.connect("clicked", lambda _b: self._drive_up())
+        nav.pack_start(btn_up, False, False, 0)
+        self.drive_filter = Gtk.SearchEntry()
+        self.drive_filter.set_placeholder_text("Filter this folder\u2026")
+        self.drive_filter.connect("search-changed",
+                                  lambda _e: self._render_drive())
+        nav.pack_start(self.drive_filter, True, True, 0)
+        box.pack_start(nav, False, False, 0)
+
         # hidden columns carry id, mimeType and the raw byte size so a
         # selected row can be downloaded without re-querying Drive
         self.drive_store, self.drive_view, self.drive_scroll = _list_view(
@@ -969,14 +1241,16 @@ class DesktopApp:
         box.pack_start(prog, False, False, 0)
 
         row = Gtk.Box(spacing=6)
-        btn_up = Gtk.Button(label="Up one level")
-        btn_up.connect("clicked", lambda _b: self._drive_up())
-        row.pack_start(btn_up, False, False, 0)
         btn_selall = Gtk.Button(label="Select all")
         btn_selall.connect(
             "clicked",
             lambda _b: self.drive_view.get_selection().select_all())
         row.pack_start(btn_selall, False, False, 0)
+        btn_selnone = Gtk.Button(label="Select none")
+        btn_selnone.connect(
+            "clicked",
+            lambda _b: self.drive_view.get_selection().unselect_all())
+        row.pack_start(btn_selnone, False, False, 0)
         btn_dl = Gtk.Button(label="Download selected\u2026")
         btn_dl.get_style_context().add_class("suggested-action")
         btn_dl.connect("clicked", self._on_drive_download_selected)
@@ -990,7 +1264,7 @@ class DesktopApp:
         # started concurrently and no click is ever silently swallowed
         self._drive_state = {"stack": [("root", "My Drive", "My Drive")],
                              "loading": False, "open": True, "busy": 0,
-                             "loaded": False}
+                             "loaded": False, "items": []}
         # lazy: list Drive only when the user first opens the tab, so a
         # stale token or offline network never pops a dialog at launch
         self.nb.connect("switch-page", self._on_nb_switch)
@@ -1038,6 +1312,11 @@ class DesktopApp:
                 "still running\u2026", cls)
 
     def _drive_refresh(self):
+        """Reload the current account from the top (clears the filter)."""
+        self.drive_filter.set_text("")
+        self._drive_home()
+
+    def _drive_home(self):
         self._drive_state["stack"] = [("root", "My Drive", "My Drive")]
         self._drive_load()
 
@@ -1048,6 +1327,27 @@ class DesktopApp:
         st["stack"].pop()
         self._drive_load()
 
+    def _render_drive(self):
+        """Paint the current listing, applying the filter box."""
+        st = self._drive_state
+        items = st.get("items", [])
+        needle = self.drive_filter.get_text().strip().lower() \
+            if hasattr(self, "drive_filter") else ""
+        visible = [it for it in items
+                   if not needle
+                   or needle in (it.get("name") or "").lower()]
+        self.drive_store.clear()
+        for item in visible:
+            self.drive_store.append(_drive_row(item))
+        if st.get("loading"):
+            return
+        path = st["stack"][-1][2]
+        if needle:
+            self.drive_crumb.set_text(
+                f"{path} \u2014 {len(visible)} of {len(items)} match")
+        else:
+            self.drive_crumb.set_text(f"{path} \u2014 {len(items)} item(s)")
+
     def _drive_load(self):
         """Fill the Drive browser rows for the current stack position."""
         st = self._drive_state
@@ -1055,10 +1355,12 @@ class DesktopApp:
             self.drive_crumb.set_text("No account yet — authorize one on "
                                       "the Accounts tab first.")
             self.drive_store.clear()
+            st["items"] = []
             return
         fid, _name, path = st["stack"][-1]
         self.drive_crumb.set_text(path)
         self.drive_store.clear()
+        st["items"] = []
         st["loading"] = True
 
         def work():
@@ -1083,13 +1385,12 @@ class DesktopApp:
             rows = ([{"id": "shared", "name": "Shared with me",
                       "mimeType": "application/vnd.google-apps.folder"}]
                     if fid == "root" else [])
-            entries = rows + sorted(res, key=lambda x: (
+            st["items"] = rows + sorted(res, key=lambda x: (
                 0 if x.get("mimeType") == "application/vnd.google-apps.folder"
                 or (x.get("shortcutDetails") or {}).get("targetMimeType")
                 == "application/vnd.google-apps.folder" else 1,
                 x.get("name", "").lower()))
-            for item in entries:
-                self.drive_store.append(_drive_row(item))
+            self._render_drive()
 
         self._bg(work, done)
 
@@ -1300,6 +1601,11 @@ class DesktopApp:
         btn.get_style_context().add_class("suggested-action")
         btn.connect("clicked", self._on_sync_all)
         row.pack_start(btn, False, False, 0)
+        self.btn_pause = Gtk.Button(label="Pause")
+        self.btn_pause.set_tooltip_text(
+            "Pause or resume background sync passes (the dashboard stays up)")
+        self.btn_pause.connect("clicked", self._on_pause_toggle)
+        row.pack_start(self.btn_pause, False, False, 0)
         row.pack_start(Gtk.Label(label="Interval (s):"), False, False, 0)
         self.spin = Gtk.SpinButton.new_with_range(5, 86400, 5)
         self.spin.set_value(_cfg_int(self.cfg, "sync_interval", 30))
@@ -1308,6 +1614,14 @@ class DesktopApp:
         apply_btn.connect("clicked", self._on_apply_interval)
         row.pack_start(apply_btn, False, False, 0)
         box.pack_start(row, False, False, 0)
+
+        srow = Gtk.Box(spacing=6)
+        self.ent_search = Gtk.SearchEntry()
+        self.ent_search.set_placeholder_text(
+            "Search path, action or detail\u2026")
+        self.ent_search.connect("search-changed", self._on_activity_filter)
+        srow.pack_start(self.ent_search, True, True, 0)
+        box.pack_start(srow, False, False, 0)
 
         # filter / sort bar — combos re-list instantly; Clear wipes the log
         frow = Gtk.Box(spacing=6)
@@ -1350,6 +1664,7 @@ class DesktopApp:
         self.evt_store, self.evt_view, self.evt_scroll = _list_view(
             ["Time", "Level", "Action", "Path", "Detail"],
             (str, str, str, str, str, str))
+        self.evt_view.connect("row-activated", self._on_activity_activated)
         box.pack_start(self.evt_scroll, True, True, 0)
         self._action_items = ["All actions"]
 
@@ -1358,6 +1673,37 @@ class DesktopApp:
 
     def _on_sync_all(self, _btn):
         self._bg(lambda: self.worker.run_pass(), self._refresh_activity)
+
+    def _on_pause_toggle(self, _btn=None):
+        if self.worker.status.get("paused"):
+            self.worker.resume()
+        else:
+            self.worker.pause()
+        self._refresh_activity()
+        return False
+
+    def _on_activity_activated(self, _view, path, _col):
+        """Double-click/Enter: show the full, selectable log entry."""
+        row = self.evt_store[path]
+        dlg = Gtk.Dialog(title="Activity detail", transient_for=self.win,
+                         modal=True)
+        dlg.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dlg.set_default_size(560, 320)
+        em = "\u2014"
+        text = (f"{row[0]} {em} {row[1]}\n"
+                f"Action: {row[2]}\n"
+                f"Path: {row[3] or em}\n\n"
+                f"{row[4] or 'No detail.'}")
+        lbl = Gtk.Label(label=text, selectable=True, wrap=True, xalign=0,
+                        yalign=0)
+        lbl.set_max_width_chars(72)
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        sw.add(lbl)
+        dlg.get_content_area().pack_start(sw, True, True, 10)
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
 
     def _on_apply_interval(self, _btn):
         try:
@@ -1385,6 +1731,12 @@ class DesktopApp:
         state = "paused" if s["paused"] else "running"
         self.lbl_status.set_text(
             f"Worker {state} \u2014 last pass: {last}{stats}{err}")
+        ctx = self.lbl_status.get_style_context()
+        if s["last_error"]:
+            ctx.add_class("error-text")
+        else:
+            ctx.remove_class("error-text")
+        self.btn_pause.set_label("Resume" if s["paused"] else "Pause")
         self.hb.set_subtitle(f"sync {state} \u2014 last pass {last}")
 
         # apply the filter bar (rebuilding the action combo may nest here;
@@ -1397,11 +1749,19 @@ class DesktopApp:
         if idx in _TIMEFRAME_SECS:
             since = datetime.now(timezone.utc) - \
                 timedelta(seconds=_TIMEFRAME_SECS[idx])
+        needle = self.ent_search.get_text().strip().lower()
         events = self.store.recent_events(
-            limit=200,
+            limit=500 if needle else 200,
             level=None if level in (None, "All levels") else level,
             action=None if action in (None, "All actions") else action,
             since=since)
+        if needle:
+            events = [
+                e for e in events
+                if needle in (e["rel_path"] or "").lower()
+                or needle in (e["message"] or "").lower()
+                or needle in (e["action"] or "").lower()
+                or needle in (e["level"] or "").lower()]
         if self.cmb_sort.get_active() == 1:
             events = list(reversed(events))        # oldest at the top
 

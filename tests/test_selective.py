@@ -100,6 +100,24 @@ def test_scope_limits_first_download(env):
     assert "photos/c.jpg" not in base             # never tracked
 
 
+def test_scope_chosen_at_pair_creation_protects_the_first_pass(env):
+    """The GUI and dashboard let users pick subfolders before the pair
+    exists; the very first pass must already respect that scope (otherwise
+    unwanted folders are downloaded before the user can narrow it)."""
+    from drivesync import engine
+
+    _seed_remote(env)
+    other = env.root / "other"
+    other.mkdir()
+    pair = env.store.add_pair(1, str(other), env.drive.root_id,
+                              include_patterns=["docs"])
+    stats, ok = engine.sync_pair(env.store, env.cfg, pair, env.drive)
+    assert ok
+    assert (other / "docs" / "a.txt").exists()
+    assert not (other / "photos").exists()
+    assert "top.txt" in scan_local(str(other), [])
+
+
 def test_scope_excluded_local_files_are_never_uploaded(env):
     _seed_remote(env)
     _set_scope(env, ["docs"])

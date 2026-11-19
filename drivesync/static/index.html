@@ -70,6 +70,12 @@
             <button type="button" id="pickFolderBtn" class="btn ghost">Browse…</button>
           </div>
         </label>
+        <label>Sync scope <span class="muted">(optional — chosen before the first sync)</span>
+          <div class="row">
+            <input id="pairScopeSummary" type="text" value="Pick a Drive folder first" readonly>
+            <button type="button" id="pairScopeBtn" class="btn ghost" disabled>Choose…</button>
+          </div>
+        </label>
         <label>Direction
           <select id="pairDirection">
             <option value="bidirectional">Two-way (bidirectional)</option>
@@ -95,7 +101,7 @@
       <h3>Current pairs</h3>
       <table class="tbl" id="pairsTable">
         <thead><tr><th>#</th><th>Local</th><th>Drive folder</th><th>Direction</th>
-          <th>Conflicts</th><th>Deletes</th><th>State</th><th></th></tr></thead>
+          <th>Conflicts</th><th>Deletes</th><th>Scope</th><th>State</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -225,6 +231,26 @@
     <div id="pickerList" class="picker-list"><p class="muted">loading…</p></div>
     <div class="row end">
       <button class="btn primary" id="pickerChoose">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<!-- selective-sync scope modal -->
+<div class="modal-backdrop hidden" id="scopeBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="scopeTitle">Choose subfolders</h3>
+      <button class="icon-btn" id="scopeClose">✕</button>
+    </div>
+    <p class="muted small" id="scopeHint">Files directly in the folder always sync.
+      Unchosen subfolders stay on Drive and on disk untouched.</p>
+    <div id="scopeList" class="picker-list"><p class="muted">loading…</p></div>
+    <div class="row between">
+      <div class="row">
+        <button class="btn ghost" id="scopeAll">Select all</button>
+        <button class="btn ghost" id="scopeNone">Select none</button>
+      </div>
+      <button class="btn primary" id="scopeSave">Save</button>
     </div>
   </div>
 </div>

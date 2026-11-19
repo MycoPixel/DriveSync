@@ -13,6 +13,12 @@ trap 'rm -rf "$SOURCES"' EXIT
 
 echo "==> Building drivesync ${VERSION} RPM"
 
+# The spec intentionally has no %{?dist} release suffix: the artifact is
+# always drivesync-<version>-1.noarch.rpm, regardless of the build host.
+# rm stale artifacts from older builds of this version so a wildcard copy
+# below never ships two differently named RPMs.
+rm -f "$ROOT/dist/drivesync-${VERSION}"-1*.rpm
+
 # rpmbuild wants a tarball named drivesync-<version>.tar.gz at the top level
 TOP="$SOURCES/drivesync-${VERSION}"
 mkdir -p "$TOP"

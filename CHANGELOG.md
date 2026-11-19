@@ -42,12 +42,35 @@ Older entries below 0.2.1 are summarized from the git history.
   need a restart
 
 ### Added
+- **Choose the sync scope before the first sync** — the desktop app's
+  **Add folder…** dialog and the dashboard's **Sync scope** field list the
+  Drive folder's subfolders up front and save the choice with the pair, so
+  the first pass never downloads folders you did not pick. The desktop
+  dialog can also create the pair **paused** for review. Existing pairs can
+  still change scope from **Subfolders…** / the pairs table
+- Desktop GUI conveniences: **Open local folder** (and double-click on a
+  pair) opens it in the file manager; pause/resume in the Activity tab;
+  activity **search** plus a detail dialog on double-click; Drive-tab
+  **filter**, **My Drive** jump and **Select none**; a Cloud Console link
+  in Setup; and an empty-pairs hint explaining the pre-sync scope choice
 - Dashboard Settings now exposes the bandwidth cap, sync window,
   `watch_enabled` and `incremental_scan`
 - Pair creation validates that the remote id is a folder and rejects
   duplicate or nested local roots; `allow_deletes` is accepted on create
 - CI covers Python 3.9/3.11/3.12/3.14 and runs a fatal-error lint pass;
   `pyproject.toml` declares `watch`/`tray`/`gui` optional dependencies
+
+### Changed
+- **Stable package names** — the RPM no longer carries a distro tag
+  (`%{?dist}`), so every build produces `drivesync-<ver>-1.noarch.rpm`
+  instead of a host-specific name; the spec now installs into
+  `/usr/lib/.../site-packages` (not `/usr/local/lib`) and requires the GTK 3
+  typelib; the deb depends on `gir1.2-gtk-3.0`; the AppImage uses the right
+  icon path and includes `watchdog`
+- **Tray icon fixed** — the desktop app prefers the native
+  AppIndicator binding and only falls back to pystray where it can run
+  safely, so closing the window no longer hides it behind an icon that
+  never appears
 
 ## [0.5.1] - 2026-11-18
 

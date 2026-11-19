@@ -134,7 +134,11 @@ drivesync pairs add ~/DriveDocuments --remote-id 1a2B3cD4eF5g \
 `--include` (or **Folders → Subfolders…** in the desktop app) turns on
 selective sync: only the chosen subfolders mirror; loose files in the pair
 root always sync. Everything else stays on Drive and on disk untouched and
-can be downloaded on demand from the Drive tab.
+can be downloaded on demand from the Drive tab. The desktop app's **Add
+folder…** dialog and the dashboard's **Sync scope** field let you choose
+that scope *before* the pair exists — so the very first pass already skips
+unwanted folders (the desktop dialog can also create the pair paused for
+review).
 
 or use **Sync pairs → Add a sync pair → Browse…** in the dashboard, which
 lets you click through your Drive folders.
@@ -157,8 +161,10 @@ the “Browse Drive…” button walks My Drive and Shared-with-me folders — t
 same picker the dashboard uses. The **Drive tab** is the on-demand side:
 it lists your whole Drive with sizes and dates and downloads any file or
 folder to wherever you point it — no pair needed, like Google Drive on
-Windows minus the mount. **Folders → Subfolders…** narrows what a pair
-mirrors. `serve` and the systemd unit are the headless/service mode;
+Windows minus the mount. The **Folders** tab lists pairs with their scope;
+**Add folder…** can pick subfolders up front (and start paused) so the first
+sync is already selective, and **Subfolders…** changes the scope later.
+`serve` and the systemd unit are the headless/service mode;
 running both is safe — a cross-process lock means only one syncs at a
 time. Headless machines without GTK: `drivesync gui` prints the package to
 install and exits.
