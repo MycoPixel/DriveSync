@@ -3,6 +3,52 @@
 All notable changes to DriveSync, newest first. Dates are release dates.
 Older entries below 0.2.1 are summarized from the git history.
 
+## [Unreleased]
+
+### Fixed
+- **`drivesync sync` no longer crashes at the end** — `Worker.run_pass()`
+  now returns the pass totals and an ok flag; the CLI prints the aggregate
+  summary and exits 2 when any pair failed
+- **A Google Doc export can no longer overwrite a user's local file** —
+  a same-named local file is only treated as our export when the base row
+  proves it; otherwise the pair reports a collision and leaves both sides
+  untouched
+- **Re-authorizing no longer wipes saved OAuth client credentials** — only
+  non-empty values from the form overwrite them
+- **An emptied base snapshot is refused instead of re-deciding every path**
+  (recovery stays available with `drivesync sync --full`)
+- Repointing a pair at a different local or remote tree clears its stale
+  base rows and markers
+- **Dashboard API hardening** — a custom `X-DriveSync` header plus
+  loopback-only `Host`/`Origin` checks block cross-site requests and DNS
+  rebinding; `client_secret` is redacted in responses; user/file text is
+  HTML-escaped in the UI; `config.json`/`state.db` are `0600` in a `0700` dir
+- **Token lifecycle** — token responses carry `expires_at`, refreshes are
+  locked and persisted only when they actually happen (server, GUI, worker
+  and doctor), and re-auth falls back to an ephemeral loopback port
+- **Retries** — 429/5xx and transient network failures back off with jitter
+  and honour `Retry-After`; upload/download bodies are rewound before a
+  retry; rate-limit and storage-quota 403s now get accurate hints
+- **Shared Drives** — `supportsAllDrives` is sent for every Files call and
+  `includeItemsFromAllDrives` for queries, so pairs in Shared Drives work
+- **Worker reliability** — a pair that failed full-scans on its next pass
+  while the changes token keeps advancing; `last_error` clears on recovery;
+  pause/resume uses one loop and a pause event instead of thread recreation
+- **Performance** — first-scan folder listing runs in parallel, md5 hashes
+  are memoized per pass, SQLite runs in WAL/NORMAL with one commit per sync
+  op, and multipart upload boundaries are random
+- **Settings hot-reload** — the worker re-reads `config.json` each pass;
+  only `server_port`, `auth_port`, `tray_enabled` and `watch_enabled` still
+  need a restart
+
+### Added
+- Dashboard Settings now exposes the bandwidth cap, sync window,
+  `watch_enabled` and `incremental_scan`
+- Pair creation validates that the remote id is a folder and rejects
+  duplicate or nested local roots; `allow_deletes` is accepted on create
+- CI covers Python 3.9/3.11/3.12/3.14 and runs a fatal-error lint pass;
+  `pyproject.toml` declares `watch`/`tray`/`gui` optional dependencies
+
 ## [0.5.1] - 2026-11-18
 
 ### Fixed

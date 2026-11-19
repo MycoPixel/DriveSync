@@ -20,7 +20,6 @@ import threading
 from . import __version__
 from .config import DEFAULT_CONFIG, app_dir, load_config, update_config
 from .db import Store, parse_include_patterns, to_local
-from .server import create_app
 
 
 def _open_store():
@@ -36,14 +35,49 @@ def _open_browser(url):
         pass
 
 
+def _port_busy(url):
+    """True when something already accepts TCP connections at url."""
+    import socket
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    host = parts.hostname or "127.0.0.1"
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    try:
+        with socket.create_connection((host, parts.port or 80), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def _port_hint(url, detail):
+    return (
+        f"error: the dashboard port is unavailable ({detail}).\n"
+        "  A DriveSync service may already be running — its dashboard is "
+        f"probably at {url}.\n"
+        "  Check:    systemctl --user status drivesync\n"
+        "  Stop it:  systemctl --user stop drivesync\n"
+        "  Or move:  drivesync config set server_port=5679")
+
+
 def cmd_serve(args):
     from .worker import Worker
     from .server import run_server
     store = _open_store()
     cfg = load_config()
-    worker = Worker(store, cfg, interval=args.interval or cfg["sync_interval"])
-    worker.start()
     url = f"http://127.0.0.1:{args.port or cfg['server_port']}"
+    # Probe first: werkzeug treats a busy port as a fatal error and exits
+    # the process itself, so the friendly hint after run_server never runs.
+    if _port_busy(url):
+        store.close()
+        print(_port_hint(url, f"port {args.port or cfg['server_port']} is in use"),
+              file=sys.stderr)
+        sys.exit(1)
+    # --interval wins for this run; otherwise the worker follows the config
+    # and hot-reloads it on every pass (config_source).
+    worker = Worker(store, cfg, interval=args.interval,
+                    config_source=load_config)
+    worker.start()
     print(f"DriveSync {__version__} — dashboard at {url}  (Ctrl+C to stop)")
     if args.open:
         threading.Thread(target=_open_browser, args=(url,), daemon=True,
@@ -60,16 +94,8 @@ def cmd_serve(args):
     try:
         run_server(store, worker, host=args.host, port=args.port)
     except OSError as exc:
-        # the usual cause: the systemd unit (or a stray 'serve') already
-        # owns the port — point at the running instance, not a traceback
-        print(
-            f"error: the dashboard port is unavailable ({exc}).\n"
-            "  A DriveSync service may already be running — its dashboard is "
-            f"probably at {url}.\n"
-            "  Check:    systemctl --user status drivesync\n"
-            "  Stop it:  systemctl --user stop drivesync\n"
-            "  Or move:  drivesync config set server_port=5679",
-            file=sys.stderr)
+        # still possible when the port is grabbed between probe and bind
+        print(_port_hint(url, exc), file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         pass
@@ -206,16 +232,13 @@ def cmd_sync(args):
         print("(find the folder ID in its web URL: .../folders/<ID>)")
         store.close()
         return
-    worker = Worker(store, load_config())
+    worker = Worker(store, load_config(), config_source=load_config)
     stats, ok = worker.run_pass(args.pair, force_full=args.full)  # one pass
-    pairs = [store.pair(args.pair)] if args.pair else store.pairs()
-    _ = pairs
-    worker.status  # noqa: B018 — populated by run_pass
-    if worker.status.get("last_stats"):
-        s = worker.status["last_stats"]
-        print(f"synced pair #{s['pair_id']}: pushed {s['pushed']}, "
-              f"pulled {s['pulled']}, deleted {s['deleted']}, "
-              f"renamed {s['renamed']}, conflicts {s['conflicts']}")
+    scope = f"pair #{args.pair}" if args.pair is not None else "all pairs"
+    print(f"synced {scope}: pushed {int(stats.pushed)}, "
+          f"pulled {int(stats.pulled)}, deleted {int(stats.deleted)}, "
+          f"renamed {int(stats.renamed)}, conflicts {int(stats.conflicts)}, "
+          f"errors {int(stats.errors)}")
     for e in reversed(store.recent_events(limit=30)):
         lvl = "" if e["level"] == "info" else f" [{e['level']}]"
         print(f"  {to_local(e['ts'])}  {e['action']:<22} {e['rel_path']}{lvl} {e['message']}")
@@ -309,7 +332,7 @@ def cmd_doctor(args):
     print(f"  pairs      : {len(store.pairs())}")
     accounts = store.accounts()
     if accounts:
-        from .auth import access_token, token_from_json
+        from .auth import access_token_persisting, token_from_json
         from .drive import Drive, DriveError
         token = token_from_json(accounts[0]["token_json"])
         stored_cid = token.get("client_id") if isinstance(token, dict) else None
@@ -323,7 +346,8 @@ def cmd_doctor(args):
                   "'drivesync auth'.")
         else:
             try:
-                drive = Drive(lambda: access_token(token))
+                drive = Drive(lambda: access_token_persisting(
+                    store, accounts[0]["id"], token))
                 email = drive.about().get("user", {}).get("emailAddress", "?")
                 print(f"  drive api  : OK ({email})")
             except DriveError as exc:

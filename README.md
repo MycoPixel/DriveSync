@@ -194,6 +194,12 @@ drivesync doctor                      sanity-check the installation
 | Sync window | always | `active_from`/`active_to` HH:MM; overnight works |
 | Server port | 5678 | Local dashboard port |
 
+Most settings are picked up on the **next sync pass** — the worker re-reads
+`config.json` before every pass, so changes made in the dashboard or with
+`drivesync config set` do not need a restart. These are read only at startup
+and still need one: `server_port`, `auth_port`, `tray_enabled` and
+`watch_enabled` (the watcher and tray are created when the app launches).
+
 ### Google Docs conversion
 
 Google Docs/Sheets/Slides/Drawings are not stored as normal files on Drive —

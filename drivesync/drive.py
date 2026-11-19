@@ -7,13 +7,30 @@ with `requests`; no heavyweight client library required.
 
 import mimetypes
 import os
+import random
+import secrets
 import tempfile
-from datetime import datetime, timezone
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import requests
 
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+# A POST that returned 500 may already have created the file (Drive does not
+# deduplicate names), so only replay creates on definite gateway/throttle
+# failures. Reads and idempotent mutations may replay on 500 too.
+POST_NO_REPLAY = {500}
+
+
+def _retryable(method, status):
+    return (status in RETRY_STATUSES and
+            not (method == "POST" and status in POST_NO_REPLAY))
+
+
+LIST_WORKERS = 4              # parallel folder listings on the first scan
 FOLDER_MIME = "application/vnd.google-apps.folder"
 SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 
@@ -145,6 +162,15 @@ def _explain(resp):
             service = md.get("service") or service
     except Exception:
         pass
+    joined = " ".join(reasons).lower()
+    if "ratelimit" in joined or "rate limit" in joined:
+        return ("  -> Google rate-limited this account (per-user or per-project "
+                "quota). DriveSync backs off automatically; if it keeps "
+                "happening, lower transfer_concurrency or raise the sync "
+                "interval.")
+    if "storagequota" in joined or "quotaexceeded" in joined:
+        return ("  -> the account's Drive storage is full (or its quota is "
+                "exhausted). Free space in Drive or Google One and retry.")
     project = consumer.rsplit("/", 1)[-1] if consumer.startswith("projects/") else ""
     url = (f"https://console.developers.google.com/apis/api/"
            f"{service or 'drive.googleapis.com'}/overview"
@@ -183,17 +209,63 @@ class Drive:
             h.update(extra)
         return h
 
+    @staticmethod
+    def _rewind_body(body):
+        """Reset a streamed request body so a retry sends the whole content."""
+        if body is None:
+            return
+        rewind = getattr(body, "rewind", None)
+        if callable(rewind):
+            rewind()
+        elif hasattr(body, "seek") and body.seekable():
+            body.seek(0)
+
+    @staticmethod
+    def _retry_delay(resp, attempt):
+        """Exponential backoff with jitter; honour Google's Retry-After."""
+        headers = getattr(resp, "headers", None) or {}
+        retry_after = headers.get("Retry-After")
+        if retry_after:
+            try:
+                return min(max(float(retry_after), 0.0), 30.0)
+            except (TypeError, ValueError):
+                pass
+        return min(0.5 * (2 ** attempt) + random.uniform(0, 0.25), 30.0)
+
     def _request(self, method, url, ok=(200, 201), **kw):
         # Every call to Google must carry the Authorization header — resolved
         # here centrally so no endpoint can silently go out unauthenticated.
         extra = dict(kw.pop("headers", None) or {})
         extra.pop("Authorization", None)
-        kw["headers"] = self._headers(extra)
-        resp = self._session.request(method, url, timeout=120, **kw)
-        if resp.status_code == 401:
-            # token may have just expired mid-flight: refresh once and retry
+        params = kw.get("params")
+        if isinstance(params, dict) and "/files" in url:
+            # Shared Drives are invisible unless every call opts in.
+            params.setdefault("supportsAllDrives", "true")
+            if method == "GET" and params.get("q"):
+                params.setdefault("includeItemsFromAllDrives", "true")
+        max_tries = 4
+        resp = None
+        for attempt in range(max_tries):
             kw["headers"] = self._headers(extra)
-            resp = self._session.request(method, url, timeout=120, **kw)
+            try:
+                resp = self._session.request(method, url, timeout=120, **kw)
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                # only replay idempotent reads on transport failures: a
+                # create/mutation may already have taken effect server-side
+                if attempt >= max_tries - 1 or method not in ("GET", "HEAD"):
+                    raise DriveError(f"{method} {url} failed: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
+                continue
+            if resp.status_code == 401 and attempt == 0:
+                # token may have just expired mid-flight: refresh once and
+                # replay; streamed bodies were consumed, so rewind first
+                self._rewind_body(kw.get("data"))
+                continue
+            if _retryable(method, resp.status_code) and attempt < max_tries - 1:
+                time.sleep(self._retry_delay(resp, attempt))
+                self._rewind_body(kw.get("data"))
+                continue
+            break
         if resp.status_code not in ok:
             raise DriveError(f"{method} {url} -> {resp.status_code}: "
                              f"{resp.text[:300]}{_explain(resp)}")
@@ -257,18 +329,21 @@ class Drive:
         Google-native docs are included (kind gdoc via mimeType).
         """
         items = {"": {"id": folder_id, "name": "", "mimeType": FOLDER_MIME}}
-
-        def walk(folder_id, prefix):
-            for f in self.list_children(folder_id):
-                rel = f"{prefix}/{f['name']}" if prefix else f["name"]
-                mime = f.get("mimeType", "")
-                if mime == FOLDER_MIME:
-                    items[rel] = f
-                    walk(f["id"], rel)
-                else:
-                    items[rel] = f
-
-        walk(folder_id, "")
+        # Breadth-first with a small pool: a first sync of a tree with
+        # thousands of folders otherwise spends minutes in serial HTTPS calls.
+        pending = [("", folder_id)]
+        with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
+            while pending:
+                futures = {pool.submit(self.list_children, fid):
+                           (prefix, fid) for prefix, fid in pending}
+                pending = []
+                for future in as_completed(futures):
+                    prefix, _ = futures[future]
+                    for f in future.result():
+                        rel = f"{prefix}/{f['name']}" if prefix else f["name"]
+                        items[rel] = f
+                        if f.get("mimeType") == FOLDER_MIME:
+                            pending.append((rel, f["id"]))
         return items
 
     # ---- changes feed (incremental scans) --------------------------
@@ -320,13 +395,15 @@ class Drive:
         mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
         meta = {"name": name, "parents": [parent_id]}
         with open(local_path, "rb") as fh:
+            body, boundary = _multipart(meta, fh, mime, self.limiter)
             resp = self._request(
                 "POST", f"{UPLOAD_API}/files",
                 params={"uploadType": "multipart",
                         "fields": "id,name,mimeType,version,md5Checksum,"
                                   "size,modifiedTime"},
-                headers={"Content-Type": MULTIPART_CT},
-                data=_multipart(meta, fh, mime, self.limiter))
+                headers={"Content-Type":
+                         f"multipart/related; boundary={boundary}"},
+                data=body)
         return resp.json()
 
     def update_content(self, file_id, local_path):
@@ -375,15 +452,41 @@ class Drive:
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest_path) or ".",
                                    suffix=".drivesync")
         os.close(fd)
+        params = dict(params)
+        params.setdefault("supportsAllDrives", "true")
+        max_tries = 4
         try:
-            with self._session.get(url, params=params, headers=self._headers(),
-                                   stream=True, timeout=600) as resp:
-                resp.raise_for_status()
-                with open(tmp, "wb") as out:
+            for attempt in range(max_tries):
+                try:
+                    resp = self._session.get(url, params=params,
+                                             headers=self._headers(),
+                                             stream=True, timeout=600)
+                except (requests.ConnectionError, requests.Timeout) as exc:
+                    if attempt >= max_tries - 1:
+                        raise DriveError(f"GET {url} failed: {exc}") from exc
+                    time.sleep(self._retry_delay(None, attempt))
+                    continue
+                if resp.status_code == 401 and attempt == 0:
+                    # token expired mid-flight: refresh and retry once
+                    resp.close()
+                    continue
+                if (_retryable("GET", resp.status_code)
+                        and attempt < max_tries - 1):
+                    delay = self._retry_delay(resp, attempt)
+                    resp.close()
+                    time.sleep(delay)
+                    continue
+                if resp.status_code >= 400:
+                    text, hint = resp.text[:300], _explain(resp)
+                    resp.close()
+                    raise DriveError(f"GET {url} -> {resp.status_code}: "
+                                     f"{text}{hint}")
+                with resp, open(tmp, "wb") as out:
                     for chunk in resp.iter_content(chunk_size=1 << 16):
                         if self.limiter:
                             self.limiter.consume(len(chunk))
                         out.write(chunk)
+                break
             os.replace(tmp, dest_path)
         finally:
             if os.path.exists(tmp):
@@ -399,13 +502,14 @@ class Drive:
             pass
 
 
-_MULTIPART_BOUNDARY = "drivesync2938jk"
-MULTIPART_CT = f"multipart/related; boundary={_MULTIPART_BOUNDARY}"
-
-
 def _multipart(meta, fh, mime, limiter=None):
-    """Build a multipart/related body (metadata + media) for uploads."""
-    boundary = _MULTIPART_BOUNDARY
+    """Build a multipart/related body (metadata + media) for uploads.
+
+    The boundary is random per call: a fixed one could theoretically appear
+    inside the file's bytes and truncate the upload at the wrong place.
+    Returns (streaming body, boundary) so the caller can set Content-Type.
+    """
+    boundary = f"drivesync{secrets.token_hex(16)}"
     meta_bytes = (json_dumps(meta)).encode("utf-8")
     head = (f"--{boundary}\r\n"
             f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
@@ -413,7 +517,7 @@ def _multipart(meta, fh, mime, limiter=None):
            (f"\r\n--{boundary}\r\n"
             f"Content-Type: {mime}\r\n\r\n").encode("utf-8")
     tail = f"\r\n--{boundary}--".encode("utf-8")
-    return _GeneratorBody(head, fh, tail, limiter)
+    return _GeneratorBody(head, fh, tail, limiter), boundary
 
 
 class _GeneratorBody:
@@ -434,6 +538,10 @@ class _GeneratorBody:
             yield chunk
         yield self.tail
 
+    def rewind(self):
+        """Replay from the start after a failed attempt consumed the file."""
+        self.fh.seek(0)
+
 
 class _Throttled:
     """read()-only wrapper that bills every byte to the limiter, so plain
@@ -448,6 +556,10 @@ class _Throttled:
         if data and self.limiter:
             self.limiter.consume(len(data))
         return data
+
+    def rewind(self):
+        """Replay from the start after a failed attempt consumed the file."""
+        self.fh.seek(0)
 
 
 def json_dumps(obj):

@@ -23,10 +23,9 @@ import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .config import app_dir
-from .db import parse_include_patterns, utcnow
+from .db import parse_include_patterns
 from .drive import FOLDER_MIME, resolve_export_formats
 
 GDOC_PREFIX = "application/vnd.google-apps."
@@ -77,8 +76,17 @@ def fold_exports(local, remote, base=None, export_map=None):
             lex = export_lex(rel, r["export"][1])
             if rel in local or lex not in local:
                 continue
+            b = (base or {}).get(rel)
+            # only treat the local file as our export when the base row
+            # proves it: kind 'file' with no remote_md5 is the shape written
+            # by op_download for a materialized native doc. A user file that
+            # merely shares the name must stay visible (unfolded) so decide()
+            # emits skip_gdoc_collision instead of overwriting it.
+            ours = bool(b and b.get("kind") == "file" and
+                        b.get("remote_md5") is None)
             local[rel] = local.pop(lex)
-            local[rel]["folded"] = True
+            if ours:
+                local[rel]["folded"] = True
             fold[rel] = lex
     if base:
         exts = [ext for _, ext in (export_map or {}).values()]
@@ -495,12 +503,14 @@ def _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of, force=False):
     if r["kind"] == "gdoc":
         if not r.get("export"):
             return [("skip_gdoc_collision", rel)]   # never touches native docs
-        if not b_exists or b.get("kind") != "file":
-            # tracked but not yet materialized: export only if the local file
-            # is our own export (folded); a user-made file is a collision
-            if l.get("folded"):
-                return [("download", rel)] if can_pull else []
+        if not l.get("folded"):
+            # a user-made file sits where the export would go — never
+            # overwrite it, even when an old base row exists
             return [("skip_gdoc_collision", rel)]
+        if not b_exists or b.get("kind") != "file":
+            # tracked but not yet materialized: export (the fold is proof
+            # this local file is ours)
+            return [("download", rel)] if can_pull else []
         # materialized export: falls through to the normal three-way compare
 
     lc, rc = local_changed(), remote_changed()
@@ -703,6 +713,8 @@ class _AtomicInt:
 
 
 class SyncStats:
+    COUNTERS = ("pushed", "pulled", "deleted", "renamed", "conflicts", "errors")
+
     def __init__(self):
         self.pushed = _AtomicInt()
         self.pulled = _AtomicInt()
@@ -710,6 +722,13 @@ class SyncStats:
         self.renamed = _AtomicInt()
         self.conflicts = _AtomicInt()
         self.errors = _AtomicInt()
+
+    def merge(self, other):
+        """Accumulate another pass's counters into this one (worker totals)."""
+        for name in self.COUNTERS:
+            counter = getattr(self, name)
+            counter += int(getattr(other, name))
+        return self
 
 
 def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
@@ -733,6 +752,24 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
     include = parse_include_patterns(pair["include_patterns"])
     export_map = resolve_export_formats(cfg)
     base_rows = store.base_entries(pair["id"])
+    # A lost/emptied base snapshot makes both sides look brand-new: the
+    # three-way compare would then "resolve" every path as a conflict (and
+    # with policy 'newer' silently copy one tree over the other). Refuse
+    # unless the user explicitly asks for a rebuild with --full.
+    marker = f"pair_synced:{pair['id']}"
+    previous = store.kv_get(marker)
+    try:
+        previous_count = int(previous) if previous else 0
+    except (TypeError, ValueError):
+        previous_count = 0
+    if not base_rows and previous_count > 0 and not force_full:
+        store.log(pair["id"], "error", "",
+                  "base snapshot is empty but this pair synced before — "
+                  "refusing to reconcile from scratch (run "
+                  "'drivesync sync --full --pair "
+                  f"{pair['id']}' once to rebuild it)", level="error")
+        stats.errors += 1
+        return stats, False
 
     remote = None
     if changes is not None and not force_full:
@@ -761,14 +798,22 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
     # exported Google-native docs live under rel+ext locally: align the maps
     fold = fold_exports(local, remote, base, export_map)
 
+    md5_cache = {}
+
     def md5_of(rel):
+        # rename detection and change detection can ask for the same file
+        # several times in one pass; a large rename set was O(n²) hashes
+        if rel in md5_cache:
+            return md5_cache[rel]
         path = os.path.join(local_root, fold.get(rel, rel))
+        digest = None
         if os.path.isfile(path):
             try:
-                return md5_file(path)
+                digest = md5_file(path)
             except OSError:
-                return None
-        return None
+                digest = None
+        md5_cache[rel] = digest
+        return digest
 
     ops = decide(local, remote, base, pair["direction"],
                  pair["conflict_policy"] or cfg.get("conflict_policy", "newer"),
@@ -791,7 +836,10 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
 
     def apply_one(op):
         try:
-            ctx.apply(op)
+            # one commit per op (base row + marker/activity rows) instead of
+            # one per write: a first sync writes thousands of small rows
+            with store.batch():
+                ctx.apply(op)
         except Exception as exc:
             stats.errors += 1
             store.log(pair["id"], "error", op[1] if len(op) > 1 else "",
@@ -819,6 +867,9 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
             list(pool.map(apply_one, transfers))
     for op in post:
         apply_one(op)
+    # remember what a healthy base looked like: an empty snapshot after a
+    # non-empty one means state loss, not "everything was deleted"
+    store.kv_set(marker, str(len(store.base_entries(pair["id"]))))
     return stats, stats.errors == 0
 
 
@@ -925,7 +976,6 @@ class _ApplyCtx:
 
     # -- op dispatch ------------------------------------------------
     def apply(self, op):
-        name, rel = op[0], op[1]
         fn = {
             "upload": self.op_upload,
             "download": self.op_download,
@@ -946,7 +996,7 @@ class _ApplyCtx:
             "forget": self.op_forget,
             "ack_local_delete": self.op_ack_local_delete,
             "ack_remote_delete": self.op_ack_remote_delete,
-        }[name]
+        }[op[0]]
         fn(op)
 
     def op_upload(self, op):
@@ -1006,6 +1056,19 @@ class _ApplyCtx:
             dest_rel = rel
             note = ""
         dest = os.path.join(self.root, dest_rel)
+        if r.get("kind") == "gdoc" and r.get("export"):
+            # never clobber a local file that is not our own export; the
+            # base row (kind file + no remote_md5) is that proof
+            b = self._base(rel)
+            ours = bool(b and b.get("kind") == "file" and
+                        b.get("remote_md5") is None)
+            if os.path.exists(dest) and not ours:
+                self.store.log(
+                    self.pid, "error", rel,
+                    "refusing to overwrite a local file that is not a "
+                    "tracked Drive export", level="error")
+                self.stats.errors += 1
+                return
         self._pull_remote(rel, dest)
         if r.get("mtime"):
             try:

@@ -1,8 +1,10 @@
 """SQLite state store: accounts, pairs, base snapshots and the activity log."""
 
 import json
+import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 CREATE INDEX IF NOT EXISTS idx_entries_pair ON entries(pair_id);
 CREATE INDEX IF NOT EXISTS idx_events_pair  ON events(pair_id);
+CREATE INDEX IF NOT EXISTS idx_events_ts    ON events(ts);
 """
 
 _DIRECTIONS = ("bidirectional", "upload", "download")
@@ -119,6 +122,17 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def roots_overlap(a, b) -> bool:
+    """True when two local sync roots are the same or nested.
+
+    Two pairs writing the same files would corrupt both base snapshots, so
+    add_pair refuses overlapping roots.
+    """
+    a = os.path.realpath(str(a))
+    b = os.path.realpath(str(b))
+    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+
+
 def to_local(iso: str) -> str:
     """Render a stored UTC timestamp as local wall-clock time.
 
@@ -137,14 +151,34 @@ class Store:
     def __init__(self, path):
         self.path = str(path)
         if path:
-            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            parent = Path(self.path).parent
+            parent.mkdir(parents=True, exist_ok=True)
+            # the DB holds OAuth refresh tokens: private to this user
+            try:
+                os.chmod(parent, 0o700)
+            except OSError:
+                pass
         self._lock = threading.RLock()
+        self._batch_depth = 0
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
+            # WAL lets the dashboard read while a sync pass writes; NORMAL
+            # fsyncs the WAL rather than every commit (safe against process
+            # crashes, only a power cut can lose the last pass).
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.DatabaseError:  # e.g. read-only media
+                pass
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(_SCHEMA)
             self._migrate()
             self._conn.commit()
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     # Columns added after the first release; ALTER is idempotent per launch.
     _MIGRATIONS = {
@@ -169,10 +203,29 @@ class Store:
         with self._lock:
             self._conn.close()
 
+    @contextmanager
+    def batch(self):
+        """Group writes into a single commit (a sync op writes several rows).
+
+        Nested use is safe: only the outermost context commits. Writes stay
+        visible to this connection immediately; other processes see them
+        when the batch ends.
+        """
+        with self._lock:
+            self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            with self._lock:
+                self._batch_depth -= 1
+                if self._batch_depth == 0:
+                    self._conn.commit()
+
     def _exec(self, sql, params=()):
         with self._lock:
             cur = self._conn.execute(sql, params)
-            self._conn.commit()
+            if not self._batch_depth:
+                self._conn.commit()
             return cur
 
     # ---- accounts -------------------------------------------------
@@ -209,6 +262,12 @@ class Store:
             raise ValueError(f"direction must be one of {_DIRECTIONS}")
         if conflict_policy not in _POLICIES:
             raise ValueError(f"conflict_policy must be one of {_POLICIES}")
+        for row in self.pairs():
+            if roots_overlap(local_path, row["local_path"]):
+                raise ValueError(
+                    f"local path overlaps pair #{row['id']} "
+                    f"({row['local_path']}); two pairs must not write the "
+                    "same files")
         scope = normalize_include_patterns(include_patterns)
         cur = self._exec(
             "INSERT INTO pairs(account_id, local_path, remote_id, remote_path, "
@@ -246,14 +305,26 @@ class Store:
         if "include_patterns" in fields:
             fields["include_patterns"] = \
                 normalize_include_patterns(fields["include_patterns"])
+        current = self.pair(pair_id)
+        # repointing a pair at a different tree invalidates its snapshot:
+        # the old base rows would look like mass deletions on the next pass
+        repointed = current and any(
+            k in fields and fields[k] != current[k]
+            for k in ("local_path", "remote_id"))
         sets = ", ".join(f"{k}=?" for k in keys)
         self._exec(f"UPDATE pairs SET {sets} WHERE id=?",
                    tuple(fields[k] for k in keys) + (pair_id,))
+        if repointed:
+            self._exec("DELETE FROM entries WHERE pair_id=?", (pair_id,))
+            self.kv_delete(f"pair_synced:{pair_id}")
+            self.kv_delete(f"stale:{pair_id}")
         return self.pair(pair_id)
 
     def delete_pair(self, pair_id):
         self._exec("DELETE FROM entries WHERE pair_id=?", (pair_id,))
         self._exec("DELETE FROM pairs WHERE id=?", (pair_id,))
+        self.kv_delete(f"pair_synced:{pair_id}")
+        self.kv_delete(f"stale:{pair_id}")
 
     # ---- base snapshots -------------------------------------------
     def base_entries(self, pair_id):

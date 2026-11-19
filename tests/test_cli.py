@@ -106,6 +106,63 @@ def test_sync_unknown_pair(home):
     assert "no sync pair #42" in str(exc.value.code)
 
 
+def test_sync_reports_aggregate_totals(home, monkeypatch, capsys):
+    from drivesync import engine
+    import drivesync.worker as worker_mod
+
+    _pair(home)
+
+    class FakeWorker:
+        def __init__(self, store, cfg, config_source=None):
+            self.args = (store, cfg, config_source)
+
+        def run_pass(self, pair_id=None, force_full=False):
+            stats = engine.SyncStats()
+            stats.pushed += 2
+            stats.pulled += 1
+            return stats, True
+
+    monkeypatch.setattr(worker_mod, "Worker", FakeWorker)
+    with pytest.raises(SystemExit) as exc:
+        main(["sync"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "pushed 2" in out and "pulled 1" in out and "errors 0" in out
+
+
+def test_sync_exits_2_when_pass_failed(home, monkeypatch, capsys):
+    from drivesync import engine
+    import drivesync.worker as worker_mod
+
+    _pair(home)
+
+    class FakeWorker:
+        def __init__(self, store, cfg, config_source=None):
+            pass
+
+        def run_pass(self, pair_id=None, force_full=False):
+            stats = engine.SyncStats()
+            stats.errors += 1
+            return stats, False
+
+    monkeypatch.setattr(worker_mod, "Worker", FakeWorker)
+    with pytest.raises(SystemExit) as exc:
+        main(["sync"])
+    assert exc.value.code == 2
+    assert "errors 1" in capsys.readouterr().out
+
+
+def test_serve_pre_probe_prints_hint(home, monkeypatch, capsys):
+    """Werkzeug exits the process on EADDRINUSE, so the CLI must probe."""
+    import drivesync.cli as cli
+
+    monkeypatch.setattr(cli, "_port_busy", lambda url: True)
+    with pytest.raises(SystemExit) as exc:
+        main(["serve"])
+    assert exc.value.code == 1
+    assert "systemctl --user status drivesync" in capsys.readouterr().err
+
+
 def test_serve_port_busy_prints_hint(home, monkeypatch, capsys):
     import drivesync.server as srv
 

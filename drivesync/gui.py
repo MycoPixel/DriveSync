@@ -39,7 +39,8 @@ from . import engine
 from . import notify
 
 from . import __version__  # noqa: E402
-from .auth import access_token, interactive_auth, token_from_json, whoami  # noqa: E402
+from .auth import (access_token_persisting, interactive_auth,
+                   token_from_json, whoami)  # noqa: E402
 from .config import app_dir, load_config, update_config  # noqa: E402
 from .db import Store, parse_include_patterns, to_local  # noqa: E402
 from .drive import Drive, folders_for_parent, resolve_export_formats  # noqa: E402
@@ -263,7 +264,7 @@ class DesktopApp:
     def __init__(self):
         self.store = Store(app_dir() / "state.db")
         self.cfg = load_config()
-        self.worker = Worker(self.store, self.cfg)
+        self.worker = Worker(self.store, self.cfg, config_source=load_config)
         self.worker.start()
         self._closing = False
         self.tray = None
@@ -664,7 +665,8 @@ class DesktopApp:
         if not account:
             raise ValueError(f"account #{acc_id} not found")
         token = token_from_json(account["token_json"])
-        return Drive(lambda: access_token(token))
+        return Drive(lambda: access_token_persisting(self.store, acc_id,
+                                                     token))
 
     def _on_browse_drive(self, _btn, acc_combo, ent_remote, ent_path):
         accounts = self.store.accounts()
@@ -1363,9 +1365,10 @@ class DesktopApp:
         except (ValueError, TypeError) as exc:
             self._error(str(exc))
             return
-        self.worker.stop()
-        self.worker = Worker(self.store, self.cfg)
-        self.worker.start()
+        # adopt the new interval without stopping the worker (stop() joins
+        # the running pass and could freeze the GTK thread for seconds)
+        self.worker.apply_config(self.cfg)
+        self.worker.wake.set()
         self._info(f"Sync interval set to {self.cfg['sync_interval']}s.")
 
     def _refresh_activity(self, *_args):

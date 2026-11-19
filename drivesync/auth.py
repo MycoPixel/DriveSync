@@ -22,6 +22,10 @@ SCOPE = "https://www.googleapis.com/auth/drive"
 ACCOUNT_KWARGS = ("access_type=offline", "prompt=consent",
                   "include_granted_scopes=true")
 
+# one refresh at a time: the worker and dashboard requests can hit an
+# expired token together, and Google rotates refresh tokens
+_REFRESH_LOCK = threading.Lock()
+
 
 class AuthError(Exception):
     pass
@@ -69,6 +73,14 @@ def interactive_auth(config):
     client_id, client_secret = _client_credentials(config)
     port = int(config.get("auth_port", 53137))
     state = secrets.token_urlsafe(16)
+    try:
+        server = _CallbackServer(port)
+    except OSError:
+        # the configured port is taken (a second auth in flight, or an
+        # unrelated service). The redirect URI travels in the request, so
+        # any free loopback port works.
+        server = _CallbackServer(0)
+        port = server.server_address[1]
     redirect_uri = f"http://127.0.0.1:{port}"
 
     params = {
@@ -81,7 +93,6 @@ def interactive_auth(config):
     params.update(dict(kv.split("=") for kv in ACCOUNT_KWARGS))
     url = AUTH_URL + "?" + urllib.parse.urlencode(params)
 
-    server = _CallbackServer(port)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -93,11 +104,14 @@ def interactive_auth(config):
     except Exception:
         pass
 
-    deadline = time.time() + 300  # 5 minutes to complete consent
-    while time.time() < deadline and "code" not in server.result \
-            and "error" not in server.result:
-        time.sleep(0.3)
-    server.shutdown()
+    try:
+        deadline = time.time() + 300  # 5 minutes to complete consent
+        while time.time() < deadline and "code" not in server.result \
+                and "error" not in server.result:
+            time.sleep(0.3)
+    finally:
+        server.shutdown()
+        server.server_close()
     result = server.result
     if result.get("state") != state:
         raise AuthError("OAuth state mismatch (possible forged callback).")
@@ -111,6 +125,20 @@ def interactive_auth(config):
     return tokens
 
 
+def _with_expiry(tokens):
+    """Stamp expires_at on a token response (Google only sends expires_in)."""
+    if not tokens.get("access_token"):
+        raise AuthError("Token response contained no access token; "
+                        "re-run authorization.")
+    try:
+        expires_in = int(tokens.get("expires_in", 3600))
+    except (TypeError, ValueError):
+        expires_in = 3600
+    tokens["expires_in"] = expires_in
+    tokens["expires_at"] = time.time() + expires_in
+    return tokens
+
+
 def exchange_code(client_id, client_secret, code, redirect_uri):
     resp = requests.post(TOKEN_URL, data={
         "code": code,
@@ -121,7 +149,7 @@ def exchange_code(client_id, client_secret, code, redirect_uri):
     }, timeout=30)
     if resp.status_code != 200:
         raise AuthError(f"Token exchange failed: {resp.text[:300]}")
-    return resp.json()
+    return _with_expiry(resp.json())
 
 
 def refresh_tokens(client_id, client_secret, refresh_token):
@@ -133,25 +161,59 @@ def refresh_tokens(client_id, client_secret, refresh_token):
     }, timeout=30)
     if resp.status_code != 200:
         raise AuthError(f"Token refresh failed: {resp.text[:300]}")
-    return resp.json()
+    return _with_expiry(resp.json())
+
+
+def token_snapshot(token_json):
+    """The fields a refresh can change (used to avoid needless DB writes)."""
+    return (token_json.get("access_token"), token_json.get("expires_at"),
+            token_json.get("refresh_token"))
+
+
+def access_token_persisting(store, account_id, token_json):
+    """access_token() for store-backed accounts, saving real refreshes.
+
+    Drive calls this provider on every request; writing the row each time
+    would turn a read-only listing into a burst of database writes.
+    """
+    before = token_snapshot(token_json)
+    tok = access_token(token_json)
+    if token_snapshot(token_json) != before:
+        store.update_account_tokens(account_id, token_json)
+    return tok
 
 
 def access_token(token_json):
-    """Return a valid access token, refreshing when expired."""
+    """Return a valid access token, refreshing when expired.
+
+    Mutates token_json in place; callers that own a store should persist it
+    (store.update_account_tokens) so a rotated refresh token survives.
+    """
     if not token_json.get("refresh_token"):
         raise AuthError("No refresh token stored; re-run authorization.")
     expires_at = token_json.get("expires_at", 0)
     if time.time() < expires_at - 60 and token_json.get("access_token"):
         return token_json["access_token"]
 
-    fresh = refresh_tokens(token_json["client_id"], token_json["client_secret"],
-                           token_json["refresh_token"])
-    token_json["access_token"] = fresh["access_token"]
-    token_json["expires_in"] = fresh.get("expires_in", 3600)
-    token_json["expires_at"] = time.time() + token_json["expires_in"]
-    if fresh.get("refresh_token"):
-        token_json["refresh_token"] = fresh["refresh_token"]
-    return token_json["access_token"]
+    with _REFRESH_LOCK:
+        # another thread may have refreshed while this one waited: re-check
+        # before spending a call (and possibly rotating the token again)
+        expires_at = token_json.get("expires_at", 0)
+        if time.time() < expires_at - 60 and token_json.get("access_token"):
+            return token_json["access_token"]
+        client_id = token_json.get("client_id")
+        client_secret = token_json.get("client_secret")
+        if not (client_id and client_secret):
+            raise AuthError("Stored account has no OAuth client credentials; "
+                            "re-run authorization.")
+        fresh = _with_expiry(refresh_tokens(client_id, client_secret,
+                                            token_json["refresh_token"]))
+        token_json["access_token"] = fresh["access_token"]
+        token_json["expires_in"] = fresh["expires_in"]
+        token_json["expires_at"] = fresh["expires_at"]
+        if fresh.get("refresh_token"):
+            token_json["refresh_token"] = fresh["refresh_token"]
+        return token_json["access_token"]
 
 
 def whoami(access_token_value):

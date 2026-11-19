@@ -12,7 +12,7 @@ import pytest
 from drivesync.db import normalize_include_patterns, parse_include_patterns
 from drivesync.engine import OnDemandSkip, download_item, download_tree, \
     included
-from drivesync.engine import scan_local, scan_remote
+from drivesync.engine import scan_local
 
 
 # ---- db plumbing ---------------------------------------------------------
@@ -275,8 +275,23 @@ def client(tmp_path, monkeypatch):
     from drivesync.server import create_app
     store = Store(tmp_path / "state.db")
     app = create_app(store, worker=None)
-    yield app.test_client(), store
+    c = app.test_client()
+    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    yield c, store
     store.close()
+
+
+def fake_folder_drive(monkeypatch):
+    from drivesync.drive import FOLDER_MIME
+
+    class FakeDrive:
+        def __init__(self, provider, limiter=None):
+            pass
+
+        def get(self, file_id, fields=None):
+            return {"id": file_id, "name": file_id, "mimeType": FOLDER_MIME}
+
+    monkeypatch.setattr("drivesync.server.Drive", FakeDrive)
 
 
 @pytest.fixture
@@ -315,7 +330,8 @@ def test_children_endpoint_lists_files_and_folders(client, monkeypatch):
     assert sub["current"]["name"] == "Sub"
 
 
-def test_pair_include_patterns_roundtrip(client, tmp_path):
+def test_pair_include_patterns_roundtrip(client, tmp_path, monkeypatch):
+    fake_folder_drive(monkeypatch)
     c, store = client
     store.add_account("me@example.com", {})
     docs = tmp_path / "docs"

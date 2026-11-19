@@ -2,10 +2,19 @@
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
+/* escape every server value before it goes into innerHTML: file names,
+   folder names and log messages are user/Drive-controlled text */
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 const api = async (path, opts = {}) => {
   const resp = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      "X-DriveSync": "1",
+      ...(opts.headers || {}),
+    },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await resp.json().catch(() => ({ ok: false, error: "bad JSON" }));
@@ -70,15 +79,15 @@ async function loadDashboard() {
        <b>Interval</b><span>${st.interval}s</span>
        <b>Last run</b><span>${last}</span>
        <b>Last result</b><span>${ls}</span>` +
-      (w.last_error ? `<b>Last error</b><span class="msg err">${w.last_error}</span>` : "");
+      (w.last_error ? `<b>Last error</b><span class="msg err">${esc(w.last_error)}</span>` : "");
   } catch (e) { $("#workerStatus").textContent = "status unavailable: " + e.message; }
 
   try {
     const { accounts } = await api("/api/accounts");
     state.accounts = accounts;
     $("#accountCards").innerHTML = accounts.length
-      ? accounts.map((a) => `<div class="acct"><span>📮 ${a.email}</span>
-          <span class="muted small">${a.name || ""}</span></div>`).join("")
+      ? accounts.map((a) => `<div class="acct"><span>📮 ${esc(a.email)}</span>
+          <span class="muted small">${esc(a.name || "")}</span></div>`).join("")
       : '<p class="muted small">No Google account connected yet.</p>';
   } catch (e) { /* ignore */ }
 
@@ -87,9 +96,9 @@ async function loadDashboard() {
     state.pairs = pairs;
     $("#pairsSummary").innerHTML = pairs.length
       ? `<table class="tbl"><tbody>${pairs.map((p) => `<tr>
-          <td>#${p.id}</td><td>${p.local_path}</td>
-          <td>${p.remote_path || p.remote_id}</td>
-          <td>${p.direction}</td><td>${p.enabled ? "enabled" : "paused"}</td>
+          <td>#${p.id}</td><td>${esc(p.local_path)}</td>
+          <td>${esc(p.remote_path || p.remote_id)}</td>
+          <td>${esc(p.direction)}</td><td>${p.enabled ? "enabled" : "paused"}</td>
           <td><button class="btn ghost small" data-sync="${p.id}">Sync</button></td>
         </tr>`).join("")}</tbody></table>`
       : '<p class="muted small">No sync pairs yet — add one in the "Sync pairs" tab.</p>';
@@ -117,7 +126,7 @@ async function loadAccounts() {
           const q = a.quota || {};
           const used = humanBytes(+q.usage || 0), limit = +q.limit || 0;
           const storage = limit ? `${used} / ${humanBytes(limit)}` : used || "—";
-          return `<tr><td>${a.id}</td><td>${a.email}</td><td>${storage}</td>
+          return `<tr><td>${a.id}</td><td>${esc(a.email)}</td><td>${storage}</td>
             <td><button class="btn danger small" data-del-acct="${a.id}">Remove</button></td></tr>`;
         }).join("")
       : '<tr><td colspan="4" class="muted">No accounts connected.</td></tr>';
@@ -129,7 +138,7 @@ async function loadAccounts() {
         loadAccounts();
       }));
     const sel = $("#pairAccount");
-    sel.innerHTML = accounts.map((a) => `<option value="${a.id}">${a.email}</option>`).join("");
+    sel.innerHTML = accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`).join("");
   } catch (e) { /* ignore */ }
 }
 
@@ -159,9 +168,9 @@ async function loadPairs() {
     state.pairs = pairs;
     $("#pairsTable tbody").innerHTML = pairs.length
       ? pairs.map((p) => `<tr>
-          <td>#${p.id}</td><td>${p.local_path}</td>
-          <td>${p.remote_path || p.remote_id}</td><td>${p.direction}</td>
-          <td>${p.conflict_policy}</td>
+          <td>#${p.id}</td><td>${esc(p.local_path)}</td>
+          <td>${esc(p.remote_path || p.remote_id)}</td><td>${esc(p.direction)}</td>
+          <td>${esc(p.conflict_policy)}</td>
           <td>${p.allow_deletes
             ? `<button class="btn ghost small" data-nodel="${p.id}" title="Deletions are allowed (files go to trash)">On</button>`
             : `<button class="btn ghost small" data-yodel="${p.id}" title="Deletions blocked — files are kept on both sides">Off</button>`}</td>
@@ -245,13 +254,13 @@ async function renderPicker() {
     const acct = $("#pairAccount").value || (state.accounts[0] && state.accounts[0].id);
     const { folders } = await api(`/api/drive/${acct}/folders?parent=${encodeURIComponent(cur.id)}`);
     const list = folders.length
-      ? folders.map((f) => `<div class="picker-item" data-id="${f.id}" data-name="${f.name}">
-          <span>📁 ${f.name}</span><span class="muted small">open ›</span></div>`).join("")
+      ? folders.map((f) => `<div class="picker-item" data-id="${esc(f.id)}" data-name="${esc(f.name)}">
+          <span>📁 ${esc(f.name)}</span><span class="muted small">open ›</span></div>`).join("")
       : `<p class="muted">${cur.id === "shared"
           ? "No folders shared with this account yet." : "No subfolders."}</p>`;
     const useRow = cur.id === "shared" ? "" :
-      `<div class="picker-item" data-id="${cur.id}" data-name="${cur.name}" data-choose="1">
-        <span>✅ Use “${cur.name}”${folders.length ? "" : " (no subfolders)"}</span>
+      `<div class="picker-item" data-id="${esc(cur.id)}" data-name="${esc(cur.name)}" data-choose="1">
+        <span>✅ Use “${esc(cur.name)}”${folders.length ? "" : " (no subfolders)"}</span>
         <span class="muted small">select</span></div>`;
     $("#pickerList").innerHTML = list + useRow;
     document.querySelectorAll(".picker-item").forEach((item) =>
@@ -267,7 +276,7 @@ async function renderPicker() {
         }
       }));
   } catch (e) {
-    $("#pickerList").innerHTML = `<p class="msg err">${e.message}</p>`;
+    $("#pickerList").innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
   }
 }
 
@@ -276,11 +285,11 @@ async function renderEvents(container, limit = 200) {
   const filter = $("#eventFilter") ? $("#eventFilter").value : "";
   const { events } = await api("/api/events?limit=" + limit + (filter ? "&level=" + filter : ""));
   container.innerHTML = events.length
-    ? events.map((e) => `<div class="ev ${e.level}">
-        <span class="t">${e.ts.replace("T", " ")}</span>
-        <span class="a">${e.action}</span>
-        <span class="p">${e.path}</span>
-        <span class="m muted">${e.message}</span></div>`).join("")
+    ? events.map((e) => `<div class="ev ${esc(e.level)}">
+        <span class="t">${esc(e.ts.replace("T", " "))}</span>
+        <span class="a">${esc(e.action)}</span>
+        <span class="p">${esc(e.path)}</span>
+        <span class="m muted">${esc(e.message)}</span></div>`).join("")
     : '<p class="muted small">Nothing logged yet.</p>';
 }
 async function loadEvents() {
@@ -299,10 +308,15 @@ async function loadSettings() {
     $("#setIgnores").value = settings.ignore_patterns.join("\n");
     $("#setDeleteLimit").value = settings.delete_safety_limit;
     $("#setConcurrency").value = settings.transfer_concurrency;
+    $("#setBandwidth").value = settings.bandwidth_limit_kb;
+    $("#setActiveFrom").value = settings.active_from || "";
+    $("#setActiveTo").value = settings.active_to || "";
+    $("#setWatch").checked = settings.watch_enabled !== false;
+    $("#setIncremental").checked = settings.incremental_scan !== false;
     $("#setConvertDocs").checked = settings.convert_google_docs !== false;
     $("#aboutText").textContent =
       `DriveSync ${settings.server_port ? "" : ""}— local dashboard port ${settings.server_port}. ` +
-      "Data lives in " + (await (await fetch("/api/status")).json()).db + ".";
+      "Data lives in " + (await api("/api/status")).db + ".";
   } catch (e) { /* ignore */ }
 }
 $("#settingsForm").addEventListener("submit", async (e) => {
@@ -315,6 +329,11 @@ $("#settingsForm").addEventListener("submit", async (e) => {
         conflict_policy: $("#setPolicy").value,
         delete_safety_limit: +$("#setDeleteLimit").value,
         transfer_concurrency: +$("#setConcurrency").value,
+        bandwidth_limit_kb: +$("#setBandwidth").value,
+        active_from: $("#setActiveFrom").value,
+        active_to: $("#setActiveTo").value,
+        watch_enabled: $("#setWatch").checked,
+        incremental_scan: $("#setIncremental").checked,
         convert_google_docs: $("#setConvertDocs").checked,
         ignore_patterns: $("#setIgnores").value.split("\n").map((s) => s.trim()).filter(Boolean),
       },

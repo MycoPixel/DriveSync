@@ -9,6 +9,7 @@ notifications, like the tray icon.
 import time
 
 COOLDOWN_SECS = 300.0      # at most one notification every 5 minutes
+_initialized = False       # Notify.init() once per process
 
 
 def available():
@@ -23,18 +24,21 @@ def available():
 
 def send(title, body):
     """Show a desktop notification. Returns True when actually shown."""
+    global _initialized
     try:
         import gi
         gi.require_version("Notify", "0.7")
         from gi.repository import Notify
-        if Notify.init("DriveSync"):
-            n = Notify.Notification.new(title, body, "drivesync")
-            shown = bool(n.show())
-            Notify.uninit()
-            return shown
+        # Notify.uninit() after every message invalidated the bus connection;
+        # initialise once and let the process keep it for its lifetime
+        if not _initialized:
+            if not Notify.init("DriveSync"):
+                return False
+            _initialized = True
+        n = Notify.Notification.new(title, body, "drivesync")
+        return bool(n.show())
     except Exception:
-        pass
-    return False
+        return False
 
 
 def problems(rows):

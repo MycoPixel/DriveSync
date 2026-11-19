@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 from . import engine
-from .auth import access_token, token_from_json
+from .auth import access_token_persisting, token_from_json
 from .config import app_dir
 from .drive import Drive
 from .limits import TokenBucket
@@ -47,12 +47,18 @@ def in_window(now_time, start_s, end_s):
 class Worker:
     """Runs sync passes in a daemon thread; wake_event triggers an immediate run."""
 
-    def __init__(self, store, config, interval=None):
+    def __init__(self, store, config, interval=None, config_source=None):
         self.store = store
         self.config = config
+        # Optional callable returning the current config (load_config). When
+        # given, settings changed outside this process (dashboard, CLI) are
+        # picked up on the next pass instead of requiring a restart.
+        self._config_source = config_source
+        self._interval_override = interval
         self.interval = interval or config.get("sync_interval", 30)
         self.wake = threading.Event()
         self.stop_flag = threading.Event()
+        self._paused = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name="drivesync-worker")
         self.status = {"running": False, "paused": False, "last_run": None,
@@ -60,8 +66,9 @@ class Worker:
                        "waiting_until": None}
         self._lock = threading.Lock()
         self._lockfh = None
-        limit_kb = int(config.get("bandwidth_limit_kb", 0) or 0)
-        self.limiter = TokenBucket(limit_kb * 1024) if limit_kb > 0 else None
+        self._limit_kb = int(config.get("bandwidth_limit_kb", 0) or 0)
+        self.limiter = TokenBucket(self._limit_kb * 1024) \
+            if self._limit_kb > 0 else None
         self._pending = set()           # pair ids requested via sync_now()
         # keep the activity log bounded: every pass logs a summary row, so a
         # service at the default interval writes ~3k rows/day. Best-effort —
@@ -70,6 +77,36 @@ class Worker:
             self.store.prune_events()
         except Exception:
             pass
+
+    def apply_config(self, cfg):
+        """Adopt a freshly loaded config without restarting the worker.
+
+        Ignore patterns, concurrency, the bandwidth limiter, the sync window
+        and incremental scanning are all read from self.config — but the
+        worker used to cache the dict from construction, so dashboard/CLI
+        changes were ignored until a restart.
+        """
+        self.config = dict(cfg)
+        if self._interval_override is None:
+            try:
+                self.interval = int(cfg.get("sync_interval", self.interval))
+            except (TypeError, ValueError):
+                pass
+        try:
+            limit = int(cfg.get("bandwidth_limit_kb", 0) or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit != self._limit_kb:
+            self._limit_kb = limit
+            self.limiter = TokenBucket(limit * 1024) if limit > 0 else None
+
+    def _reload_config(self):
+        if not self._config_source:
+            return
+        try:
+            self.apply_config(self._config_source())
+        except Exception:
+            pass                    # a broken config file must not stop syncing
 
     def start(self):
         self._thread.start()
@@ -80,20 +117,16 @@ class Worker:
         self._thread.join(timeout=10)
 
     def pause(self):
-        """Stop the background loop (dashboard stays up); resume() restarts it."""
-        if self._thread.is_alive():
-            self.stop()
-            self.status["paused"] = True
+        """Skip sync passes while keeping the worker thread (dashboard up)."""
+        self._paused.set()
+        self.wake.set()                 # wake a sleeping loop promptly
+        self.status["paused"] = True
 
     def resume(self):
-        """Restart the background loop after a pause."""
-        if self._thread.is_alive():
-            return
-        self.stop_flag.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True,
-                                        name="drivesync-worker")
-        self._thread.start()
+        """Allow sync passes again after a pause."""
+        self._paused.clear()
         self.status["paused"] = False
+        self.wake.set()
 
     def sync_now(self, pair_id=None):
         """Request an immediate sync pass (optionally one pair only)."""
@@ -103,14 +136,10 @@ class Worker:
 
     def make_drive(self, account_row):
         token = token_from_json(account_row["token_json"])
-
-        def provider():
-            tok = access_token(token)
-            # persist refreshed tokens so restarts do not re-auth needlessly
-            self.store.update_account_tokens(account_row["id"], token)
-            return tok
-
-        return Drive(provider, limiter=self.limiter)
+        return Drive(
+            lambda: access_token_persisting(self.store, account_row["id"],
+                                            token),
+            limiter=self.limiter)
 
     def run_pass(self, pair_id=None, force_full=False):
         """One sync sweep across all enabled pairs (or the given pair/ids).
@@ -119,15 +148,28 @@ class Worker:
         coalesced by the watcher). force_full re-lists Drive and rehashes
         local files even when size+mtime look unchanged — the recovery for
         same-mtime saves ('drivesync sync --full').
+
+        Returns (SyncStats totals, ok). ok is False when any pair, account or
+        the pass itself failed — 'drivesync sync' turns that into exit 2.
         """
+        self._reload_config()
+        total = engine.SyncStats()
+        # a fresh pass supersedes the previous failure; leave stale errors
+        # in the activity log (where they belong) instead of status
+        self.status["last_error"] = None
         with self._lock:
             if self.status["running"]:
-                return
+                self.store.log(None, "sync-skipped", "",
+                               "previous pass is still running")
+                return total, False
             self.status["running"] = True
         if not self._acquire_sync_lock():
             with self._lock:
                 self.status["running"] = False
-            return
+            self.store.log(None, "sync-skipped", "",
+                           "another DriveSync process is syncing")
+            return total, False
+        overall_ok = True
         try:
             pairs = self.store.pairs(enabled_only=True)
             if pair_id:
@@ -143,24 +185,35 @@ class Worker:
                     for pair in groups[acc_id]:
                         self.store.log(pair["id"], "error",
                                        message="account missing", level="error")
+                        total.errors += 1
+                    overall_ok = False
                     continue
                 drive = self.make_drive(account)
                 feed, new_token = None, None
                 if incremental:
                     feed, new_token = self._fetch_changes(drive, acc_id)
-                all_ok = True
                 for pair in groups[acc_id]:
+                    # A pair that failed last pass does a full scan now: its
+                    # error may have hidden remote changes the delta does not
+                    # replay, and a full scan is the only way to re-see them.
+                    stale = bool(self.store.kv_get(f"stale:{pair['id']}"))
                     try:
                         stats, ok = engine.sync_pair(
                             self.store, self.config, pair, drive,
-                            force_full=force_full, changes=feed)
+                            force_full=force_full,
+                            changes=None if stale else feed)
                     except Exception as exc:  # keep the worker alive no matter what
                         self.status["last_error"] = str(exc)
                         self.store.log(pair["id"], "worker-error", "",
                                        str(exc), level="error")
-                        all_ok = False
+                        self.store.kv_set(f"stale:{pair['id']}", "1")
+                        total.errors += 1
+                        overall_ok = False
                         continue
+                    total.merge(stats)
                     if ok:
+                        if stale:
+                            self.store.kv_delete(f"stale:{pair['id']}")
                         self.store.log(pair["id"], "summary", "",
                                        f"pushed {stats.pushed}, pulled {stats.pulled}, "
                                        f"deleted {stats.deleted}, renamed {stats.renamed}, "
@@ -173,20 +226,26 @@ class Worker:
                             "conflicts": int(stats.conflicts),
                         }
                     else:
-                        all_ok = False
+                        self.store.kv_set(f"stale:{pair['id']}", "1")
+                        overall_ok = False
                     self.status["last_run"] = time.time()
-                # The feed token advances only when the whole account was
-                # swept clean and unfiltered: a filtered or failing run keeps
-                # re-reading the same feed (decide() no-ops unchanged paths).
-                if incremental and new_token and all_ok and pair_id is None:
+                # The feed token advances on unfiltered passes even when a
+                # pair is stale: that pair full-scans next time (see above),
+                # while advancing here keeps a repeatedly failing file from
+                # making the changes feed grow without bound. Filtered passes
+                # never advance it — the other pairs were not swept.
+                if incremental and new_token and pair_id is None:
                     self.store.kv_set(f"changes_token:{acc_id}", new_token)
         except Exception as exc:  # keep the worker alive no matter what
             self.status["last_error"] = str(exc)
             self.store.log(None, "worker-error", "", str(exc), level="error")
+            total.errors += 1
+            overall_ok = False
         finally:
             self._release_sync_lock()
             with self._lock:
                 self.status["running"] = False
+        return total, overall_ok
 
     def _fetch_changes(self, drive, account_id):
         """(feed_items | None, new_token | None) for one account.
@@ -246,6 +305,8 @@ class Worker:
             self.wake.clear()
             if self.stop_flag.is_set():
                 break
+            if self._paused.is_set():
+                continue
             ids = list(self._pending)
             self._pending.clear()
             if not in_window(datetime.now().time(),

@@ -28,6 +28,13 @@ def test_save_and_reload_roundtrip():
     assert config.load_config()["conflict_policy"] == "both"
 
 
+def test_config_and_home_are_private():
+    """config.json holds the OAuth client secret."""
+    config.update_config(client_id="cid", client_secret="csec")
+    assert config.config_path().stat().st_mode & 0o777 == 0o600
+    assert config.app_dir().stat().st_mode & 0o777 == 0o700
+
+
 def test_unknown_keys_are_dropped():
     saved = config.save_config({"sync_interval": 60, "hacker_key": "x"})
     assert "hacker_key" not in saved

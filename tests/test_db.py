@@ -57,6 +57,85 @@ def test_pair_crud_and_validation(store):
     assert store.pair(pair["id"]) is None
 
 
+def test_state_db_permissions_are_private(store):
+    """The DB stores OAuth refresh tokens."""
+    assert store.path
+    import os
+    assert os.stat(store.path).st_mode & 0o777 == 0o600
+    assert os.stat(os.path.dirname(store.path)).st_mode & 0o777 == 0o700
+
+
+class _CountingConn:
+    """Proxy that records commits (sqlite3.Connection is read-only)."""
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "commits", 0)
+
+    def commit(self):
+        object.__setattr__(self, "commits", self.commits + 1)
+        self._conn.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_wal_mode_and_busy_timeout(store):
+    assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+def test_batch_groups_writes_into_one_commit(store):
+    proxy = _CountingConn(store._conn)
+    store._conn = proxy
+    with store.batch():
+        store.kv_set("k1", "1")
+        store.kv_set("k2", "2")
+        assert proxy.commits == 0          # nothing committed yet
+    assert proxy.commits == 1
+    assert store.kv_get("k1") == "1"       # note: reads also commit today
+
+    # nested batches commit only at the outermost exit
+    base = proxy.commits
+    with store.batch():
+        store.kv_set("k3", "3")
+        with store.batch():
+            store.kv_set("k4", "4")
+        assert proxy.commits == base
+    assert proxy.commits == base + 1
+    assert store.kv_get("k3") == "3" and store.kv_get("k4") == "4"
+
+
+def test_add_pair_rejects_overlapping_local_roots(store):
+    store.add_account("a@x.com", {})
+    store.add_pair(1, "/tmp/tree", "root")
+    with pytest.raises(ValueError) as exc:
+        store.add_pair(1, "/tmp/tree/sub", "root2")
+    assert "overlaps pair" in str(exc.value)
+    with pytest.raises(ValueError):
+        store.add_pair(1, "/tmp/tree", "root3")
+    # a sibling tree is fine
+    store.add_pair(1, "/tmp/tree2", "root4")
+    assert len(store.pairs()) == 2
+
+
+def test_repointing_pair_drops_stale_base_and_markers(store):
+    store.add_account("a@x.com", {})
+    pair = store.add_pair(1, "/tmp/x", "root123")
+    store.base_put(pair["id"], "a.txt", "file", remote_id="f1")
+    store.kv_set(f"pair_synced:{pair['id']}", "1")
+    store.kv_set(f"stale:{pair['id']}", "1")
+
+    store.update_pair(pair["id"], local_path="/tmp/y")   # different tree
+    assert store.base_entries(pair["id"]) == []
+    assert store.kv_get(f"pair_synced:{pair['id']}") is None
+    assert store.kv_get(f"stale:{pair['id']}") is None
+
+    store.base_put(pair["id"], "b.txt", "file", remote_id="f2")
+    store.update_pair(pair["id"], enabled=0)             # unrelated edit
+    assert len(store.base_entries(pair["id"])) == 1      # base preserved
+
+
 def test_entries_roundtrip(store):
     store.add_account("a@x.com", {})
     pair = store.add_pair(1, "/tmp/x", "root123")

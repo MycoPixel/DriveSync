@@ -19,6 +19,9 @@ fi
 # 1. copy the application
 mkdir -p "${APP_DIR}" "${BIN_DIR}" "${DATA_DIR}"
 cp -r drivesync "${APP_DIR}/"
+# never ship local build artifacts (bytecode caches, editor scratch files)
+find "${APP_DIR}/drivesync" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+find "${APP_DIR}/drivesync" -name '*.pyc' -delete 2>/dev/null || true
 cp requirements.txt README.md LICENSE "${APP_DIR}/" 2>/dev/null || true
 
 # 2. dependencies into a private venv

@@ -145,10 +145,20 @@ def save_config(cfg: dict) -> dict:
     merged["export_formats"] = {str(k).strip(): str(v).strip().lower()
                                 for k, v in fmts.items() if str(v).strip()}
 
-    app_dir().mkdir(parents=True, exist_ok=True)
+    home = app_dir()
+    home.mkdir(parents=True, exist_ok=True)
+    # the file holds the OAuth client secret: keep the dir and file private
+    try:
+        os.chmod(home, 0o700)
+    except OSError:
+        pass
     tmp = config_path().with_suffix(".json.tmp")
     tmp.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, config_path())
+    try:
+        os.chmod(config_path(), 0o600)
+    except OSError:
+        pass
     return merged
 
 

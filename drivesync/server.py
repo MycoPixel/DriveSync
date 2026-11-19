@@ -8,27 +8,32 @@ import logging
 import os
 import sys
 import threading
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory
 
 from . import __version__
-from .auth import AuthError, access_token, interactive_auth, token_from_json, whoami
+from .auth import (AuthError, access_token_persisting, interactive_auth,
+                   token_from_json, whoami)
 from .config import db_path, load_config, save_config
 from .db import Store, parse_include_patterns, to_local
-from .drive import Drive, DriveError, FOLDER_MIME, SHORTCUT_MIME
+from .drive import Drive, DriveError, FOLDER_MIME, resolve_folder_entry
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
-def _folder_entry(item):
-    """Picker-ready {id,name} for a folder — shortcuts resolve to their target."""
-    if item.get("mimeType") == FOLDER_MIME:
-        return {"id": item["id"], "name": item["name"]}
-    if item.get("mimeType") == SHORTCUT_MIME:
-        details = item.get("shortcutDetails") or {}
-        if details.get("targetMimeType") == FOLDER_MIME:
-            return {"id": details["targetId"], "name": item["name"]}
-    return None
+def _public_settings(cfg):
+    """Config dict safe to hand to the browser: never expose the secret.
+
+    The dashboard only needs to know whether one is stored (the auth form
+    posts a new pair when the user re-authorizes).
+    """
+    out = dict(cfg)
+    secret = out.get("client_secret") or ""
+    out["client_secret"] = "***" if secret else ""
+    out["client_secret_set"] = bool(secret)
+    return out
 
 
 def create_app(store: Store, worker=None):
@@ -41,10 +46,34 @@ def create_app(store: Store, worker=None):
         if not account:
             raise DriveError("account not found")
         token = token_from_json(account["token_json"])
-        return Drive(lambda: access_token(token))
+        return Drive(lambda: access_token_persisting(store, account["id"],
+                                                     token))
 
     def api_error(exc, code=400):
         return jsonify({"ok": False, "error": str(exc)}), code
+
+    @app.before_request
+    def guard_api():
+        """Reject cross-site requests and DNS-rebinding Host headers.
+
+        The API can read Drive tokens and mutate files, so a random web page
+        open in the same browser must not be able to POST to localhost. A
+        custom header cannot be set cross-origin without a CORS preflight
+        (which this server never grants), and the Host/Origin checks stop a
+        rebinding DNS name from reaching the app.
+        """
+        if not request.path.startswith("/api/"):
+            return None
+        if request.headers.get("X-DriveSync") != "1":
+            return api_error("missing X-DriveSync header", 403)
+        host = urlsplit("//" + (request.host or "")).hostname
+        if host not in LOOPBACK:
+            return api_error("unexpected Host header", 403)
+        origin = request.headers.get("Origin")
+        if origin:
+            if origin == "null" or urlsplit(origin).hostname not in LOOPBACK:
+                return api_error("cross-origin request refused", 403)
+        return None
 
     # ---- static UI -------------------------------------------------
     @app.get("/")
@@ -88,11 +117,15 @@ def create_app(store: Store, worker=None):
     def accounts_add():
         """Store OAuth client credentials and start the consent flow."""
         data = request.get_json(force=True, silent=True) or {}
-        cfg = save_config({
-            **load_config(),
-            "client_id": data.get("client_id", ""),
-            "client_secret": data.get("client_secret", ""),
-        })
+        current = load_config()
+        # the form may omit credentials (re-auth with the saved client):
+        # only overwrite when a non-empty value was actually posted
+        updates = {}
+        for key in ("client_id", "client_secret"):
+            value = (data.get(key) or "").strip()
+            if value:
+                updates[key] = value
+        cfg = save_config({**current, **updates})
         try:
             tokens = interactive_auth(cfg)
             email = whoami(tokens["access_token"]).get("emailAddress", "unknown")
@@ -124,7 +157,8 @@ def create_app(store: Store, worker=None):
                 current = {"id": "shared", "name": "Shared with me"}
             else:
                 children = drive.list_children(parent)
-                folders = [f for f in (_folder_entry(c) for c in children) if f]
+                folders = [f for f in (resolve_folder_entry(c) for c in children)
+                           if f]
                 current = None
                 if parent != "root":
                     current = drive.get(parent, fields="id,name,parents")
@@ -180,13 +214,25 @@ def create_app(store: Store, worker=None):
             local = os.path.realpath(os.path.expanduser(data["local_path"]))
             if not os.path.isdir(local):
                 return api_error(f"local path is not a directory: {local}")
+            account_id = int(data["account_id"])
+            remote_id = data["remote_id"]
+            # bind only to a real folder this account can see; a file id
+            # would make the first pass fail in a confusing way
+            try:
+                meta = drive_for(account_id).get(remote_id,
+                                                 fields="id,name,mimeType")
+            except (DriveError, AuthError) as exc:
+                return api_error(f"Drive folder is not accessible: {exc}", 502)
+            if meta.get("mimeType") != FOLDER_MIME:
+                return api_error("remote_id is not a Drive folder")
             pair = store.add_pair(
-                int(data["account_id"]), local, data["remote_id"],
+                account_id, local, remote_id,
                 remote_path=data.get("remote_path", ""),
                 direction=data.get("direction", "bidirectional"),
                 conflict_policy=data.get("conflict_policy")
                 or load_config()["conflict_policy"],
                 enabled=data.get("enabled", 1),
+                allow_deletes=data.get("allow_deletes", 1),
                 include_patterns=data.get("include_patterns"))
         except KeyError as exc:
             return api_error(f"missing field: {exc}")
@@ -242,11 +288,16 @@ def create_app(store: Store, worker=None):
     # ---- settings ----------------------------------------------------
     @app.get("/api/settings")
     def settings_get():
-        return jsonify({"ok": True, "settings": load_config()})
+        return jsonify({"ok": True, "settings": _public_settings(load_config())})
 
     @app.post("/api/settings")
     def settings_set():
         data = request.get_json(force=True, silent=True) or {}
+        # round-tripping a redacted settings object must not turn the real
+        # secret into the literal mask
+        if data.get("client_secret") == "***":
+            data.pop("client_secret")
+        data.pop("client_secret_set", None)
         try:
             # merge over the stored config: the form posts only its own
             # fields, and dropping unspecified keys would wipe credentials
@@ -255,8 +306,8 @@ def create_app(store: Store, worker=None):
         except ValueError as exc:
             return api_error(str(exc))
         if worker:
-            worker.interval = cfg["sync_interval"]
-        return jsonify({"ok": True, "settings": cfg})
+            worker.apply_config(cfg)
+        return jsonify({"ok": True, "settings": _public_settings(cfg)})
 
     @app.get("/api/health")
     def health():

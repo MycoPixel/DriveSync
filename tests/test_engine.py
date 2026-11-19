@@ -300,6 +300,25 @@ def test_direction_download_only_pulls_remote_delete(env):
 
 
 # ---------------------------------------------------------- ignoring & gdocs
+def test_md5_hashed_once_per_path_per_pass(env, monkeypatch):
+    """Rename detection and change detection share one hash per file."""
+    import drivesync.engine as engine_mod
+
+    wfile(env.local / "a.txt", "same-content")
+    assert env.sync()[1]
+    (env.local / "a.txt").rename(env.local / "b.txt")
+
+    seen = []
+    real = engine_mod.md5_file
+    monkeypatch.setattr(engine_mod, "md5_file",
+                        lambda path: (seen.append(path), real(path))[1])
+    stats, ok = env.sync()
+    assert ok
+    assert env.drive.read_remote("b.txt") == b"same-content"
+    assert len(seen) == len(set(seen))       # never hashed twice
+    assert len(seen) <= 2
+
+
 def test_ignore_patterns(env):
     env.cfg["ignore_patterns"] = ["*.tmp"]
     wfile(env.local / "keep.txt", "kept")
@@ -445,6 +464,21 @@ def test_google_doc_collision_bare_name_left_alone(env):
     assert rfile(env.local / "Report") == b"user file"
 
 
+def test_google_doc_collision_extension_file_not_overwritten(env):
+    """A user file named like the export (Report.docx) must not be replaced.
+
+    Regression: fold_exports assumed any same-named local file was our
+    export, so the first pass exported the doc straight over it."""
+    _put_remote_doc(env, "Report", "drive-bytes")
+    wfile(env.local / "Report.docx", b"user docx")
+    stats, ok = env.sync()
+    assert not ok and stats.errors == 1
+    assert rfile(env.local / "Report.docx") == b"user docx"
+    assert "Report" not in env.base()          # nothing downloaded
+    stats2, ok2 = env.sync()                   # stable, no churn/overwrite
+    assert not ok2 and rfile(env.local / "Report.docx") == b"user docx"
+
+
 def test_local_delete_of_exported_doc_propagates(env):
     fid = _put_remote_doc(env, "Report", "v1")
     env.sync()
@@ -453,6 +487,34 @@ def test_local_delete_of_exported_doc_propagates(env):
     assert ok and stats.deleted == 1
     assert "Report" not in env.base()
     assert env.drive.files[fid]["trashed"]
+
+
+def test_empty_base_after_previous_sync_is_refused(env):
+    """A lost base snapshot must not silently re-decide every path."""
+    wfile(env.local / "a.txt", "v1")
+    stats, ok = env.sync()
+    assert ok
+    assert env.store.kv_get(f"pair_synced:{env.pair['id']}") == "1"
+    env.store._exec("DELETE FROM entries WHERE pair_id=?", (env.pair["id"],))
+
+    stats, ok = env.sync()
+    assert not ok and stats.errors == 1
+    assert rfile(env.local / "a.txt") == b"v1"
+    # nothing was pushed or pulled during the refused pass
+    assert stats.pushed == 0 and stats.pulled == 0
+    # the explicit recovery path is still available
+    stats, ok = env.sync(force_full=True)
+    assert ok
+
+
+def test_empty_pair_base_is_not_mistaken_for_data_loss(env):
+    """A legitimately empty pair (no files) keeps syncing after the marker
+    records zero rows."""
+    stats, ok = env.sync()
+    assert ok
+    assert env.store.kv_get(f"pair_synced:{env.pair['id']}") == "0"
+    stats, ok = env.sync()
+    assert ok and stats.errors == 0
 
 
 def test_restore_conflict_runs_once(env):

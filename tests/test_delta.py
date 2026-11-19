@@ -145,6 +145,63 @@ def test_worker_subsequent_passes_skip_full_relist(tmp_path):
     store.close()
 
 
+def test_worker_stale_pair_full_scans_next_pass(tmp_path, monkeypatch):
+    """A failing pair full-scans next time, and the token advances anyway so
+    one stuck file cannot make the changes feed grow without bound."""
+    store = Store(tmp_path / "s.db")
+    drive = MockDrive(tmp_path / "cloud")
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "a.txt").write_text("hello")
+    pair = store.add_pair(1, str(local), drive.root_id, "My Drive")
+    store.add_account("t@example.com", {
+        "access_token": "x", "refresh_token": "r",
+        "client_id": "c", "client_secret": "s",
+        "expires_at": time.time() + 9999,
+    })
+    cfg = dict(DEFAULT_CONFIG)
+    cfg["ignore_patterns"] = []
+
+    w = Worker(store, cfg)
+    w.make_drive = lambda account: drive
+    w.run_pass()
+    assert drive.calls["list_tree"] == 1
+
+    # a remote edit arrives; the next pass fails for this pair
+    fid = drive._find_by_rel("a.txt")
+    data = b"remote change"
+    drive._fs_path(fid).write_bytes(data)
+    drive.files[fid]["md5Checksum"] = hashlib.md5(data).hexdigest()
+    drive.files[fid]["size"] = str(len(data))
+    drive._touch(fid)
+
+    real_sync = engine.sync_pair
+    state = {"fail": True}
+
+    def flaky(*a, **kw):
+        if state["fail"]:
+            state["fail"] = False
+            stats = engine.SyncStats()
+            stats.errors += 1
+            return stats, False
+        return real_sync(*a, **kw)
+
+    monkeypatch.setattr(engine, "sync_pair", flaky)
+    stats, ok = w.run_pass()
+    assert ok is False and int(stats.errors) == 1
+    assert store.kv_get(f"stale:{pair['id']}") == "1"
+    # token advanced even though the pair failed (stale pair full-scans)
+    assert store.kv_get("changes_token:1") == str(len(drive._changes))
+
+    # the stale pair re-lists Drive, sees the edit, and recovers
+    stats, ok = w.run_pass()
+    assert ok is True
+    assert drive.calls["list_tree"] == 2      # full scan, not a delta pass
+    assert (local / "a.txt").read_text() == "remote change"
+    assert store.kv_get(f"stale:{pair['id']}") is None
+    store.close()
+
+
 def test_worker_single_pair_pass_keeps_token(tmp_path):
     """A filtered pass must not advance the feed token: other pairs of the
     same account were not swept, so their deltas must be re-read next time."""
