@@ -560,8 +560,23 @@ def _getting_started():
 
 def main(argv=None):
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
+
+    if unknown:
+        if args.cmd == "pairs" and args.action == "set":
+            # Preserve key=value arguments that argparse does not
+            # recognize as positional arguments on some Python versions.
+            args.fields = (
+                ([args.local] if args.local else [])
+                + list(args.fields or [])
+                + unknown
+            )
+            args.local = None
+        else:
+            parser.error("unrecognized arguments: " + " ".join(unknown))
+
     if getattr(args, "cmd", None) is None:
         _getting_started()
         return
+
     args.fn(args)
