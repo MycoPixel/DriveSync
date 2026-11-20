@@ -128,3 +128,71 @@ def test_interactive_auth_falls_back_to_ephemeral_port(monkeypatch):
         auth.interactive_auth({"client_id": "cid", "client_secret": "csec",
                                "auth_port": 53137})
     assert ports == [53137, 0]
+
+
+def test_exchange_code_sends_pkce_verifier(monkeypatch):
+    seen = {}
+
+    def fake_post(url, data, timeout):
+        seen.update(data)
+        return FakeResp(200, {"access_token": "a", "expires_in": 3600})
+
+    monkeypatch.setattr(auth.requests, "post", fake_post)
+    auth.exchange_code("cid", "csec", "code", "http://127.0.0.1:1",
+                       code_verifier="verifier")
+    assert seen["code_verifier"] == "verifier"
+
+
+def test_interactive_auth_uses_pkce_s256(monkeypatch):
+    import urllib.parse
+
+    captured = {}
+
+    class FakeServer:
+        def __init__(self, port):
+            self.server_address = ("127.0.0.1", 45678)
+            self.result = {}
+
+        def serve_forever(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    def fake_open(url):
+        captured["params"] = urllib.parse.parse_qs(
+            urllib.parse.urlparse(url).query)
+        captured["url"] = url
+        # Complete the callback after the URL has been captured.
+        server = servers[0]
+        server.result.update({
+            "state": captured["params"]["state"][0],
+            "code": "authorization-code",
+        })
+        return True
+
+    servers = []
+    def make_server(port):
+        server = FakeServer(port)
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(auth, "_CallbackServer", make_server)
+    monkeypatch.setattr(auth.webbrowser, "open", fake_open)
+    monkeypatch.setattr(auth, "exchange_code",
+                        lambda cid, secret, code, redirect_uri,
+                               code_verifier=None: {
+                                   "access_token": "a",
+                                   "refresh_token": "r",
+                                   "code_verifier": code_verifier,
+                               })
+    tokens = auth.interactive_auth({
+        "client_id": "cid", "client_secret": "csec", "auth_port": 53137,
+    })
+    params = captured["params"]
+    assert params["code_challenge_method"] == ["S256"]
+    assert params["code_challenge"][0]
+    assert tokens["code_verifier"]

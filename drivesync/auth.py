@@ -5,6 +5,8 @@ config or the GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET environment variables.
 Scopes requested: full drive access (read + write).
 """
 
+import base64
+import hashlib
 import json
 import secrets
 import threading
@@ -83,12 +85,21 @@ def interactive_auth(config):
         port = server.server_address[1]
     redirect_uri = f"http://127.0.0.1:{port}"
 
+    # PKCE protects the authorization code if it is intercepted between
+    # the browser and the loopback callback.
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": SCOPE,
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
     params.update(dict(kv.split("=") for kv in ACCOUNT_KWARGS))
     url = AUTH_URL + "?" + urllib.parse.urlencode(params)
@@ -120,7 +131,8 @@ def interactive_auth(config):
     if "code" not in result:
         raise AuthError("Timed out waiting for Google authorization.")
 
-    tokens = exchange_code(client_id, client_secret, result["code"], redirect_uri)
+    tokens = exchange_code(client_id, client_secret, result["code"],
+                           redirect_uri, code_verifier=code_verifier)
     tokens.update({"client_id": client_id, "client_secret": client_secret})
     return tokens
 
@@ -139,14 +151,18 @@ def _with_expiry(tokens):
     return tokens
 
 
-def exchange_code(client_id, client_secret, code, redirect_uri):
-    resp = requests.post(TOKEN_URL, data={
+def exchange_code(client_id, client_secret, code, redirect_uri,
+                  code_verifier=None):
+    data = {
         "code": code,
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
-    }, timeout=30)
+    }
+    if code_verifier:
+        data["code_verifier"] = code_verifier
+    resp = requests.post(TOKEN_URL, data=data, timeout=30)
     if resp.status_code != 200:
         raise AuthError(f"Token exchange failed: {resp.text[:300]}")
     return _with_expiry(resp.json())

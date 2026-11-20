@@ -63,7 +63,11 @@ def _port_hint(url, detail):
 
 def cmd_serve(args):
     from .worker import Worker
-    from .server import run_server
+    from .server import is_loopback_host, run_server
+    if not is_loopback_host(args.host):
+        sys.exit(
+            "error: the DriveSync dashboard has no remote authentication; "
+            "use --host 127.0.0.1 (or localhost / ::1).")
     store = _open_store()
     if getattr(store, "recovered", False):
         store.log(None, "db-recovered", "",
@@ -556,8 +560,23 @@ def _getting_started():
 
 def main(argv=None):
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
+
+    if unknown:
+        if args.cmd == "pairs" and args.action == "set":
+            # Preserve key=value arguments that argparse does not
+            # recognize as positional arguments on some Python versions.
+            args.fields = (
+                ([args.local] if args.local else [])
+                + list(args.fields or [])
+                + unknown
+            )
+            args.local = None
+        else:
+            parser.error("unrecognized arguments: " + " ".join(unknown))
+
     if getattr(args, "cmd", None) is None:
         _getting_started()
         return
+
     args.fn(args)
