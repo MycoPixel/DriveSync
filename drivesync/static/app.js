@@ -82,6 +82,13 @@ const ES = {
   "Keep remote copy": "Conservar la copia en Drive",
   "Keep both copies": "Conservar ambas copias",
   "Add pair": "Agregar par",
+  "Start new pairs paused": "Iniciar los pares nuevos en pausa",
+  "first-sync-review-hint": "Recomendado: revisa la vista previa de la primera sincronización antes de permitir transferencias.|Recomendado: revisa la vista previa de la primera sincronización antes de permitir transferencias.",
+  "Review new sync pair": "Revisar nuevo par de sincronización",
+  "The pair will remain paused until you review its preview and resume it.": "El par permanecerá en pausa hasta que revises su vista previa y lo reanudes.",
+  "The first synchronization may begin immediately and transfer files.": "La primera sincronización puede comenzar de inmediato y transferir archivos.",
+  "Continue?": "¿Continuar?",
+  "Pair added paused. Review its preview, then resume it when ready.": "Par agregado en pausa. Revisa su vista previa y reanúdalo cuando estés listo.",
   "#": "#",
   "Local": "Local",
   "Conflicts": "Conflictos",
@@ -864,6 +871,16 @@ $("#pairForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const remoteId = $("#pairRemoteId").value;
   if (!remoteId) return setMsg("#pairFormMsg", t("Pick a Drive folder first."), "err");
+  const startPaused = $("#pairStartPaused").checked;
+  const summary = [
+    `${t("Local")}: ${$("#pairLocal").value.trim()}`,
+    `${t("Drive folder")}: ${$("#pairRemoteName").value}`,
+    `${t("Direction")}: ${t($("#pairDirection option:checked").textContent)}`,
+    `${t("Conflict policy")}: ${t($("#pairPolicy option:checked").textContent)}`,
+    startPaused ? t("The pair will remain paused until you review its preview and resume it.") :
+      t("The first synchronization may begin immediately and transfer files."),
+  ].join("\\n");
+  if (!confirm(`${t("Review new sync pair")}\\n\\n${summary}\\n\\n${t("Continue?")}`)) return;
   try {
     await api("/api/pairs", {
       method: "POST",
@@ -875,11 +892,15 @@ $("#pairForm").addEventListener("submit", async (e) => {
         direction: $("#pairDirection").value,
         conflict_policy: $("#pairPolicy").value,
         include_patterns: state.newScope,
+        enabled: startPaused ? 0 : 1,
       },
     });
     const scopeMsg = state.newScope.length
       ? T(" Only {n} chosen subfolder(s) will sync.", { n: state.newScope.length }) : "";
-    setMsg("#pairFormMsg", t("Pair added — first sync starts in the background.") + scopeMsg, "ok");
+    const resultMsg = startPaused
+      ? t("Pair added paused. Review its preview, then resume it when ready.")
+      : t("Pair added — first sync starts in the background.");
+    setMsg("#pairFormMsg", resultMsg + scopeMsg, "ok");
     state.newScope = [];
     $("#pairScopeSummary").value = t("Everything in this folder");
     loadPairs();
