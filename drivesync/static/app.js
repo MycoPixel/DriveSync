@@ -89,6 +89,7 @@ const ES = {
   "Scope": "Alcance",
   "State": "Estado",
   "Last sync": "Última sincronización",
+  "Actions": "Acciones",
   "Email": "Correo",
   "Storage": "Almacenamiento",
   "Client ID": "ID de cliente",
