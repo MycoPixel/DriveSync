@@ -1027,6 +1027,7 @@ class DesktopApp:
         self.pairs_hint = self._dim_label("")
         box.pack_start(self.pairs_hint, False, False, 0)
 
+        # Keep the most common actions together in the first row.
         row = Gtk.Box(spacing=6)
         btn_add = self._tr_button("Add folder\u2026")
         btn_add.get_style_context().add_class("suggested-action")
@@ -1051,6 +1052,13 @@ class DesktopApp:
         btn_toggle = self._tr_button("Pause / resume")
         btn_toggle.connect("clicked", self._on_toggle_pair)
         row.pack_start(btn_toggle, False, False, 0)
+        btn_sync = self._tr_button("Sync selected now")
+        btn_sync.connect("clicked", self._on_sync_pair)
+        row.pack_start(btn_sync, False, False, 0)
+        box.pack_start(row, False, False, 0)
+
+        # Less frequent and review actions live on a separate row.
+        more_row = Gtk.Box(spacing=6)
         btn_until = self._tr_button("Until tomorrow")
         btn_until.set_tooltip_text(i18n.t(
             "Pause until tomorrow at 09:00 — click again to cancel the "
@@ -1059,10 +1067,7 @@ class DesktopApp:
                   "Pause until tomorrow at 09:00 — click again to cancel "
                   "the pause")
         btn_until.connect("clicked", self._on_pause_until)
-        row.pack_start(btn_until, False, False, 0)
-        btn_sync = self._tr_button("Sync selected now")
-        btn_sync.connect("clicked", self._on_sync_pair)
-        row.pack_start(btn_sync, False, False, 0)
+        more_row.pack_start(btn_until, False, False, 0)
         btn_preview = self._tr_button("Preview changes\u2026")
         btn_preview.set_tooltip_text(i18n.t(
             "Dry-run the selected pair's next pass: what would change, "
@@ -1071,7 +1076,7 @@ class DesktopApp:
                   "Dry-run the selected pair's next pass: what would change, "
                   "nothing applied")
         btn_preview.connect("clicked", self._on_pair_preview)
-        row.pack_start(btn_preview, False, False, 0)
+        more_row.pack_start(btn_preview, False, False, 0)
         btn_scope = self._tr_button("Subfolders\u2026")
         btn_scope.set_tooltip_text(i18n.t(
             "Selective sync: choose which subfolders of this pair mirror; "
@@ -1082,7 +1087,7 @@ class DesktopApp:
                   "mirror; the rest stays on Drive and on disk, downloadable "
                   "on demand from the Drive tab")
         btn_scope.connect("clicked", self._on_pair_subfolders)
-        row.pack_start(btn_scope, False, False, 0)
+        more_row.pack_start(btn_scope, False, False, 0)
         btn_conf = self._tr_button("Conflicts\u2026")
         btn_conf.set_tooltip_text(i18n.t(
             "Review conflict copies kept by the \u201cboth\u201d policy: "
@@ -1091,12 +1096,12 @@ class DesktopApp:
                   "Review conflict copies kept by the \u201cboth\u201d "
                   "policy: keep the copy, the original, or both")
         btn_conf.connect("clicked", self._on_pair_conflicts)
-        row.pack_start(btn_conf, False, False, 0)
+        more_row.pack_start(btn_conf, False, False, 0)
         btn_rm = self._tr_button("Remove")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_pair)
-        row.pack_start(btn_rm, False, False, 0)
-        box.pack_start(row, False, False, 0)
+        more_row.pack_start(btn_rm, False, False, 0)
+        box.pack_start(more_row, False, False, 0)
 
         self._refresh_pairs()
         return _card(box)
@@ -1809,6 +1814,22 @@ class DesktopApp:
             label=i18n.t("Allow deletions (files go to trash, never vanish)"))
         chk_del.set_active(bool(pair["allow_deletes"]))
         grid.attach(chk_del, 1, 2, 1, 1)
+
+        grid.attach(self._tr_label("Symlinks:", halign=Gtk.Align.END),
+                    0, 3, 1, 1)
+        symlink_combo = Gtk.ComboBoxText()
+        symlink_combo.append_text(i18n.t(
+            "Skip — never follow links (safest)"))
+        symlink_combo.append_text(i18n.t(
+            "Follow — sync what they point at"))
+        symlink_combo.set_active(
+            1 if pair["symlink_policy"] == "follow" else 0)
+        grid.attach(symlink_combo, 1, 3, 1, 1)
+        chk_casefold = Gtk.CheckButton(
+            label=i18n.t("Case-insensitive paths "
+                         "(for pairs on FAT/exFAT/NTFS folders)"))
+        chk_casefold.set_active(bool(pair["case_insensitive"]))
+        grid.attach(chk_casefold, 1, 4, 1, 1)
         dlg.get_content_area().pack_start(grid, True, True, 0)
         dlg.show_all()
         if dlg.run() == Gtk.ResponseType.OK:
@@ -1817,12 +1838,19 @@ class DesktopApp:
                     pair_id,
                     direction=DIRECTIONS[dir_combo.get_active()],
                     conflict_policy=POLICIES[pol_combo.get_active()],
-                    allow_deletes=1 if chk_del.get_active() else 0)
+                    allow_deletes=1 if chk_del.get_active() else 0,
+                    symlink_policy=("follow" if symlink_combo.get_active()
+                                    == 1 else "skip"),
+                    case_insensitive=1 if chk_casefold.get_active() else 0)
                 self.store.log(pair_id, "pair-edited", "",
                                f"direction {DIRECTIONS[dir_combo.get_active()]}"
                                f", conflicts {POLICIES[pol_combo.get_active()]}"
                                f", deletes "
-                               f"{'on' if chk_del.get_active() else 'off'}")
+                               f"{'on' if chk_del.get_active() else 'off'}"
+                               f", symlinks "
+                               f"{'follow' if symlink_combo.get_active() == 1 else 'skip'}"
+                               f", case-insensitive "
+                               f"{'on' if chk_casefold.get_active() else 'off'}")
                 self._refresh_pairs()
             except Exception as exc:
                 self._error(str(exc))

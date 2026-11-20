@@ -102,12 +102,21 @@ main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 .muted{color:var(--muted)}
 .small{font-size:13px}
 
+/* Pair management: preserve every column on narrow screens and let the
+   table scroll, rather than hiding sync settings and status information. */
+.table-scroll{width:100%;overflow-x:auto;overscroll-behavior-x:contain}
+.pairs-table{min-width:1040px}
+.pairs-table th:last-child,.pairs-table td:last-child{min-width:220px}
+.pair-actions{display:flex;flex-direction:column;gap:6px;min-width:200px}
+.pair-actions-main,.pair-actions-review{display:flex;flex-wrap:wrap;gap:5px}
+.pair-actions-review{padding-top:5px;border-top:1px solid var(--line)}
+.pair-actions .btn{white-space:nowrap}
+
 @media (max-width:760px){
   .grid.two{grid-template-columns:1fr}
   main{padding:14px 14px 50px}
   .tabs,.topbar{padding-left:14px;padding-right:14px}
-  .tbl th:nth-child(4),.tbl td:nth-child(4),
-  .tbl th:nth-child(5),.tbl td:nth-child(5){display:none}
+  .pairs-table{min-width:1040px}
 }
 
 .form-grid label.check{flex-direction:row;align-items:center;gap:8px;font-weight:400;flex-wrap:wrap}

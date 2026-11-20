@@ -149,6 +149,13 @@ _STRINGS = {
         "Cambia la dirección y la política de conflictos del par elegido",
     "Pause / resume": "Pausar / reanudar",
     "Sync selected now": "Sincronizar el elegido ahora",
+    "Symlinks:": "Enlaces simbólicos:",
+    "Skip — never follow links (safest)":
+        "Omitir — nunca seguir enlaces (lo más seguro)",
+    "Follow — sync what they point at":
+        "Seguir — sincronizar lo que señalan",
+    "Case-insensitive paths (for pairs on FAT/exFAT/NTFS folders)":
+        "Rutas sin distinguir mayúsculas (para pares en carpetas FAT/exFAT/NTFS)",
     "Subfolders\u2026": "Subcarpetas\u2026",
     "Selective sync: choose which subfolders of this pair mirror; the rest "
     "stays on Drive and on disk, downloadable on demand from the Drive tab":

@@ -110,15 +110,17 @@
     </div>
     <div class="card">
       <h3 data-i18n="Current pairs">Current pairs</h3>
-      <table class="tbl" id="pairsTable">
-        <thead><tr>
-          <th data-i18n="#">#</th><th data-i18n="Local">Local</th>
-          <th data-i18n="Drive folder">Drive folder</th><th data-i18n="Direction">Direction</th>
-          <th data-i18n="Conflicts">Conflicts</th><th data-i18n="Deletes">Deletes</th>
-          <th data-i18n="Scope">Scope</th><th data-i18n="State">State</th>
-          <th data-i18n="Last sync">Last sync</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="table-scroll" role="region" aria-label="Current sync pairs" tabindex="0">
+        <table class="tbl pairs-table" id="pairsTable">
+          <thead><tr>
+            <th data-i18n="#">#</th><th data-i18n="Local">Local</th>
+            <th data-i18n="Drive folder">Drive folder</th><th data-i18n="Direction">Direction</th>
+            <th data-i18n="Conflicts">Conflicts</th><th data-i18n="Deletes">Deletes</th>
+            <th data-i18n="Scope">Scope</th><th data-i18n="State">State</th>
+            <th data-i18n="Last sync">Last sync</th><th data-i18n="Actions">Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
