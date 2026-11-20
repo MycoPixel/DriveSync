@@ -63,7 +63,11 @@ def _port_hint(url, detail):
 
 def cmd_serve(args):
     from .worker import Worker
-    from .server import run_server
+    from .server import is_loopback_host, run_server
+    if not is_loopback_host(args.host):
+        sys.exit(
+            "error: the DriveSync dashboard has no remote authentication; "
+            "use --host 127.0.0.1 (or localhost / ::1).")
     store = _open_store()
     if getattr(store, "recovered", False):
         store.log(None, "db-recovered", "",
