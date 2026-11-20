@@ -148,9 +148,6 @@ _STRINGS = {
     "Change the selected pair's direction and conflict policy":
         "Cambia la dirección y la política de conflictos del par elegido",
     "Pause / resume": "Pausar / reanudar",
-    "Until tomorrow": "Hasta mañana",
-    "Pause until tomorrow at 09:00 — click again to cancel the pause":
-        "Pausa hasta mañana a las 09:00 — pulsa otra vez para cancelarla",
     "Sync selected now": "Sincronizar el elegido ahora",
     "Symlinks:": "Enlaces simbólicos:",
     "Skip — never follow links (safest)":
