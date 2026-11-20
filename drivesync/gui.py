@@ -1814,6 +1814,22 @@ class DesktopApp:
             label=i18n.t("Allow deletions (files go to trash, never vanish)"))
         chk_del.set_active(bool(pair["allow_deletes"]))
         grid.attach(chk_del, 1, 2, 1, 1)
+
+        grid.attach(self._tr_label("Symlinks:", halign=Gtk.Align.END),
+                    0, 3, 1, 1)
+        symlink_combo = Gtk.ComboBoxText()
+        symlink_combo.append_text(i18n.t(
+            "Skip — never follow links (safest)"))
+        symlink_combo.append_text(i18n.t(
+            "Follow — sync what they point at"))
+        symlink_combo.set_active(
+            1 if pair.get("symlink_policy") == "follow" else 0)
+        grid.attach(symlink_combo, 1, 3, 1, 1)
+        chk_casefold = Gtk.CheckButton(
+            label=i18n.t("Case-insensitive paths "
+                         "(for pairs on FAT/exFAT/NTFS folders)"))
+        chk_casefold.set_active(bool(pair.get("case_insensitive")))
+        grid.attach(chk_casefold, 1, 4, 1, 1)
         dlg.get_content_area().pack_start(grid, True, True, 0)
         dlg.show_all()
         if dlg.run() == Gtk.ResponseType.OK:
@@ -1822,12 +1838,19 @@ class DesktopApp:
                     pair_id,
                     direction=DIRECTIONS[dir_combo.get_active()],
                     conflict_policy=POLICIES[pol_combo.get_active()],
-                    allow_deletes=1 if chk_del.get_active() else 0)
+                    allow_deletes=1 if chk_del.get_active() else 0,
+                    symlink_policy=("follow" if symlink_combo.get_active()
+                                    == 1 else "skip"),
+                    case_insensitive=1 if chk_casefold.get_active() else 0)
                 self.store.log(pair_id, "pair-edited", "",
                                f"direction {DIRECTIONS[dir_combo.get_active()]}"
                                f", conflicts {POLICIES[pol_combo.get_active()]}"
                                f", deletes "
-                               f"{'on' if chk_del.get_active() else 'off'}")
+                               f"{'on' if chk_del.get_active() else 'off'}"
+                               f", symlinks "
+                               f"{'follow' if symlink_combo.get_active() == 1 else 'skip'}"
+                               f", case-insensitive "
+                               f"{'on' if chk_casefold.get_active() else 'off'}")
                 self._refresh_pairs()
             except Exception as exc:
                 self._error(str(exc))
