@@ -45,6 +45,13 @@ def test_index_served(client):
     assert "DriveSync" in html and "app.js" in html
 
 
+def test_pair_form_defaults_new_pairs_to_paused_and_explains_review(client):
+    c, _ = client
+    html = c.get("/").get_data(as_text=True)
+    assert 'id="pairStartPaused" type="checkbox" checked' in html
+    assert "first-sync-review-hint" in html
+
+
 def test_settings_form_covers_worker_settings(client):
     """The form exposes the knobs the README promises (issue: UI gaps)."""
     c, _ = client
