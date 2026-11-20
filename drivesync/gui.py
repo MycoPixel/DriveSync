@@ -55,11 +55,11 @@ from .worker import Worker  # noqa: E402
 DIRECTIONS = ("bidirectional", "upload", "download")
 POLICIES = ("newer", "local", "remote", "both")
 
-# Notebook pages, in append order (Setup, Accounts, Folders, Drive,
-# Activity, Options)
-PAGE_DRIVE = 3
-PAGE_ACTIVITY = 4
-PAGE_OPTIONS = 5
+# Notebook pages, in append order (Overview, Setup, Accounts, Folders,
+# Drive, Activity, Options)
+PAGE_DRIVE = 4
+PAGE_ACTIVITY = 5
+PAGE_OPTIONS = 6
 
 # Activity tab time-frame presets: combo index → seconds back from now.
 _TIMEFRAME_SECS = {1: 15 * 60, 2: 3600, 3: 24 * 3600, 4: 7 * 24 * 3600}
@@ -132,17 +132,17 @@ def _cfg_int(cfg, key, default):
 
 
 def startup_page(cfg, accounts):
-    """Notebook page to open on launch: Setup / Accounts / Activity.
+    """Notebook page to open on launch: Overview / Setup / Accounts.
 
     Computed in __init__ but applied only AFTER the window is shown:
     GTK >= 3.24.49 silently ignores Gtk.Notebook.set_current_page() on a
     not-yet-shown window, which made every launch open on Setup.
     """
     if not cfg.get("client_id"):
-        return 0
-    if not accounts:
         return 1
-    return PAGE_ACTIVITY
+    if not accounts:
+        return 2
+    return 0
 
 
 def _apply_css(theme="system", accent="blue"):
@@ -249,6 +249,7 @@ class DesktopApp:
         self.win.connect("delete-event", self._on_delete)
 
         self.nb = Gtk.Notebook()
+        self._add_page(self._overview_tab(), "Overview")
         self._add_page(self._setup_tab(), "Setup")
         self._add_page(self._accounts_tab(), "Accounts")
         self._add_page(self._folders_tab(), "Folders")
@@ -738,6 +739,86 @@ class DesktopApp:
             self.tray = None
         if self.cfg.get("tray_enabled", True):
             self.tray = self._start_tray()
+
+    # ---- Overview tab -------------------------------------------------
+    def _overview_tab(self):
+        """At-a-glance sync health, accounts, pairs and recent activity."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                      border_width=6)
+        self.overview_status = Gtk.Label(xalign=0)
+        self.overview_status.set_line_wrap(True)
+        self.overview_status.get_style_context().add_class("hint")
+        box.pack_start(_card(self.overview_status), False, False, 0)
+        self.overview_summary = Gtk.Label(xalign=0)
+        self.overview_summary.set_line_wrap(True)
+        box.pack_start(_card(self.overview_summary), False, False, 0)
+        self.overview_pairs_store, self.overview_pairs_view, scroll = _list_view(
+            ["Local folder", "Drive folder", "State", "Last sync"],
+            (str, str, str, str))
+        self._tr_columns(self.overview_pairs_view,
+                         ["Local folder", "Drive folder", "State", "Last sync"])
+        scroll.set_size_request(-1, 150)
+        box.pack_start(_card(scroll), True, True, 0)
+        self.overview_events_store, self.overview_events_view, ev_scroll = _list_view(
+            ["When", "Level", "Action", "Path"], (str, str, str, str))
+        self._tr_columns(self.overview_events_view,
+                         ["When", "Level", "Action", "Path"])
+        ev_scroll.set_size_request(-1, 120)
+        box.pack_start(_card(ev_scroll), True, True, 0)
+        actions = Gtk.Box(spacing=6)
+        sync = self._tr_button("Sync all now")
+        sync.get_style_context().add_class("suggested-action")
+        sync.connect("clicked", self._on_sync_all)
+        actions.pack_start(sync, False, False, 0)
+        folders = self._tr_button("Manage folders")
+        folders.connect("clicked", lambda _b: self.nb.set_current_page(3))
+        actions.pack_start(folders, False, False, 0)
+        accounts = self._tr_button("Manage accounts")
+        accounts.connect("clicked", lambda _b: self.nb.set_current_page(2))
+        actions.pack_start(accounts, False, False, 0)
+        box.pack_start(actions, False, False, 0)
+        self._refresh_overview()
+        return _card(box)
+
+    def _refresh_overview(self):
+        """Refresh overview labels and compact pair/activity lists."""
+        if not hasattr(self, "overview_status"):
+            return
+        status = self.worker.status
+        paused = bool(status.get("paused"))
+        state = i18n.t("paused" if paused else "running")
+        last_run = status.get("last_run")
+        last = (i18n.T("{sec}s ago", sec=int(max(0, time.time() - last_run)))
+                if last_run else i18n.t("never"))
+        next_run = status.get("next_run")
+        next_text = (i18n.T("in {sec}s", sec=int(max(0, next_run - time.time())))
+                     if next_run and not paused else i18n.t("not scheduled"))
+        error = status.get("last_error")
+        self.overview_status.set_text(i18n.T(
+            "Background worker: {state} — last sync {last}; next sync {next}",
+            state=state, last=last, next=next_text) +
+            (i18n.T("Last error: {err}", err=error) if error else ""))
+        accounts = self.store.accounts()
+        pairs = self.store.pairs()
+        active = sum(1 for p in pairs if p["enabled"] and not p["paused_until"])
+        paused_pairs = len(pairs) - active
+        recent = self.store.recent_events(limit=8)
+        problems = sum(1 for e in recent if e["level"] in ("error", "conflict"))
+        self.overview_summary.set_text(i18n.T(
+            "{accounts} account(s) · {pairs} sync pair(s) · {active} active · {paused} paused · {problems} recent issue(s)",
+            accounts=len(accounts), pairs=len(pairs), active=active,
+            paused=paused_pairs, problems=problems))
+        self.overview_pairs_store.clear()
+        for pair in pairs[:8]:
+            self.overview_pairs_store.append([
+                pair["local_path"], pair["remote_path"] or pair["remote_id"],
+                self._pair_state_text(pair),
+                self._pair_last_sync_text(pair["id"])])
+        self.overview_events_store.clear()
+        for event in recent:
+            self.overview_events_store.append([
+                str(event["ts"]), event["level"] or "info",
+                event["action"] or "", event["rel_path"] or ""])
 
     # ---- Setup tab --------------------------------------------------
     def _setup_tab(self):
@@ -2479,7 +2560,9 @@ class DesktopApp:
         return _card(box)
 
     def _on_sync_all(self, _btn):
-        self._bg(lambda: self.worker.run_pass(), self._refresh_activity)
+        self._bg(lambda: self.worker.run_pass(),
+                 lambda _result: (self._refresh_activity(),
+                                  self._refresh_overview()))
 
     def _on_pause_toggle(self, _btn=None):
         if self.worker.status.get("paused"):
@@ -2664,6 +2747,7 @@ class DesktopApp:
             return False
         self._refresh_activity()
         self._refresh_pair_status_cells()
+        self._refresh_overview()
         self._check_problems()
         return True
 

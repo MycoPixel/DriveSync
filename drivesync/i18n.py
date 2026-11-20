@@ -30,12 +30,29 @@ _STRINGS = {
     "Sync scope:": "Alcance de sincronización:",
 
     # ---- tabs ------------------------------------------------------
+    "Overview": "Resumen",
     "Setup": "Configuración",
     "Accounts": "Cuentas",
     "Folders": "Carpetas",
     "Drive": "Drive",
     "Activity": "Actividad",
     "Options": "Opciones",
+    "Local folder": "Carpeta local",
+    "Drive folder": "Carpeta de Drive",
+    "State": "Estado",
+    "Last sync": "Última sincronización",
+    "When": "Cuándo",
+    "Level": "Nivel",
+    "Action": "Acción",
+    "Path": "Ruta",
+    "Manage folders": "Administrar carpetas",
+    "Manage accounts": "Administrar cuentas",
+    "Background worker: {state} — last sync {last}; next sync {next}":
+        "Servicio en segundo plano: {state} — última sincronización {last}; próxima sincronización {next}",
+    "not scheduled": "sin programar",
+    "Last error: {err}": "Último error: {err}",
+    "{accounts} account(s) · {pairs} sync pair(s) · {active} active · {paused} paused · {problems} recent issue(s)":
+        "{accounts} cuenta(s) · {pairs} par(es) · {active} activo(s) · {paused} pausado(s) · {problems} problema(s) reciente(s)",
     "DriveSync": "DriveSync",
 
     # ---- headerbar / global ----------------------------------------
@@ -120,11 +137,7 @@ _STRINGS = {
 
     # ---- Folders tab ---------------------------------------------------
     "Direction": "Dirección",
-    "Local folder": "Carpeta local",
-    "Drive folder": "Carpeta de Drive",
     "Scope": "Alcance",
-    "State": "Estado",
-    "Last sync": "Última sincronización",
     "Add folder\u2026": "Agregar carpeta\u2026",
     "Open local folder": "Abrir carpeta local",
     "Open the selected pair's local folder in your file manager "
@@ -392,9 +405,6 @@ _STRINGS = {
     "Sort order": "Orden",
     "Clear activity\u2026": "Limpiar actividad\u2026",
     "Time": "Hora",
-    "Level": "Nivel",
-    "Action": "Acción",
-    "Path": "Ruta",
     "Detail": "Detalle",
     "Activity detail": "Detalle de actividad",
     "No detail.": "Sin detalle.",
