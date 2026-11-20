@@ -29,13 +29,24 @@ htmlcov/
 # your account tokens. This matters if you ever run from the repo or set
 # DRIVE_SYNC_HOME to a path inside it.
 config.json
-config.json.tmp
+config.json.*
+!config.json.example
 token*.json
-state.db
-state.db-journal
-state.db-wal
-state.db-shm
+credentials*.json
+client_secret*.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 *.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+*.bak.*
 *.log
 
 # --- package build output ---
