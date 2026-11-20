@@ -108,3 +108,11 @@ def test_dashboard_html_defines_every_js_selector():
     missing = sorted(i for i in ids if f'id="{i}"' not in html)
     assert not missing, \
         f"app.js references ids missing from index.html: {missing}"
+
+def test_startup_page_prioritizes_setup_then_accounts_then_overview():
+    pytest.importorskip("gi")
+    from drivesync.gui import startup_page
+
+    assert startup_page({}, []) == 1
+    assert startup_page({"client_id": "configured"}, []) == 2
+    assert startup_page({"client_id": "configured"}, [{"email": "a@example.com"}]) == 0
