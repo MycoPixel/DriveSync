@@ -57,6 +57,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install flask requests pytest watchdog ruff pip-audit
+      - name: Upgrade build tools
+        run: python -m pip install --upgrade pip setuptools wheel
       - name: Audit dependencies
         run: python -m pip_audit
       - name: Lint (fatal errors only)
