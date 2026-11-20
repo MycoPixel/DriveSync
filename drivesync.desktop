@@ -8,3 +8,4 @@ Icon=__ICON__
 Terminal=false
 Categories=Network;FileTransfer;
 Keywords=drive;sync;google;backup;
+StartupWMClass=DriveSync

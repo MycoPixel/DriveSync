@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 from .config import app_dir
 from .db import parse_include_patterns
-from .drive import FOLDER_MIME, resolve_export_formats
+from .drive import FOLDER_MIME, resolve_export_formats, safe_name
 
 GDOC_PREFIX = "application/vnd.google-apps."
 CONFLICT_TAG = "%Y%m%d-%H%M%S"
@@ -154,43 +154,128 @@ def included(rel, include, is_file=False):
     return False
 
 
-def scan_local(root, patterns, include=None):
+def scan_local(root, patterns, include=None, symlink_policy="skip"):
     """Walk the local root -> {rel: {'kind','size','mtime','md5'}}.
 
     md5 starts as None and is computed on demand via md5_of(rel).
     Paths outside the pair's include scope (selective sync) are skipped —
     excluded subfolders stay on disk untouched and invisible to decide().
+
+    Symlinks follow the pair's symlink_policy. "skip" (the default) leaves
+    every link out of the snapshot: a link to a file outside the tree would
+    otherwise be uploaded as if it were the file, and a linked folder would
+    look empty to decide(), which reads as "the children were deleted".
+    "follow" records links to real files and descends into linked folders,
+    guarded by a (st_dev, st_ino) set so a link cycle cannot make the walk
+    diverge.
     """
     root = str(root)
     items = {}
     if not os.path.isdir(root):
         return items
-    for dirpath, dirnames, filenames in os.walk(root):
+    followed = symlink_policy == "follow"
+    seen_dirs = set()          # (st_dev, st_ino) of descended dirs — loop guard
+
+    def target_id(path):
+        try:
+            st = os.stat(path)      # follows the link: identity of the target
+            return (st.st_dev, st.st_ino)
+        except OSError:
+            return None
+
+    seen_dirs.add(target_id(root))
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=followed):
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == ".":
             rel_dir = ""
         # drop ignored/out-of-scope directories from the walk entirely
         keep = []
         for d in sorted(dirnames):
+            full = os.path.join(dirpath, d)
             rel = f"{rel_dir}/{d}" if rel_dir else d
+            link = os.path.islink(full)
+            if link and not followed:
+                continue       # a link is not the folder it points at
             if ignored(rel, patterns) or not included(rel, include):
                 continue
+            if link:
+                ident = target_id(full)
+                if ident is None or ident in seen_dirs:
+                    continue   # broken link, or a symlink loop: do not descend
+                seen_dirs.add(ident)
             keep.append(d)
             items[rel] = {"kind": "dir", "size": None, "mtime": None, "md5": None}
         dirnames[:] = keep
         for f in sorted(filenames):
+            full = os.path.join(dirpath, f)
             rel = f"{rel_dir}/{f}" if rel_dir else f
             if ignored(rel, patterns) or not included(rel, include,
                                                       is_file=True):
                 continue
-            full = os.path.join(dirpath, f)
+            if os.path.islink(full) and not followed:
+                continue       # never sync link bytes as the target's content
             try:
-                st = os.stat(full)
+                st = os.stat(full)     # follows symlinks when following
             except OSError:
                 continue
             items[rel] = {"kind": "file", "size": st.st_size,
                           "mtime": st.st_mtime, "md5": None}
     return items
+
+
+def canonicalize_case(local, remote, base, notify=None):
+    """Case-insensitive mode: re-key the three scans to one spelling per path.
+
+    On FAT/exFAT/NTFS mounts, "Report.docx" and "report.docx" are the same
+    file; leaving the maps keyed by different spellings makes every case-only
+    rename look like a delete plus a create, and churns on every pass. Paths
+    are matched by their lower-cased form, and each is re-keyed to the first
+    spelling claimed for it — local on-disk names first (the spelling the
+    filesystem will actually use), then base rows, then remote names. Parent
+    paths are canonicalized before children so the tree stays consistent.
+
+    Returns (local, remote, base, shadowed): shadowed lists base rows that
+    duplicate another row by case, which the caller deletes so stale
+    spellings cannot accumulate in state.db. notify(rel, source) hears about
+    same-case collisions inside one scan — Drive really can hold "A.txt" and
+    "a.txt" side by side, and only one of them can exist on a FAT volume.
+    """
+    spelling = {}
+
+    def claim(rel):
+        if "/" in rel:
+            parent, _, name = rel.rpartition("/")
+            rel = f"{claim(parent)}/{name}"
+        key = rel.lower()
+        spelling.setdefault(key, rel)
+        return spelling[key]
+
+    for rel in sorted(local):
+        claim(rel)
+    for rel in sorted(base):
+        claim(rel)
+    for rel in sorted(remote):
+        claim(rel)
+
+    shadowed = []
+
+    def rekey(mapping, source=None, track=None):
+        out = {}
+        for rel, val in sorted(mapping.items()):
+            key = claim(rel)
+            if key in out:
+                if track is not None:
+                    track.append(rel)
+                if notify:
+                    notify(rel, source)
+                continue
+            out[key] = val
+        return out
+
+    new_local = rekey(local, "local")
+    new_base = rekey(base, "base", track=shadowed)
+    new_remote = rekey(remote, "remote")
+    return new_local, new_remote, new_base, shadowed
 
 
 def scan_remote(drive, root_id, patterns, export_map=None, include=None):
@@ -338,7 +423,7 @@ def scan_remote_delta(pair, base_rows, export_map, patterns, changes,
             if fid in index:
                 drop(index.pop(fid))          # moved outside the pair tree
             continue                          # change outside this pair
-        name = entry.get("name", "")
+        name = safe_name(entry.get("name", ""))
         new_rel = f"{parent_rel}/{name}" if parent_rel else name
         if fid in index:
             old_rel = index[fid]
@@ -731,22 +816,26 @@ class SyncStats:
         return self
 
 
-def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
-    """Run one sync pass for a pair row. Returns (SyncStats, ok).
+def _scan_pair_ops(store, cfg, pair, drive, force_full=False, changes=None,
+                   cleanup=True):
+    """Scan both sides and decide the op list.
 
-    changes: a Drive changes feed (list of {'fileId','removed','file'})
-    captured since the previous pass. When given, the remote map is rebuilt
-    from the base snapshot + the feed instead of re-listing the whole tree —
-    one-file edits in large pairs cost 1-2 API calls instead of one per
-    folder. Structural feed changes fall back to a full scan automatically.
+    Shared by sync_pair (applies the ops) and preview_pair (returns them
+    untouched). Returns (ops, stats, fold, local_root, remote, local,
+    error, blocked): ops is None when a fatal scan problem stopped the pass
+    (error carries the message); remote/local are the scanned maps the
+    apply phase needs; blocked is the number of destructive ops the
+    delete-safety limit filtered out. cleanup=False (preview) never writes
+    the base table and never logs — the caller gets diagnostics in the
+    return value instead.
     """
-    local_root = str(pair["local_path"])
+    log = store.log if cleanup else (lambda *a, **k: None)
     stats = SyncStats()
+    local_root = str(pair["local_path"])
     if not os.path.isdir(local_root):
-        store.log(pair["id"], "error", message=f"local path missing: {local_root}",
-                  level="error")
         stats.errors += 1
-        return stats, False
+        return (None, stats, None, local_root, None, None,
+                f"local path missing: {local_root}", 0)
 
     patterns = list(cfg.get("ignore_patterns", []))
     include = parse_include_patterns(pair["include_patterns"])
@@ -763,13 +852,12 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
     except (TypeError, ValueError):
         previous_count = 0
     if not base_rows and previous_count > 0 and not force_full:
-        store.log(pair["id"], "error", "",
-                  "base snapshot is empty but this pair synced before — "
-                  "refusing to reconcile from scratch (run "
-                  "'drivesync sync --full --pair "
-                  f"{pair['id']}' once to rebuild it)", level="error")
         stats.errors += 1
-        return stats, False
+        return (None, stats, None, local_root, None, None,
+                "base snapshot is empty but this pair synced before — "
+                "refusing to reconcile from scratch (run "
+                "'drivesync sync --full --pair "
+                f"{pair['id']}' once to rebuild it)", 0)
 
     remote = None
     if changes is not None and not force_full:
@@ -779,21 +867,36 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
         except DeltaUnsupported:
             remote = None
         except Exception as exc:
-            store.log(pair["id"], "info", "",
-                      f"delta scan failed ({exc}); doing a full scan")
+            log(pair["id"], "info", "",
+                f"delta scan failed ({exc}); doing a full scan")
             remote = None
     if remote is None:
         try:
             remote = scan_remote(drive, pair["remote_id"], patterns, export_map,
                                  include=include)
         except Exception as exc:
-            store.log(pair["id"], "error", message=f"Drive listing failed: {exc}",
-                      level="error")
             stats.errors += 1
-            return stats, False
+            return (None, stats, None, local_root, None, None,
+                    f"Drive listing failed: {exc}", 0)
 
-    local = scan_local(local_root, patterns, include=include)
+    local = scan_local(local_root, patterns, include=include,
+                       symlink_policy=pair["symlink_policy"] or "skip")
     base = base_map(base_rows)
+    if pair["case_insensitive"]:
+        def _case_notify(rel, source):
+            log(pair["id"], "case-collision", rel,
+                f"two {'Drive files' if source == 'remote' else 'paths'} "
+                "differ only in letter case; this pair runs in "
+                "case-insensitive mode and can track only one of them — "
+                "the other was left out of this pass", level="error")
+        local, remote, base, shadowed = canonicalize_case(
+            local, remote, base, notify=_case_notify)
+        if cleanup:
+            for rel in shadowed:
+                store.base_delete(pair["id"], rel)
+                store.log(pair["id"], "case-cleanup", rel,
+                          "stale duplicate base row (same path, different "
+                          "case) removed")
 
     # exported Google-native docs live under rel+ext locally: align the maps
     fold = fold_exports(local, remote, base, export_map)
@@ -821,15 +924,70 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
                  allow_deletes=bool(pair["allow_deletes"]))
 
     # safety valve: refuse to wipe out more files than allowed in one pass
+    blocked = 0
     limit = int(cfg.get("delete_safety_limit", 10))
     destructive = [op for op in ops if op[0] in DESTRUCTIVE_OPS]
     if limit and len(destructive) > limit:
-        store.log(pair["id"], "safety-stop", "",
-                  f"{len(destructive)} deletions blocked — exceeds "
-                  f"delete_safety_limit={limit}; raise it in Settings if this "
-                  "is expected", level="error")
+        log(pair["id"], "safety-stop", "",
+            f"{len(destructive)} deletions blocked — exceeds "
+            f"delete_safety_limit={limit}; raise it in Settings if this "
+            "is expected", level="error")
         ops = [op for op in ops if op[0] not in DESTRUCTIVE_OPS]
         stats.errors += 1
+        blocked = len(destructive)
+    return ops, stats, fold, local_root, remote, local, None, blocked
+
+
+def preview_pair(store, cfg, pair, drive, force_full=False, changes=None):
+    """What the next sync pass WOULD do, without touching anything.
+
+    Runs the same scan and three-way decision as sync_pair but stops right
+    before the apply phase: no transfers, no deletions, no base writes, no
+    activity-log rows. Returns a dict: {"ops": [[name, rel, ...], ...],
+    "counts": {name: n}, "error": None|msg, "blocked": n_deletions_blocked,
+    "totals": {uploads, downloads, deletions, renames, other}}. Ops arrive
+    already ordered (mkdirs, renames, transfers, deletions last) — exactly
+    the order a real pass would apply them in.
+    """
+    ops, stats, fold, local_root, remote, local, error, blocked = \
+        _scan_pair_ops(store, cfg, pair, drive, force_full=force_full,
+                       changes=changes, cleanup=False)
+    counts = {}
+    for op in ops or []:
+        counts[op[0]] = counts.get(op[0], 0) + 1
+    return {
+        "pair_id": pair["id"], "error": error,
+        "ops": [list(op) for op in (ops or [])],
+        "counts": counts, "blocked": blocked,
+        "totals": {
+            "uploads": counts.get("upload", 0),
+            "downloads": counts.get("download", 0),
+            "deletions": sum(n for k, n in counts.items()
+                             if k in DESTRUCTIVE_OPS),
+            "renames": counts.get("rename_local", 0)
+                       + counts.get("rename_remote", 0),
+            "other": sum(n for k, n in counts.items()
+                         if k not in TRANSFER_OPS and k not in DESTRUCTIVE_OPS
+                         and not k.startswith("rename")),
+        },
+    }
+
+
+def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
+    """Run one sync pass for a pair row. Returns (SyncStats, ok).
+
+    changes: a Drive changes feed (list of {'fileId','removed','file'})
+    captured since the previous pass. When given, the remote map is rebuilt
+    from the base snapshot + the feed instead of re-listing the whole tree —
+    one-file edits in large pairs cost 1-2 API calls instead of one per
+    folder. Structural feed changes fall back to a full scan automatically.
+    """
+    ops, stats, fold, local_root, remote, local, error, _blocked = \
+        _scan_pair_ops(store, cfg, pair, drive, force_full=force_full,
+                       changes=changes)
+    if ops is None:
+        store.log(pair["id"], "error", message=error, level="error")
+        return stats, False
 
     ctx = _ApplyCtx(store, cfg, pair, drive, local_root, remote, local, stats,
                     fold)
@@ -869,6 +1027,7 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
         apply_one(op)
     # remember what a healthy base looked like: an empty snapshot after a
     # non-empty one means state loss, not "everything was deleted"
+    marker = f"pair_synced:{pair['id']}"       # same key _scan_pair_ops read
     store.kv_set(marker, str(len(store.base_entries(pair["id"]))))
     return stats, stats.errors == 0
 
@@ -890,6 +1049,63 @@ class _ApplyCtx:
         self.trash_stamp = datetime.now(timezone.utc).strftime(CONFLICT_TAG)
         # remote id per rel (known dirs/files), updated as we create items
         self.ids = {rel: it["id"] for rel, it in remote.items() if it.get("id")}
+        try:
+            self.history = max(0, int(cfg.get("history_versions", 10) or 0))
+        except (TypeError, ValueError):
+            self.history = 10
+
+    # -- version history ---------------------------------------------
+    def _history_dir(self, rel):
+        root = os.path.join(str(app_dir()), "history", str(self.pid),
+                            rel.replace("\\", "/"))
+        os.makedirs(root, exist_ok=True)
+        return root
+
+    def keep_old_version(self, rel):
+        """Copy the current local file into the version history before a pull.
+
+        A pull overwrites the bytes on disk, and Drive keeps no trace of what
+        used to be here — this is the one overwrite the sync could not
+        undo. Versions live under <app dir>/history/<pair>/<rel>/ named
+        "<UTC stamp>-<name>", capped at history_versions per file (oldest
+        pruned), 0 disables the feature entirely.
+        """
+        if not self.history:
+            return
+        path = self.lpath(rel)
+        if not os.path.isfile(path):
+            return
+        # microsecond stamp: lexicographic order == chronological order, so
+        # pruning by name is exact and same-second pulls stay unique
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+        hist_dir = self._history_dir(rel)
+        name = os.path.basename(rel.replace("\\", "/"))
+        target = os.path.join(hist_dir, f"{stamp}-{name}")
+        i = 0
+        while os.path.exists(target):       # clock went backwards?
+            i += 1
+            target = os.path.join(hist_dir, f"{stamp}-{i:02d}-{name}")
+        try:
+            shutil.copy2(path, target)
+        except OSError:
+            return          # history is best-effort; never fail the sync for it
+        self._prune_history(hist_dir)
+        self.store.log(self.pid, "history-keep", rel,
+                       f"previous version kept as {os.path.basename(target)}")
+
+    def _prune_history(self, hist_dir):
+        try:
+            versions = sorted(
+                (f for f in os.listdir(hist_dir)
+                 if os.path.isfile(os.path.join(hist_dir, f))),
+                reverse=True)                   # stamp-prefixed names
+        except OSError:
+            return
+        for old in versions[self.history:]:
+            try:
+                os.remove(os.path.join(hist_dir, old))
+            except OSError:
+                pass
 
     # -- path/id helpers -------------------------------------------
     def _base(self, rel):
@@ -1069,6 +1285,8 @@ class _ApplyCtx:
                     "tracked Drive export", level="error")
                 self.stats.errors += 1
                 return
+        if os.path.isfile(dest):
+            self.keep_old_version(rel)   # the old local bytes are about to go
         self._pull_remote(rel, dest)
         if r.get("mtime"):
             try:

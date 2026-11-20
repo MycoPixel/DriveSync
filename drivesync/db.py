@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -61,6 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ts    ON events(ts);
 
 _DIRECTIONS = ("bidirectional", "upload", "download")
 _POLICIES = ("newer", "local", "remote", "both")
+_SYMLINK_POLICIES = ("skip", "follow")
 
 
 def normalize_include_patterns(value) -> str:
@@ -160,8 +162,8 @@ class Store:
                 pass
         self._lock = threading.RLock()
         self._batch_depth = 0
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self.recovered = False
+        self._conn = self._connect_recovering()
         with self._lock:
             # WAL lets the dashboard read while a sync pass writes; NORMAL
             # fsyncs the WAL rather than every commit (safe against process
@@ -180,10 +182,87 @@ class Store:
         except OSError:
             pass
 
+    # ---- state.db backup + recovery --------------------------------
+    def _connect_recovering(self):
+        """Open the database, falling back to state.db.bak when it is corrupt.
+
+        The whole engine leans on this one SQLite file; a truncated or
+        half-written state.db (power cut, full disk) used to be a hard stop.
+        A clean pass keeps a fresh backup next to it, so corruption becomes
+        a hiccup: restore the backup and carry on.
+        """
+        bak = self.path + ".bak"
+        if not os.path.exists(self.path) and os.path.exists(bak):
+            shutil.copy2(bak, self.path)
+            self.recovered = True
+        conn = self._new_conn()
+        if self._healthy(conn):
+            return conn
+        conn.close()
+        if not os.path.exists(bak):
+            raise sqlite3.DatabaseError(
+                f"state database {self.path} is corrupt and no backup exists")
+        for side in ("-wal", "-shm"):
+            stale = self.path + side
+            if os.path.exists(stale):
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+        shutil.copy2(bak, self.path)
+        conn = self._new_conn()
+        if not self._healthy(conn):
+            conn.close()
+            raise sqlite3.DatabaseError(
+                f"state database {self.path} is corrupt and its backup did "
+                "not survive either")
+        self.recovered = True
+        return conn
+
+    def _new_conn(self):
+        conn = sqlite3.connect(self.path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @staticmethod
+    def _healthy(conn):
+        """False when SQLite cannot actually read the file (corruption)."""
+        try:
+            conn.execute("PRAGMA quick_check").fetchone()
+            return True
+        except sqlite3.DatabaseError:
+            return False
+
+    def backup(self):
+        """Snapshot the live database to state.db.bak (atomic replace).
+
+        Uses SQLite's online backup API, so the copy is consistent even
+        while sync passes write. Returns the backup path ('' for in-memory
+        databases, which have nothing to back up).
+        """
+        if not self.path or self.path == ":memory:":
+            return ""
+        tmp = self.path + ".bak.tmp"
+        dst = sqlite3.connect(tmp)
+        try:
+            with self._lock:
+                self._conn.backup(dst)
+        finally:
+            dst.close()
+        os.replace(tmp, self.path + ".bak")
+        try:
+            os.chmod(self.path + ".bak", 0o600)
+        except OSError:
+            pass
+        return self.path + ".bak"
+
     # Columns added after the first release; ALTER is idempotent per launch.
     _MIGRATIONS = {
         "pairs": ["allow_deletes INTEGER NOT NULL DEFAULT 1",
-                  "include_patterns TEXT NOT NULL DEFAULT ''"],
+                  "include_patterns TEXT NOT NULL DEFAULT ''",
+                  "symlink_policy TEXT NOT NULL DEFAULT 'skip'",
+                  "case_insensitive INTEGER NOT NULL DEFAULT 0",
+                  "paused_until TEXT"],
         "entries": ["deleted_local INTEGER NOT NULL DEFAULT 0",
                     "deleted_remote INTEGER NOT NULL DEFAULT 0",
                     "remote_size REAL",
@@ -257,11 +336,15 @@ class Store:
     # ---- pairs ----------------------------------------------------
     def add_pair(self, account_id, local_path, remote_id, remote_path="",
                  direction="bidirectional", conflict_policy="newer", enabled=1,
-                 allow_deletes=1, include_patterns=None):
+                 allow_deletes=1, include_patterns=None, symlink_policy="skip",
+                 case_insensitive=0):
         if direction not in _DIRECTIONS:
             raise ValueError(f"direction must be one of {_DIRECTIONS}")
         if conflict_policy not in _POLICIES:
             raise ValueError(f"conflict_policy must be one of {_POLICIES}")
+        if symlink_policy not in _SYMLINK_POLICIES:
+            raise ValueError(
+                f"symlink_policy must be one of {_SYMLINK_POLICIES}")
         for row in self.pairs():
             if roots_overlap(local_path, row["local_path"]):
                 raise ValueError(
@@ -272,10 +355,12 @@ class Store:
         cur = self._exec(
             "INSERT INTO pairs(account_id, local_path, remote_id, remote_path, "
             "direction, conflict_policy, enabled, allow_deletes, "
-            "include_patterns) VALUES (?,?,?,?,?,?,?,?,?)",
+            "include_patterns, symlink_policy, case_insensitive) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, str(local_path), remote_id, remote_path,
              direction, conflict_policy, int(bool(enabled)),
-             int(bool(allow_deletes)), scope))
+             int(bool(allow_deletes)), scope, symlink_policy,
+             int(bool(case_insensitive))))
         return self.pair(cur.lastrowid)
 
     def pairs(self, enabled_only=False):
@@ -290,7 +375,8 @@ class Store:
     def update_pair(self, pair_id, **fields):
         allowed = {"local_path", "remote_id", "remote_path", "direction",
                    "conflict_policy", "enabled", "allow_deletes",
-                   "include_patterns"}
+                   "include_patterns", "symlink_policy", "case_insensitive",
+                   "paused_until"}
         keys = [k for k in fields if k in allowed]
         if not keys:
             return self.pair(pair_id)
@@ -298,13 +384,27 @@ class Store:
             raise ValueError(f"direction must be one of {_DIRECTIONS}")
         if "conflict_policy" in fields and fields["conflict_policy"] not in _POLICIES:
             raise ValueError(f"conflict_policy must be one of {_POLICIES}")
+        if "symlink_policy" in fields and \
+                fields["symlink_policy"] not in _SYMLINK_POLICIES:
+            raise ValueError(
+                f"symlink_policy must be one of {_SYMLINK_POLICIES}")
         if "enabled" in fields:
             fields["enabled"] = int(bool(fields["enabled"]))
         if "allow_deletes" in fields:
             fields["allow_deletes"] = int(bool(fields["allow_deletes"]))
+        if "case_insensitive" in fields:
+            fields["case_insensitive"] = int(bool(fields["case_insensitive"]))
         if "include_patterns" in fields:
             fields["include_patterns"] = \
                 normalize_include_patterns(fields["include_patterns"])
+        if "paused_until" in fields and fields["paused_until"] is not None:
+            # ISO timestamp (UTC preferred, naive treated as UTC by readers);
+            # a junk value would silently pause a pair forever
+            try:
+                datetime.fromisoformat(str(fields["paused_until"]))
+            except ValueError:
+                raise ValueError("paused_until must be an ISO timestamp "
+                                 "(e.g. 2026-11-21T09:00:00) or null")
         current = self.pair(pair_id)
         # repointing a pair at a different tree invalidates its snapshot:
         # the old base rows would look like mass deletions on the next pass

@@ -36,7 +36,7 @@ def test_parse_conflict_name_forms():
     assert parse_conflict_name(name) == (name, "a.txt")
     nested = "docs/README.conflict-20240102-030405"
     assert parse_conflict_name(nested) == (nested, "docs/README")
-    hidden = ".notes.conflict-20240102-030405.txt"
+    hidden = ".conflict-20240102-030405.notes.txt"
     assert parse_conflict_name(hidden) == (hidden, ".notes.txt")
     archive = "backup.conflict-20240102-030405.tar.gz"
     assert parse_conflict_name(archive) == (archive, "backup.tar.gz")

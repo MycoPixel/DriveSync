@@ -19,7 +19,10 @@ tokens and files stay on your machine and talk to Google directly.
 - **Per-pair direction**: `bidirectional`, `upload` (local → Drive), or
   `download` (Drive → local)
 - **Conflict policies**: keep the newer file, always local, always remote, or
-  keep both copies (the loser is saved as `name.conflict-<timestamp>.ext`)
+  keep both copies (the loser is saved as `name.conflict-<timestamp>.ext`);
+  copies left by the keep-both policy can be reviewed afterwards — keep the
+  copy, the original, or both — from the desktop app's **Conflicts…** button
+  or the dashboard's per-pair **Conflicts** button
 - **Multiple Google accounts**, multiple clouds folders, many pairs at once
 - **Rename detection** — moving/renaming locally or on Drive updates the
   other side without re-uploading
@@ -33,6 +36,9 @@ tokens and files stay on your machine and talk to Google directly.
 - **Selective sync via ignore patterns** (glob style, per app)
 - **Activity log** with conflicts and errors surfaced in the dashboard —
   auto-pruned (30 days, capped at 5,000 rows) so the state database stays small
+- **Pair management in the UI** — add, pause/resume, edit direction and
+  conflict policy, and watch each pair's last-sync status (time, ok/error,
+  change counts) directly in the Folders table / pairs tables
 - **Background worker** on a timer + "Sync now" button; systemd user unit
   for autostart
 - **Instant local-change sync** — an inotify watcher (watchdog) pushes local
@@ -65,6 +71,12 @@ included), put `drivesync` on your PATH, add a menu launcher, and drop a
 systemd user unit (`systemctl --user enable --now drivesync` to autostart).
 Build them yourself with `packaging/build-deb.sh` and `packaging/build-rpm.sh`
 (see `packaging/README.md`), or grab them from the releases page.
+
+There is also a zero-install AppImage (`packaging/build-appimage.sh`) that
+bundles its own CPython, so it runs anywhere the glibc is new enough. It
+opens the dashboard in your browser, and includes the tray and CLI; the GTK
+desktop window needs the distro's PyGObject, so prefer the deb/rpm for the
+full desktop experience.
 
 From source:
 
@@ -153,7 +165,8 @@ systemctl --user enable --now drivesync   # or as a login service
 ```
 
 The desktop app (`drivesync gui`) is what the menu launcher opens: one GTK
-window with Setup / Accounts / Folders / Drive / Activity tabs, so a fresh
+window with Setup / Accounts / Folders / Drive / Activity / Options tabs,
+so a fresh
 machine is configured entirely without the browser — except Google's own
 consent page, which must open in a browser once per account (that step
 happens on google.com by design). Adding a pair needs no manual folder IDs:
@@ -169,7 +182,36 @@ running both is safe — a cross-process lock means only one syncs at a
 time. Headless machines without GTK: `drivesync gui` prints the package to
 install and exits.
 
-Open <http://127.0.0.1:5678> — status, pairs, activity and settings.
+### Options tab: themes, colors, language, startup
+
+The **Options** tab holds the personal settings:
+
+| Option | Choices | Notes |
+| --- | --- | --- |
+| Theme | Light, Dark, System; style variants Liquid glass light/dark, Graphite light/dark | Base themes and decorative styles are separate; System follows the desktop's dark preference (GNOME color-scheme, with GTK_THEME fallback); applied and persisted instantly |
+| Accent | blue, teal, green, purple, pink, orange, red | Tints action buttons, focused entry borders, the active tab and list selection |
+| Language | English ⇄ Español | One button, live relabeling — dialogs translate as they open; the tray menu is rebuilt |
+| Start at login | on/off | XDG autostart entry in `~/.config/autostart/drivesync.desktop` |
+| Stay in the system tray | on/off | Closing the window keeps the app running behind the tray icon (off = closing exits). Launching DriveSync again — including clicking a pinned KDE launcher — brings the hidden window back |
+
+The app version lives on the Options tab's **About** card, not in the
+window title. Themes and accents are plain config keys (`theme`,
+`accent`, `language`, `start_at_login` in `config.json`), so `drivesync
+config set` works too — e.g. `drivesync config set theme=glass-dark`.
+The old `glass` / `graphite` names still load and map to their dark variants.
+
+Open <http://127.0.0.1:5678> — status, pairs, activity and settings. The
+dashboard matches the desktop app now: an **Appearance & language** card
+picks the same base themes and style variants (Light, Dark, System, Liquid
+glass light/dark, Graphite light/dark)
+and the same seven accent colors, and a 🌐 button switches the interface
+to Spanish. Preferences are stored per browser (localStorage), so the
+desktop app and the dashboard can look different if you like. Each pair
+row has a **Preview** button — a dry-run listing exactly what the next
+sync would change (uploads, downloads, deletions, renames, in pass order,
+nothing applied) — and an **Until tomorrow** button that parks that pair
+until tomorrow 09:00; the pause auto-expires with a logged event, and
+clicking again cancels it.
 
 ### CLI reference
 
@@ -182,9 +224,29 @@ drivesync pairs add|list|set|remove   manage sync pairs
                                       (--include docs,photos = selective sync)
 drivesync sync [--pair N] [--full]    run one sync pass now and exit
 drivesync status                      accounts, pairs, recent activity
+drivesync conflicts list|resolve      review/resolve .conflict-… copies
+                                      (resolve <path> --keep copy|original|both)
 drivesync config get|set              interval, conflict policy, ignores
 drivesync doctor                      sanity-check the installation
 ```
+
+### Version history (before a pull overwrites a file)
+
+Pulls replace local bytes, and Drive keeps no trace of what used to be
+there — so before a pull overwrites a tracked file, the previous version is
+copied to `~/.local/share/drivesync/history/<pair>/<path>/` (named with a
+UTC timestamp, capped at **10 versions per file**, oldest pruned; 0 in
+**Settings → Kept versions per file** turns it off). Restoring is a plain
+file copy back — or make that the local side and the next pass pushes it.
+Uploads never need this: Drive keeps its own revision history for every
+file, and deletes already land in DriveSync's recoverable trash.
+
+### Per-pair hardening options (pair edit dialog / `drivesync pairs set`)
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| Symlinks | `skip` | Links are left out of the pair — a link to a file outside the tree would otherwise be uploaded as if it were the file. `follow` syncs what they point at, guarded against link loops |
+| Case-insensitive | off | For pairs on FAT/exFAT/NTFS folders: paths matching only by letter case compare as one path (the local on-disk spelling wins), so case-only renames do not churn and same-case Drive files cannot collide locally |
 
 ### Settings
 
@@ -196,6 +258,7 @@ drivesync doctor                      sanity-check the installation
 | Convert Google Docs | on | Native docs downloaded as Office files |
 | Incremental scan | on | 1–2 API calls per pass via the changes feed |
 | Watch local changes | on | Instant push via inotify (needs watchdog) |
+| Kept versions per file | 10 | Old local versions saved before a pull overwrites; 0 = off |
 | Bandwidth limit | 0 (unlimited) | KB/s cap on uploads + downloads combined |
 | Sync window | always | `active_from`/`active_to` HH:MM; overnight works |
 | Server port | 5678 | Local dashboard port |
@@ -278,11 +341,13 @@ drivesync config set incremental_scan=false
 the sync worker, shows a Material-styled window, and keeps a system tray
 icon when pystray is installed (`sudo dnf install python3-pystray`). Closing
 the window only hides it — the tray icon stays, with **Open**, **Sync now**,
-**Pause/Resume** and **Quit**. Without pystray, closing the window exits the
-app. A second launch while it runs shows an "already running" notice instead
-of opening a duplicate. While the window is hidden, new conflicts or errors
-surface as desktop notifications (libnotify, best-effort — without it the
-Activity tab is still the source of truth).
+**Pause/Resume** and **Quit**. A **Pause/Resume sync** button also lives in
+the headerbar (with a next-run countdown in the subtitle), reachable from
+every tab. Without pystray, closing the window exits the app. A second
+launch while it runs shows an "already running" notice instead of opening a
+duplicate. While the window is hidden, new conflicts or errors surface as
+desktop notifications (libnotify, best-effort — without it the Activity tab
+is still the source of truth).
 
 ## Troubleshooting
 

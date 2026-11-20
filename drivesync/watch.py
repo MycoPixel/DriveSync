@@ -168,6 +168,10 @@ class Watcher:
     def _refresh_loop(self):
         while not self._stop.wait(REFRESH_SECS):
             try:
+                # Adopt ignore-pattern edits without a restart. Handlers keep
+                # a reference to this list, so mutate it in place.
+                patterns = self._worker.config.get("ignore_patterns", [])
+                self._patterns[:] = list(patterns or [])
                 self._refresh()
             except Exception:
                 pass                # never let the watcher kill serve

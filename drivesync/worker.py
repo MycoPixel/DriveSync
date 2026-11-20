@@ -1,8 +1,10 @@
 """Background worker: syncs every enabled pair on an interval, on demand."""
 
+import os
+import socket
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     import fcntl  # Unix only: cross-process sync lock
@@ -14,6 +16,26 @@ from .auth import access_token_persisting, token_from_json
 from .config import app_dir
 from .drive import Drive
 from .limits import TokenBucket
+
+
+def sd_notify(state):
+    """Best-effort systemd notification (no-op outside a service).
+
+    Sends READY=1 / WATCHDOG=1 / STOPPING=1 to the socket systemd passes in
+    NOTIFY_SOCKET. Implemented directly on an AF_UNIX datagram socket so the
+    worker has no dependency on the systemd Python bindings.
+    """
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr.startswith("@"):        # abstract namespace socket
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(addr)
+            sock.sendall(state.encode())
+    except OSError:
+        pass
 
 
 def _hhmm(s):
@@ -63,13 +85,20 @@ class Worker:
                                         name="drivesync-worker")
         self.status = {"running": False, "paused": False, "last_run": None,
                        "last_error": None, "last_stats": None,
-                       "waiting_until": None}
+                       "waiting_until": None, "next_run": None,
+                       "pairs": {}}
         self._lock = threading.Lock()
         self._lockfh = None
         self._limit_kb = int(config.get("bandwidth_limit_kb", 0) or 0)
         self.limiter = TokenBucket(self._limit_kb * 1024) \
             if self._limit_kb > 0 else None
         self._pending = set()           # pair ids requested via sync_now()
+        # systemd watchdog state: a liveness stamp the pass loop, the idle
+        # wait and every transfer chunk keep fresh while things move
+        self.heartbeat = time.monotonic()
+        self._watchdog_sec = 120.0
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread = None
         # keep the activity log bounded: every pass logs a summary row, so a
         # service at the default interval writes ~3k rows/day. Best-effort —
         # a broken store must not stop the worker from starting.
@@ -110,11 +139,50 @@ class Worker:
 
     def start(self):
         self._thread.start()
+        self._start_watchdog()
 
     def stop(self):
+        self._watchdog_stop.set()
         self.stop_flag.set()
         self.wake.set()
         self._thread.join(timeout=10)
+        if os.environ.get("NOTIFY_SOCKET"):
+            sd_notify("STOPPING=1")
+
+    def _touch_heartbeat(self):
+        """Mark the worker as alive for the systemd watchdog."""
+        self.heartbeat = time.monotonic()
+
+    def _start_watchdog(self):
+        """Systemd watchdog: READY=1 now, WATCHDOG=1 while the worker moves.
+
+        Active only when NOTIFY_SOCKET is set (running under systemd with
+        WatchdogSec= in the unit). The pinger deliberately stops pinging —
+        which makes systemd restart the service — when the heartbeat goes
+        stale for 3/4 of the watchdog window: neither the pass loop, the
+        idle wait, nor any transfer chunk has shown liveness for that long,
+        so a hung worker is replaced instead of stalling forever.
+        """
+        if not os.environ.get("NOTIFY_SOCKET"):
+            return
+        try:
+            sec = float(os.environ.get("WATCHDOG_USEC", "0")) / 1_000_000
+        except ValueError:
+            sec = 0.0
+        self._watchdog_sec = sec if sec > 0 else 120.0
+        sd_notify("READY=1")
+        self._touch_heartbeat()
+
+        def ping():
+            while not self._watchdog_stop.wait(
+                    timeout=max(1.0, self._watchdog_sec / 4)):
+                if time.monotonic() - self.heartbeat \
+                        < self._watchdog_sec * 0.75:
+                    sd_notify("WATCHDOG=1")
+
+        self._watchdog_thread = threading.Thread(
+            target=ping, daemon=True, name="drivesync-watchdog")
+        self._watchdog_thread.start()
 
     def pause(self):
         """Skip sync passes while keeping the worker thread (dashboard up)."""
@@ -136,10 +204,14 @@ class Worker:
 
     def make_drive(self, account_row):
         token = token_from_json(account_row["token_json"])
-        return Drive(
+        drive = Drive(
             lambda: access_token_persisting(self.store, account_row["id"],
                                             token),
             limiter=self.limiter)
+        # transfer chunk loops keep the watchdog fed while bytes move, so a
+        # slow but healthy upload is never mistaken for a hung worker
+        drive.heartbeat = self._touch_heartbeat
+        return drive
 
     def run_pass(self, pair_id=None, force_full=False):
         """One sync sweep across all enabled pairs (or the given pair/ids).
@@ -170,11 +242,13 @@ class Worker:
                            "another DriveSync process is syncing")
             return total, False
         overall_ok = True
+        self._touch_heartbeat()
         try:
             pairs = self.store.pairs(enabled_only=True)
             if pair_id:
                 wanted = {pair_id} if isinstance(pair_id, int) else set(pair_id)
                 pairs = [p for p in pairs if p["id"] in wanted]
+            pairs = self._drop_paused_pairs(pairs)
             groups = {}
             for p in pairs:
                 groups.setdefault(p["account_id"], []).append(p)
@@ -196,6 +270,7 @@ class Worker:
                     # A pair that failed last pass does a full scan now: its
                     # error may have hidden remote changes the delta does not
                     # replay, and a full scan is the only way to re-see them.
+                    self._touch_heartbeat()
                     stale = bool(self.store.kv_get(f"stale:{pair['id']}"))
                     try:
                         stats, ok = engine.sync_pair(
@@ -207,6 +282,7 @@ class Worker:
                         self.store.log(pair["id"], "worker-error", "",
                                        str(exc), level="error")
                         self.store.kv_set(f"stale:{pair['id']}", "1")
+                        self._note_pair(pair["id"], False, None, str(exc))
                         total.errors += 1
                         overall_ok = False
                         continue
@@ -228,6 +304,8 @@ class Worker:
                     else:
                         self.store.kv_set(f"stale:{pair['id']}", "1")
                         overall_ok = False
+                    self._note_pair(pair["id"], bool(ok), stats,
+                                    None if ok else self._pair_error(pair["id"]))
                     self.status["last_run"] = time.time()
                 # The feed token advances on unfiltered passes even when a
                 # pair is stale: that pair full-scans next time (see above),
@@ -245,7 +323,82 @@ class Worker:
             self._release_sync_lock()
             with self._lock:
                 self.status["running"] = False
+        if overall_ok:
+            self._maybe_backup_db()
         return total, overall_ok
+
+    def _drop_paused_pairs(self, pairs):
+        """Apply the per-pair 'pause until' schedule.
+
+        A pair paused into the future is skipped (silently — a log row per
+        pass would just spam the activity feed). An expired pause is cleared
+        and announced once, so the pair is back on every later pass.
+        """
+        active = []
+        for p in pairs:
+            until = p["paused_until"]
+            if not until:
+                active.append(p)
+                continue
+            try:
+                expiry = datetime.fromisoformat(str(until))
+            except ValueError:
+                self.store.update_pair(p["id"], paused_until=None)
+                active.append(p)
+                continue
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) >= expiry:
+                self.store.update_pair(p["id"], paused_until=None)
+                self.store.log(p["id"], "auto-resume", "",
+                               f"pause expired ({until}) — pair resumed "
+                               "automatically")
+                active.append(p)
+            # else: still inside the pause window — leave it out
+        return active
+
+    def _maybe_backup_db(self):
+        """Snapshot state.db after a clean pass (rate-limited to 10 min).
+
+        Store falls back to state.db.bak when the live database turns out
+        to be corrupt, so the fresher the backup, the smaller the loss.
+        """
+        try:
+            last = self.store.kv_get("last_db_backup")
+            if last and time.time() - float(last) < 600:
+                return
+            if self.store.backup():
+                self.store.kv_set("last_db_backup", str(time.time()))
+        except Exception:
+            pass        # a failed backup must never fail the pass
+
+    def _note_pair(self, pair_id, ok, stats, error):
+        """Record one pair's last-pass outcome for the UI status columns.
+
+        Kept inside status["pairs"] so the GUI and the dashboard can show
+        "last sync 2m ago / ERROR: …" per pair without parsing the event
+        log. Assignments replace the whole per-pair dict, so readers never
+        see a half-updated row.
+        """
+        self.status["pairs"][pair_id] = {
+            "ts": time.time(),
+            "ok": bool(ok),
+            "stats": ({
+                "pushed": int(stats.pushed), "pulled": int(stats.pulled),
+                "deleted": int(stats.deleted), "renamed": int(stats.renamed),
+                "conflicts": int(stats.conflicts),
+            } if stats is not None else None),
+            "error": error,
+        }
+
+    def _pair_error(self, pair_id):
+        """Message of the pair's newest error event (sync_pair logs there)."""
+        try:
+            rows = self.store.recent_events(limit=1, level="error",
+                                            pair_id=pair_id)
+            return rows[0]["message"] if rows else "sync failed"
+        except Exception:
+            return "sync failed"
 
     def _fetch_changes(self, drive, account_id):
         """(feed_items | None, new_token | None) for one account.
@@ -299,13 +452,36 @@ class Worker:
                 self._lockfh = None
 
     # ---- internals ------------------------------------------------
+    def _wait_wake(self):
+        """wake.wait() in watchdog-sized slices.
+
+        An idle worker must keep telling systemd it is alive even when the
+        sync interval is hours long, so the wait is split into slices no
+        longer than a quarter of the watchdog window, refreshing the
+        heartbeat between them. Behavior without systemd is unchanged.
+        """
+        deadline = time.time() + self.interval
+        while not self.stop_flag.is_set():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            slice_ = min(remaining, max(1.0, self._watchdog_sec / 4))
+            if self.wake.wait(timeout=slice_):
+                return
+            self._touch_heartbeat()
+
     def _loop(self):
         while not self.stop_flag.is_set():
-            self.wake.wait(timeout=self.interval)
+            if self._paused.is_set():
+                self.status["next_run"] = None
+            else:
+                self.status["next_run"] = time.time() + self.interval
+            self._wait_wake()
             self.wake.clear()
             if self.stop_flag.is_set():
                 break
             if self._paused.is_set():
+                self.status["next_run"] = None
                 continue
             ids = list(self._pending)
             self._pending.clear()
@@ -315,6 +491,8 @@ class Worker:
                 self.status["waiting_until"] = \
                     self.config.get("active_to") \
                     or self.config.get("active_from") or None
+                self.status["next_run"] = None
                 continue
             self.status["waiting_until"] = None
+            self.status["next_run"] = None      # a pass is starting now
             self.run_pass(ids or None)

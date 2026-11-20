@@ -25,6 +25,13 @@ DEFAULT_CONFIG = {
     "export_formats": {},         # per-kind override, e.g. {"document": "pdf"}
     "incremental_scan": True,     # use the Drive changes feed instead of
                                   # re-listing the whole tree every pass
+    "history_versions": 10,       # old local versions kept per file before a
+                                  # pull overwrites it; 0 = keep none
+    "theme": "system",            # system | light | dark | glass-light |
+                                  # glass-dark | graphite-light | graphite-dark
+    "accent": "blue",             # buttons + selection highlight color
+    "language": "en",             # interface language: en | es
+    "start_at_login": False,      # XDG autostart entry (desktop sessions)
 }
 
 
@@ -103,6 +110,29 @@ def save_config(cfg: dict) -> dict:
     merged["tray_enabled"] = bool(merged["tray_enabled"])
     merged["incremental_scan"] = bool(merged["incremental_scan"])
     merged["watch_enabled"] = bool(merged["watch_enabled"])
+
+    try:
+        hist = int(merged["history_versions"])
+    except (TypeError, ValueError):
+        raise ValueError("history_versions must be an integer")
+    if not (0 <= hist <= 100):
+        raise ValueError("history_versions must be between 0 (off) and 100")
+    merged["history_versions"] = hist
+
+    # appearance / locale (themes.ACCENTS/THEMES are dependency-free dicts)
+    from . import themes
+    merged["theme"] = themes.canonical(str(merged["theme"] or "system"))
+    if merged["theme"] is None:
+        raise ValueError(
+            f"theme must be one of: {', '.join(themes.THEMES)}")
+    merged["accent"] = str(merged["accent"] or "blue")
+    if merged["accent"] not in themes.ACCENTS:
+        raise ValueError(
+            f"accent must be one of: {', '.join(themes.ACCENTS)}")
+    merged["language"] = str(merged["language"] or "en")
+    if merged["language"] not in ("en", "es"):
+        raise ValueError("language must be 'en' or 'es'")
+    merged["start_at_login"] = bool(merged["start_at_login"])
 
     try:
         bw = int(merged["bandwidth_limit_kb"])

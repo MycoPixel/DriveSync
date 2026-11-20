@@ -22,8 +22,13 @@ def available():
         return False
 
 
-def send(title, body):
-    """Show a desktop notification. Returns True when actually shown."""
+def send(title, body, action_label=None, on_action=None):
+    """Show a desktop notification. Returns True when actually shown.
+
+    action_label + on_action add a clickable button (GNOME/KDE render it;
+    daemons without action support just show the plain notification). The
+    callback runs on the GLib main loop — safe to touch GTK widgets from it.
+    """
     global _initialized
     try:
         import gi
@@ -36,6 +41,16 @@ def send(title, body):
                 return False
             _initialized = True
         n = Notify.Notification.new(title, body, "drivesync")
+        if action_label and on_action:
+            def _dispatch(_notification, _action, callback):
+                try:
+                    callback()
+                except Exception:
+                    pass        # a broken handler must not kill the loop
+            try:
+                n.add_action("default", action_label, _dispatch, on_action)
+            except Exception:
+                pass            # backend without actions: plain message
         return bool(n.show())
     except Exception:
         return False

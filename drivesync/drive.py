@@ -35,6 +35,20 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 
 
+def safe_name(name):
+    """One Drive item name that cannot escape the sync root.
+
+    Drive forbids '/' in names, but defensive code still guards against
+    crafted or legacy names like '.' and '..': joining those with a local
+    root would write outside the pair. Unusable names become underscores.
+    """
+    name = str(name or "").replace("\x00", "")
+    name = name.replace("/", "_")
+    if name in ("", ".", ".."):
+        return "_" * max(1, len(name))
+    return name
+
+
 def resolve_folder_entry(item):
     """Picker-ready {id,name} for a Drive listing row.
 
@@ -196,12 +210,25 @@ class Drive:
         """token_provider: callable returning a bearer token string.
 
         limiter: optional limits.TokenBucket capping transfer speed on
-        uploads and downloads combined (None = unlimited).
+        uploads and downloads combined (None = unlimited). heartbeat: an
+        optional callable the transfer chunk loops call as bytes move —
+        the systemd watchdog uses it to tell a slow transfer from a hung
+        worker.
         """
         self.token_provider = token_provider
         self.page_size = page_size
         self.limiter = limiter
+        self.heartbeat = None
         self._session = requests.Session()
+
+    def _ping(self):
+        """Liveness hook for the systemd watchdog (never fails a transfer)."""
+        hb = self.heartbeat
+        if hb:
+            try:
+                hb()
+            except Exception:
+                pass
 
     def _headers(self, extra=None):
         h = {"Authorization": f"Bearer {self.token_provider()}"}
@@ -322,6 +349,40 @@ class Drive:
             if not page_token:
                 return out
 
+    def search(self, query, limit=50, folders_only=False):
+        """Drive-wide search: items whose name contains `query`.
+
+        One API call with `name contains '...'` — how people actually look
+        for things, instead of walking the tree folder by folder. Returns
+        files.list metadata rows, folders first, capped at `limit`.
+        folders_only=True narrows the query to folders (pair pickers).
+        """
+        term = (query or "").replace("\\", "").replace("'", "").strip()
+        if not term:
+            return []
+        q = f"name contains '{term}' and trashed=false"
+        if folders_only:
+            q += f" and mimeType='{FOLDER_MIME}'"
+        out, page_token = [], None
+        while len(out) < limit:
+            params = {
+                "q": q,
+                "fields": "nextPageToken, files(id,name,mimeType,md5Checksum,"
+                          "version,size,modifiedTime,shortcutDetails)",
+                "pageSize": min(self.page_size, limit - len(out)),
+                "orderBy": "name_natural",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            data = self._request("GET", f"{API}/files", params=params).json()
+            out.extend(data.get("files", []))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        out.sort(key=lambda f: (0 if f.get("mimeType") == FOLDER_MIME else 1,
+                                f.get("name", "").lower()))
+        return out[:limit]
+
     def list_tree(self, folder_id):
         """Recursive listing under folder_id.
 
@@ -340,7 +401,8 @@ class Drive:
                 for future in as_completed(futures):
                     prefix, _ = futures[future]
                     for f in future.result():
-                        rel = f"{prefix}/{f['name']}" if prefix else f["name"]
+                        rel = (f"{prefix}/{safe_name(f['name'])}"
+                               if prefix else safe_name(f["name"]))
                         items[rel] = f
                         if f.get("mimeType") == FOLDER_MIME:
                             pending.append((rel, f["id"]))
@@ -395,7 +457,8 @@ class Drive:
         mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
         meta = {"name": name, "parents": [parent_id]}
         with open(local_path, "rb") as fh:
-            body, boundary = _multipart(meta, fh, mime, self.limiter)
+            body, boundary = _multipart(meta, fh, mime, self.limiter,
+                                        ping=self._ping)
             resp = self._request(
                 "POST", f"{UPLOAD_API}/files",
                 params={"uploadType": "multipart",
@@ -415,7 +478,8 @@ class Drive:
                 params={"uploadType": "media",
                         "fields": "id,version,md5Checksum,size,modifiedTime"},
                 headers={"Content-Type": mime},
-                data=_Throttled(fh, self.limiter) if self.limiter else fh)
+                data=_Throttled(fh, self.limiter, ping=self._ping)
+                if self.limiter else _PingBody(fh, self._ping))
         return resp.json()
 
     def rename(self, file_id, new_name, add_parent=None, remove_parent=None):
@@ -485,6 +549,7 @@ class Drive:
                     for chunk in resp.iter_content(chunk_size=1 << 16):
                         if self.limiter:
                             self.limiter.consume(len(chunk))
+                        self._ping()
                         out.write(chunk)
                 break
             os.replace(tmp, dest_path)
@@ -502,7 +567,7 @@ class Drive:
             pass
 
 
-def _multipart(meta, fh, mime, limiter=None):
+def _multipart(meta, fh, mime, limiter=None, ping=None):
     """Build a multipart/related body (metadata + media) for uploads.
 
     The boundary is random per call: a fixed one could theoretically appear
@@ -517,15 +582,16 @@ def _multipart(meta, fh, mime, limiter=None):
            (f"\r\n--{boundary}\r\n"
             f"Content-Type: {mime}\r\n\r\n").encode("utf-8")
     tail = f"\r\n--{boundary}--".encode("utf-8")
-    return _GeneratorBody(head, fh, tail, limiter), boundary
+    return _GeneratorBody(head, fh, tail, limiter, ping), boundary
 
 
 class _GeneratorBody:
     """Streaming iterable body so large files are not read fully into RAM."""
 
-    def __init__(self, head, fh, tail, limiter=None):
+    def __init__(self, head, fh, tail, limiter=None, ping=None):
         self.head, self.fh, self.tail = head, fh, tail
         self.limiter = limiter
+        self.ping = ping
 
     def __iter__(self):
         yield self.head
@@ -535,6 +601,8 @@ class _GeneratorBody:
                 break
             if self.limiter:
                 self.limiter.consume(len(chunk))
+            if self.ping:
+                self.ping()
             yield chunk
         yield self.tail
 
@@ -547,14 +615,37 @@ class _Throttled:
     """read()-only wrapper that bills every byte to the limiter, so plain
     file-object upload bodies (requests streams them) throttle too."""
 
-    def __init__(self, fh, limiter):
+    def __init__(self, fh, limiter, ping=None):
         self.fh = fh
         self.limiter = limiter
+        self.ping = ping
 
     def read(self, n=-1):
         data = self.fh.read(n)
         if data and self.limiter:
             self.limiter.consume(len(data))
+        if data and self.ping:
+            self.ping()
+        return data
+
+    def rewind(self):
+        """Replay from the start after a failed attempt consumed the file."""
+        self.fh.seek(0)
+
+
+class _PingBody:
+    """read()-only wrapper that pings the watchdog as upload bytes stream
+    (used when no bandwidth limiter is configured, so plain file bodies
+    report liveness too)."""
+
+    def __init__(self, fh, ping=None):
+        self.fh = fh
+        self.ping = ping
+
+    def read(self, n=-1):
+        data = self.fh.read(n)
+        if data and self.ping:
+            self.ping()
         return data
 
     def rewind(self):

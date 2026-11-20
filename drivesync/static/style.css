@@ -1,17 +1,23 @@
-/* DriveSync dashboard — original styles, matches the app's blue palette */
+/* DriveSync dashboard — original styles, matches the app's blue palette.
+   Themes are selected by data-theme on <body> (light is the default):
+   light | dark | system (dark via the media query) | glass-light |
+   glass-dark | graphite-light | graphite-dark.
+   The accent color lands in --accent/--accent-press, set by app.js from
+   localStorage so every button, link and highlight follows. */
 :root{
   --bg:#f5f7fb; --card:#ffffff; --ink:#0b1b3a; --navy:#002f86;
-  --blue:#00b3ff; --blue-press:#009de0; --green:#36c857; --line:#e5e8ef;
+  --accent:#00b3ff; --accent-press:#009de0; --green:#36c857; --line:#e5e8ef;
   --muted:#5b6472; --danger:#d64545; --radius:12px;
+  color-scheme:light;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Excon',ui-sans-serif,system-ui,'Segoe UI',Roboto,Ubuntu,Arial,sans-serif;
   background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
-a{color:var(--navy)}
+a{color:var(--accent)}
 h3{color:var(--navy);margin-bottom:12px;font-size:17px}
 
 .topbar{display:flex;align-items:center;justify-content:space-between;
-  padding:14px 28px;background:#fff;border-bottom:1px solid var(--line);
+  padding:14px 28px;background:var(--card);border-bottom:1px solid var(--line);
   position:sticky;top:0;z-index:10}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;color:var(--navy)}
 .brand .mark{width:30px;height:30px}
@@ -21,7 +27,7 @@ h3{color:var(--navy);margin-bottom:12px;font-size:17px}
 .tabs button{border:0;background:none;padding:10px 16px;border-radius:10px 10px 0 0;
   font:inherit;font-weight:600;color:var(--muted);cursor:pointer}
 .tabs button.active{background:var(--card);color:var(--navy);
-  box-shadow:0 -2px 0 var(--blue) inset;border:1px solid var(--line);border-bottom:0}
+  box-shadow:0 -2px 0 var(--accent) inset;border:1px solid var(--line);border-bottom:0}
 
 main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 .tab{display:none}
@@ -41,19 +47,22 @@ main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 
 .btn{border:1px solid transparent;border-radius:8px;padding:10px 18px;font:inherit;
   font-weight:600;cursor:pointer}
-.btn.primary{background:var(--blue);color:#fff}
-.btn.primary:hover{background:var(--blue-press)}
-.btn.ghost{background:#fff;color:var(--blue);border-color:var(--blue)}
+.btn.primary{background:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-press)}
+.btn.ghost{background:var(--card);color:var(--accent);border-color:var(--accent)}
 .btn.small{padding:6px 12px;font-size:13px}
-.btn.danger{background:#fff;color:var(--danger);border-color:var(--danger)}
+.btn.danger{background:var(--card);color:var(--danger);border-color:var(--danger)}
+.btn.toggled{background:var(--accent);color:#fff;border-color:var(--accent)}
 .icon-btn{background:none;border:0;font-size:16px;cursor:pointer;color:var(--muted)}
 
 .form-grid{display:grid;gap:14px}
 .form-grid label{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:13.5px}
 .form-grid input,.form-grid select,.form-grid textarea{
-  font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}
+  font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;
+  background:var(--card);color:var(--ink)}
 .form-grid textarea{font-family:ui-monospace,'Inconsolata',monospace;font-size:13px}
 .row{display:flex;align-items:center;gap:10px}
+.row.wrap{flex-wrap:wrap}
 .row.end{justify-content:flex-end}
 .row.between{justify-content:space-between}
 .msg{font-size:13.5px;min-height:1.2em}
@@ -76,7 +85,7 @@ main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 
 .modal-backdrop{position:fixed;inset:0;background:rgba(11,27,58,.45);display:flex;
   align-items:center;justify-content:center;z-index:50}
-.modal{background:#fff;border-radius:16px;width:min(560px,92vw);max-height:80vh;
+.modal{background:var(--card);border-radius:16px;width:min(560px,92vw);max-height:80vh;
   display:flex;flex-direction:column;padding:20px;gap:12px}
 .modal-head{display:flex;justify-content:space-between;align-items:center}
 .picker-path{border-bottom:1px solid var(--line);padding-bottom:10px}
@@ -104,3 +113,145 @@ main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 .form-grid label.check{flex-direction:row;align-items:center;gap:8px;font-weight:400;flex-wrap:wrap}
 .form-grid label.check input{width:auto}
 .form-grid label.check .muted{font-weight:400}
+
+/* appearance card: theme chips + accent swatches */
+.theme-chip{border:1px solid var(--line);background:var(--card);color:var(--ink);
+  border-radius:20px;padding:8px 16px;font:inherit;font-weight:600;cursor:pointer}
+.theme-chip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.swatch{width:30px;height:26px;border-radius:10px;border:2px solid transparent;
+  cursor:pointer;padding:0}
+.swatch.active{border-color:var(--ink)}
+.appearance{display:flex;flex-direction:column;gap:12px}
+.theme-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.lbl{font-weight:600;font-size:13.5px;color:var(--muted)}
+
+/* dark theme (explicit choice) */
+body[data-theme="dark"]{
+  --bg:#12161f; --card:#1b212d; --ink:#e8ecf4; --navy:#9cc2ff;
+  --accent:#38b6ff; --accent-press:#259fe6; --line:#2a3242;
+  --muted:#98a2b3; --danger:#ff7b7b;
+  color-scheme:dark;
+}
+/* system: follows the OS setting, exactly like the media-query era */
+@media (prefers-color-scheme: dark){
+  body[data-theme="system"], body:not([data-theme]){
+    --bg:#12161f; --card:#1b212d; --ink:#e8ecf4; --navy:#9cc2ff;
+    --accent:#38b6ff; --accent-press:#259fe6; --line:#2a3242;
+    --muted:#98a2b3; --danger:#ff7b7b;
+    color-scheme:dark;
+  }
+}
+
+/* graphite: near-monochrome, hairline borders — light and dark */
+body[data-theme="graphite-light"]{
+  --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d20; --navy:#26262a;
+  --accent:#5f6368; --accent-press:#4a4d52; --line:#dcdce1;
+  --muted:#5f5f66; --danger:#b3261e;
+  color-scheme:light;
+}
+body[data-theme="graphite-dark"]{
+  --bg:#1b1b1d; --card:#26262a; --ink:#e6e6ea; --navy:#c9c9cf;
+  --accent:#7d8590; --accent-press:#636b76; --line:#343438;
+  --muted:#a2a2a9; --danger:#ff7b7b;
+  color-scheme:dark;
+}
+
+/* glass: translucent layered panels over a gradient — light and dark.
+   Real backdrop blur where the browser supports it (the GTK side
+   approximates it with layered alpha and hairline borders). */
+body[data-theme="glass-light"]{
+  --bg:#e8f0fc; --card:rgba(255,255,255,.58); --ink:#10233f; --navy:#173b6b;
+  --accent:#0b57d0; --accent-press:#0842a0; --line:rgba(16,35,63,.14);
+  --muted:rgba(16,35,63,.68); --danger:#b3261e;
+  --glass-bg:linear-gradient(160deg,#eef5ff 0%,#dce8f8 52%,#f7faff 100%);
+  --glass-panel:rgba(255,255,255,.58);
+  --glass-panel-strong:rgba(255,255,255,.72);
+  --glass-input:rgba(255,255,255,.68);
+  --glass-hover:rgba(16,35,63,.07);
+  --glass-toast:rgba(16,35,63,.88);
+  --radius:20px;
+  color-scheme:light;
+}
+body[data-theme="glass-dark"]{
+  --bg:#1b2432; --card:rgba(255,255,255,.08); --ink:#f2f6ff; --navy:#dce6ff;
+  --accent:#7cabff; --accent-press:#5b8be6; --line:rgba(255,255,255,.16);
+  --muted:rgba(233,240,255,.75); --danger:#ff9c9c;
+  --glass-bg:linear-gradient(160deg,#3a4a66 0%,#1b2432 55%,#10141c 100%);
+  --glass-panel:rgba(255,255,255,.08);
+  --glass-panel-strong:rgba(255,255,255,.12);
+  --glass-input:rgba(8,12,20,.35);
+  --glass-hover:rgba(255,255,255,.10);
+  --glass-toast:rgba(16,20,28,.85);
+  --radius:20px;
+  color-scheme:dark;
+}
+body[data-theme="glass-light"],
+body[data-theme="glass-dark"]{
+  background:var(--glass-bg) fixed;
+}
+body[data-theme="glass-light"] .card,
+body[data-theme="glass-dark"] .card,
+body[data-theme="glass-light"] .topbar,
+body[data-theme="glass-dark"] .topbar,
+body[data-theme="glass-light"] .acct,
+body[data-theme="glass-dark"] .acct{
+  background:var(--glass-panel);
+  -webkit-backdrop-filter:blur(14px) saturate(140%);
+  backdrop-filter:blur(14px) saturate(140%);
+}
+body[data-theme="glass-light"] .modal,
+body[data-theme="glass-dark"] .modal{
+  background:var(--glass-panel-strong);
+  -webkit-backdrop-filter:blur(18px) saturate(150%);
+  backdrop-filter:blur(18px) saturate(150%);
+}
+body[data-theme="glass-light"] .toast,
+body[data-theme="glass-dark"] .toast{
+  background:var(--glass-toast);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+}
+body[data-theme="glass-light"] .ev:nth-child(odd),
+body[data-theme="glass-dark"] .ev:nth-child(odd){
+  background:var(--glass-hover);
+}
+body[data-theme="glass-light"] .picker-item:hover,
+body[data-theme="glass-dark"] .picker-item:hover{
+  background:var(--glass-hover);
+}
+body[data-theme="glass-light"] .form-grid input,
+body[data-theme="glass-dark"] .form-grid input,
+body[data-theme="glass-light"] .form-grid select,
+body[data-theme="glass-dark"] .form-grid select,
+body[data-theme="glass-light"] .form-grid textarea,
+body[data-theme="glass-dark"] .form-grid textarea{
+  background:var(--glass-input);color:var(--ink);border-color:var(--line)}
+
+/* the decorative styles keep ghost/danger buttons transparent */
+body[data-theme="dark"] .btn.ghost,body[data-theme="dark"] .btn.danger,
+body[data-theme="graphite-light"] .btn.ghost,
+body[data-theme="graphite-light"] .btn.danger,
+body[data-theme="graphite-dark"] .btn.ghost,
+body[data-theme="graphite-dark"] .btn.danger,
+body[data-theme="glass-light"] .btn.ghost,
+body[data-theme="glass-light"] .btn.danger,
+body[data-theme="glass-dark"] .btn.ghost,
+body[data-theme="glass-dark"] .btn.danger{
+  background:transparent}
+
+/* status colors on dark surfaces need brighter ink */
+body[data-theme="dark"] .pill.on,
+body[data-theme="graphite-dark"] .pill.on,
+body[data-theme="glass-dark"] .pill.on{background:rgba(54,200,87,.2);color:#5fdf7e}
+body[data-theme="dark"] .pill.off,
+body[data-theme="graphite-dark"] .pill.off,
+body[data-theme="glass-dark"] .pill.off{background:rgba(214,69,69,.18);color:#ff9c9c}
+body[data-theme="dark"] .msg.ok,
+body[data-theme="graphite-dark"] .msg.ok,
+body[data-theme="glass-dark"] .msg.ok{color:#5fdf7e}
+body[data-theme="dark"] .ev.conflict .a,
+body[data-theme="graphite-dark"] .ev.conflict .a,
+body[data-theme="glass-dark"] .ev.conflict .a{color:#ffbf5e}
+body[data-theme="dark"] .toast,
+body[data-theme="graphite-dark"] .toast,
+body[data-theme="glass-dark"] .toast{box-shadow:0 10px 30px rgba(0,0,0,.6)}
+input[type="search"],input[type="text"],input[type="number"],input[type="password"],input[type="time"]{color-scheme:light dark}

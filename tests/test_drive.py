@@ -3,7 +3,8 @@
 import pytest
 
 from drivesync.drive import (Drive, DriveError, FOLDER_MIME, SHORTCUT_MIME,
-                             folders_for_parent, resolve_folder_entry)
+                             folders_for_parent, resolve_folder_entry,
+                             safe_name)
 
 DISABLED = ('{"error": {"code": 403, "message": "Google Drive API has not been used '
             'in project 123 before or it is disabled.", "status": "PERMISSION_DENIED", '
@@ -26,6 +27,15 @@ class FakeResp:
     def json(self):
         import json
         return json.loads(self.text)
+
+
+def test_safe_name_never_escapes_the_sync_root():
+    assert safe_name("photo.jpg") == "photo.jpg"
+    assert safe_name("..") == "__"
+    assert safe_name(".") == "_"
+    assert safe_name("") == "_"
+    assert safe_name("a/b") == "a_b"
+    assert safe_name("nul\x00byte") == "nulbyte"
 
 
 class FakeSession:

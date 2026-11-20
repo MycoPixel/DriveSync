@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drivesync"
-version = "0.5.1"
+# single source of truth: drivesync/__init__.__version__ (the build scripts
+# read it directly; setuptools derives the sdist/wheel version from it too)
+dynamic = ["version"]
 description = "Google Drive sync client for Linux desktops with a local web dashboard"
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,6 +24,9 @@ drivesync = "drivesync.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["drivesync*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "drivesync.__version__" }
 
 [tool.setuptools.package-data]
 drivesync = ["static/*"]

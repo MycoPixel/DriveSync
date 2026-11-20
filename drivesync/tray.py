@@ -9,6 +9,8 @@ import os
 import threading
 import webbrowser
 
+from . import i18n
+
 
 def start(worker, url):
     """Best-effort tray icon. Returns (started: bool, message: str)."""
@@ -22,7 +24,8 @@ def start(worker, url):
     try:
         icon = pystray.Icon(
             "DriveSync", _icon_image(Image, ImageDraw),
-            "DriveSync — local Drive sync", _menu(pystray, worker, url))
+            i18n.t("DriveSync — local Drive sync"), _menu(pystray, worker,
+                                                          url))
         backend = type(icon).__module__.rsplit(".", 1)[-1]
         # run_detached() needs pystray >= 0.17. Older copies (e.g. a system
         # RPM visible through a --system-site-packages venv) only offer the
@@ -81,12 +84,13 @@ def _menu(pystray, worker, url):
         os._exit(0)  # flask dev server has no clean shutdown from a thread
 
     return pystray.Menu(
-        pystray.MenuItem("Open dashboard", open_dashboard, default=True),
-        pystray.MenuItem("Sync now", sync_now),
-        pystray.MenuItem("Pause background sync", pause),
-        pystray.MenuItem("Resume background sync", resume),
+        pystray.MenuItem(i18n.t("Open dashboard"), open_dashboard,
+                         default=True),
+        pystray.MenuItem(i18n.t("Sync now"), sync_now),
+        pystray.MenuItem(i18n.t("Pause background sync"), pause),
+        pystray.MenuItem(i18n.t("Resume background sync"), resume),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit DriveSync", quit_app),
+        pystray.MenuItem(i18n.t("Quit DriveSync"), quit_app),
     )
 
 

@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 from flask import Flask, jsonify, request, send_from_directory
 
 from . import __version__
+from . import conflicts
+from . import engine
 from .auth import (AuthError, access_token_persisting, interactive_auth,
                    token_from_json, whoami)
 from .config import db_path, load_config, save_config
@@ -191,16 +193,42 @@ def create_app(store: Store, worker=None):
             return api_error(exc, 502)
         return jsonify({"ok": True, "current": current, "items": items})
 
+    @app.get("/api/drive/<int:account_id>/search")
+    def drive_search(account_id):
+        """Drive-wide name search (files and folders, folders first).
+
+        ?q= the text to find, ?folders_only=1 restricts to folders (the
+        pair picker uses that mode). Capped at 50 rows — enough to locate
+        anything by name without rendering a tree.
+        """
+        query = (request.args.get("q") or "").strip()
+        folders_only = request.args.get("folders_only") in ("1", "true")
+        if not query:
+            return jsonify({"ok": True, "items": []})
+        try:
+            drive = drive_for(account_id)
+            items = drive.search(query, folders_only=folders_only)
+        except DriveError as exc:
+            return api_error(exc, 502)
+        return jsonify({"ok": True, "items": items})
+
     # ---- pairs ------------------------------------------------------
     def pair_json(p):
+        last = None
+        if worker is not None:
+            last = (worker.status.get("pairs") or {}).get(p["id"])
         return {"id": p["id"], "account_id": p["account_id"],
                 "local_path": p["local_path"], "remote_id": p["remote_id"],
                 "remote_path": p["remote_path"], "direction": p["direction"],
                 "conflict_policy": p["conflict_policy"],
                 "enabled": bool(p["enabled"]),
                 "allow_deletes": bool(p["allow_deletes"]),
+                "symlink_policy": p["symlink_policy"] or "skip",
+                "case_insensitive": bool(p["case_insensitive"]),
+                "paused_until": p["paused_until"] or None,
                 "include_patterns": parse_include_patterns(
-                    p["include_patterns"])}
+                    p["include_patterns"]),
+                "last_sync": last}
 
     @app.get("/api/pairs")
     def pairs_list():
@@ -233,7 +261,9 @@ def create_app(store: Store, worker=None):
                 or load_config()["conflict_policy"],
                 enabled=data.get("enabled", 1),
                 allow_deletes=data.get("allow_deletes", 1),
-                include_patterns=data.get("include_patterns"))
+                include_patterns=data.get("include_patterns"),
+                symlink_policy=data.get("symlink_policy", "skip"),
+                case_insensitive=data.get("case_insensitive", 0))
         except KeyError as exc:
             return api_error(f"missing field: {exc}")
         except ValueError as exc:
@@ -266,6 +296,63 @@ def create_app(store: Store, worker=None):
                          daemon=True).start()
         return jsonify({"ok": True, "started": True})
 
+    @app.get("/api/pairs/<int:pair_id>/preview")
+    def pairs_preview(pair_id):
+        """Dry-run the pair's next pass: what WOULD change, nothing applied.
+
+        Blocking request by design (the scan is the work); Flask runs
+        threaded so the dashboard stays responsive. The ops list is capped
+        — counts carry the full picture for huge first-sync previews.
+        """
+        pair = store.pair(pair_id)
+        if not pair:
+            return api_error("pair not found", 404)
+        try:
+            result = engine.preview_pair(store, load_config(), pair,
+                                         drive_for(pair["account_id"]))
+        except (DriveError, AuthError) as exc:
+            return api_error(f"Drive error: {exc}", 502)
+        except Exception as exc:
+            return api_error(str(exc))
+        result["ops"] = result["ops"][:500]
+        return jsonify({"ok": True, **result})
+
+    # ---- conflict copies (review + resolve) --------------------------
+    @app.get("/api/pairs/<int:pair_id>/conflicts")
+    def pairs_conflicts(pair_id):
+        pair = store.pair(pair_id)
+        if not pair:
+            return api_error("pair not found", 404)
+        try:
+            items = conflicts.list_conflicts(store, pair)
+        except Exception as exc:
+            return api_error(str(exc))
+        return jsonify({"ok": True, "conflicts": items})
+
+    @app.post("/api/pairs/<int:pair_id>/conflicts/resolve")
+    def conflicts_resolve(pair_id):
+        """Keep the conflict copy, keep the original, or leave both.
+
+        resolve_conflict raises ValueError for unknown paths/choices and
+        Drive errors propagate as 502 so the UI can show them; the action
+        itself is logged to the activity feed by the conflicts module.
+        """
+        pair = store.pair(pair_id)
+        if not pair:
+            return api_error("pair not found", 404)
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            result = conflicts.resolve_conflict(
+                store, pair, drive_for(pair["account_id"]),
+                data.get("path") or "", data.get("choice") or "")
+        except ValueError as exc:
+            return api_error(str(exc))
+        except (DriveError, AuthError) as exc:
+            return api_error(f"Drive error: {exc}", 502)
+        if worker is not None:
+            worker.sync_now(pair_id)   # let the next pass settle the base
+        return jsonify({"ok": True, "result": result})
+
     @app.post("/api/sync")
     def sync_all():
         if worker is None:
@@ -276,7 +363,11 @@ def create_app(store: Store, worker=None):
     # ---- events -----------------------------------------------------
     @app.get("/api/events")
     def events():
-        limit = min(int(request.args.get("limit", 200)), 1000)
+        try:
+            limit = int(request.args.get("limit", 200))
+        except (TypeError, ValueError):
+            limit = 200
+        limit = max(1, min(limit, 1000))
         level = request.args.get("level")
         pair_id = request.args.get("pair_id", type=int)
         rows = store.recent_events(limit=limit, level=level, pair_id=pair_id)

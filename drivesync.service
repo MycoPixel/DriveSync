@@ -3,6 +3,13 @@ Description=DriveSync — Google Drive sync client (background worker + dashboar
 After=network-online.target
 
 [Service]
+# Type=notify + the watchdog: the worker sends READY=1 on startup and pings
+# WATCHDOG=1 while the pass loop, the idle wait or a transfer chunk shows
+# liveness. A hung worker stops pinging and systemd restarts it instead of
+# leaving sync silently stalled. Slow-but-moving transfers are safe: the
+# heartbeat is fed from the upload/download chunk loops.
+Type=notify
+WatchdogSec=180
 ExecStart=__VENV__/bin/python -m drivesync serve
 Restart=on-failure
 RestartSec=10

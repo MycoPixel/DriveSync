@@ -17,15 +17,15 @@
     <span>DriveSync</span>
     <small id="version"></small>
   </div>
-  <button id="syncNowBtn" class="btn primary">Sync now</button>
+  <button id="syncNowBtn" class="btn primary" data-i18n="Sync now">Sync now</button>
 </header>
 
 <nav class="tabs" id="tabs">
-  <button data-tab="dashboard" class="active">Dashboard</button>
-  <button data-tab="pairs">Sync pairs</button>
-  <button data-tab="accounts">Accounts</button>
-  <button data-tab="activity">Activity</button>
-  <button data-tab="settings">Settings</button>
+  <button data-tab="dashboard" class="active" data-i18n="Dashboard">Dashboard</button>
+  <button data-tab="pairs" data-i18n="Sync pairs">Sync pairs</button>
+  <button data-tab="accounts" data-i18n="Accounts">Accounts</button>
+  <button data-tab="activity" data-i18n="Activity">Activity</button>
+  <button data-tab="settings" data-i18n="Settings">Settings</button>
 </nav>
 
 <main>
@@ -33,21 +33,21 @@
   <section id="tab-dashboard" class="tab active">
     <div class="grid two">
       <div class="card">
-        <h3>Background worker</h3>
+        <h3 data-i18n="Background worker">Background worker</h3>
         <div id="workerStatus" class="kv">loading…</div>
       </div>
       <div class="card">
-        <h3>Accounts</h3>
+        <h3 data-i18n="Accounts">Accounts</h3>
         <div id="accountCards" class="acct-cards"></div>
-        <p class="muted small"><a href="#" data-goto="accounts">Add an account →</a></p>
+        <p class="muted small"><a href="#" data-goto="accounts" data-i18n="Add an account →">Add an account →</a></p>
       </div>
     </div>
     <div class="card">
-      <h3>Sync pairs</h3>
+      <h3 data-i18n="Sync pairs">Sync pairs</h3>
       <div id="pairsSummary" class="muted small">loading…</div>
     </div>
     <div class="card">
-      <h3>Recent activity</h3>
+      <h3 data-i18n="Recent activity">Recent activity</h3>
       <div id="recentEvents" class="events"></div>
     </div>
   </section>
@@ -55,53 +55,63 @@
   <!-- PAIRS -->
   <section id="tab-pairs" class="tab">
     <div class="card">
-      <h3>Add a sync pair</h3>
+      <h3 data-i18n="Add a sync pair">Add a sync pair</h3>
       <form id="pairForm" class="form-grid">
-        <label>Google account
+        <label>
+          <span data-i18n="Google account">Google account</span>
           <select id="pairAccount" required></select>
         </label>
-        <label>Local folder <span class="muted">(absolute path)</span>
+        <label>
+          <span data-i18n-html="pair.local">Local folder <span class="muted">(absolute path)</span></span>
           <input id="pairLocal" type="text" placeholder="/home/you/Drive" required>
         </label>
-        <label>Drive folder
+        <label>
+          <span data-i18n="Drive folder">Drive folder</span>
           <div class="row">
             <input id="pairRemoteName" type="text" placeholder="My Drive" readonly>
             <input id="pairRemoteId" type="hidden">
-            <button type="button" id="pickFolderBtn" class="btn ghost">Browse…</button>
+            <button type="button" id="pickFolderBtn" class="btn ghost" data-i18n="Browse…">Browse…</button>
           </div>
         </label>
-        <label>Sync scope <span class="muted">(optional — chosen before the first sync)</span>
+        <label>
+          <span data-i18n-html="pair.scope">Sync scope <span class="muted">(optional — chosen before the first sync)</span></span>
           <div class="row">
             <input id="pairScopeSummary" type="text" value="Pick a Drive folder first" readonly>
-            <button type="button" id="pairScopeBtn" class="btn ghost" disabled>Choose…</button>
+            <button type="button" id="pairScopeBtn" class="btn ghost" disabled data-i18n="Choose…">Choose…</button>
           </div>
         </label>
-        <label>Direction
+        <label>
+          <span data-i18n="Direction">Direction</span>
           <select id="pairDirection">
-            <option value="bidirectional">Two-way (bidirectional)</option>
-            <option value="upload">Upload only (local → Drive)</option>
-            <option value="download">Download only (Drive → local)</option>
+            <option value="bidirectional" data-i18n="Two-way (bidirectional)">Two-way (bidirectional)</option>
+            <option value="upload" data-i18n="Upload only (local → Drive)">Upload only (local → Drive)</option>
+            <option value="download" data-i18n="Download only (Drive → local)">Download only (Drive → local)</option>
           </select>
         </label>
-        <label>Conflict policy
+        <label>
+          <span data-i18n="Conflict policy">Conflict policy</span>
           <select id="pairPolicy">
-            <option value="newer">Keep newer file</option>
-            <option value="local">Keep local copy</option>
-            <option value="remote">Keep remote copy</option>
-            <option value="both">Keep both copies</option>
+            <option value="newer" data-i18n="Keep newer file">Keep newer file</option>
+            <option value="local" data-i18n="Keep local copy">Keep local copy</option>
+            <option value="remote" data-i18n="Keep remote copy">Keep remote copy</option>
+            <option value="both" data-i18n="Keep both copies">Keep both copies</option>
           </select>
         </label>
         <div class="row end">
-          <button type="submit" class="btn primary">Add pair</button>
+          <button type="submit" class="btn primary" data-i18n="Add pair">Add pair</button>
         </div>
         <p id="pairFormMsg" class="msg"></p>
       </form>
     </div>
     <div class="card">
-      <h3>Current pairs</h3>
+      <h3 data-i18n="Current pairs">Current pairs</h3>
       <table class="tbl" id="pairsTable">
-        <thead><tr><th>#</th><th>Local</th><th>Drive folder</th><th>Direction</th>
-          <th>Conflicts</th><th>Deletes</th><th>Scope</th><th>State</th><th></th></tr></thead>
+        <thead><tr>
+          <th data-i18n="#">#</th><th data-i18n="Local">Local</th>
+          <th data-i18n="Drive folder">Drive folder</th><th data-i18n="Direction">Direction</th>
+          <th data-i18n="Conflicts">Conflicts</th><th data-i18n="Deletes">Deletes</th>
+          <th data-i18n="Scope">Scope</th><th data-i18n="State">State</th>
+          <th data-i18n="Last sync">Last sync</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -110,29 +120,32 @@
   <!-- ACCOUNTS -->
   <section id="tab-accounts" class="tab">
     <div class="card">
-      <h3>Connect a Google account</h3>
-      <p class="muted">DriveSync uses <b>your own OAuth client</b> — nothing of yours
+      <h3 data-i18n="Connect a Google account">Connect a Google account</h3>
+      <p class="muted" data-i18n-html="auth-hint">DriveSync uses <b>your own OAuth client</b> — nothing of yours
         flows through third-party servers. Create a “Desktop app” client in the
         <a href="https://console.cloud.google.com/apis/credentials" target="_blank"
            rel="noreferrer">Google Cloud Console</a> (Drive API enabled), then paste its
         credentials below. See the README for a 2-minute walkthrough.</p>
       <form id="authForm" class="form-grid">
-        <label>Client ID
+        <label>
+          <span data-i18n="Client ID">Client ID</span>
           <input id="clientId" type="text" placeholder="1234567890-abc.apps.googleusercontent.com">
         </label>
-        <label>Client secret
+        <label>
+          <span data-i18n="Client secret">Client secret</span>
           <input id="clientSecret" type="password" placeholder="GOCSPX-…">
         </label>
         <div class="row end">
-          <button type="submit" class="btn primary" id="authBtn">Connect account</button>
+          <button type="submit" class="btn primary" id="authBtn" data-i18n="Connect account">Connect account</button>
         </div>
         <p id="authMsg" class="msg"></p>
       </form>
     </div>
     <div class="card">
-      <h3>Connected accounts</h3>
+      <h3 data-i18n="Connected accounts">Connected accounts</h3>
       <table class="tbl" id="accountsTable">
-        <thead><tr><th>#</th><th>Email</th><th>Storage</th><th></th></tr></thead>
+        <thead><tr><th data-i18n="#">#</th><th data-i18n="Email">Email</th>
+          <th data-i18n="Storage">Storage</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -142,14 +155,15 @@
   <section id="tab-activity" class="tab">
     <div class="card">
       <div class="row between">
-        <h3>Activity log</h3>
+        <h3 data-i18n="Activity log">Activity log</h3>
         <div class="row">
+          <input id="eventSearch" type="search" data-i18n-ph="Search path, action or detail…" placeholder="Search path, action or detail…" style="min-width:220px">
           <select id="eventFilter">
-            <option value="">All levels</option>
-            <option value="conflict">Conflicts only</option>
-            <option value="error">Errors only</option>
+            <option value="" data-i18n="All levels">All levels</option>
+            <option value="conflict" data-i18n="Conflicts only">Conflicts only</option>
+            <option value="error" data-i18n="Errors only">Errors only</option>
           </select>
-          <button class="btn ghost" id="refreshEvents">Refresh</button>
+          <button class="btn ghost" id="refreshEvents" data-i18n="Refresh">Refresh</button>
         </div>
       </div>
       <div id="eventList" class="events"></div>
@@ -159,59 +173,80 @@
   <!-- SETTINGS -->
   <section id="tab-settings" class="tab">
     <div class="card">
-      <h3>Settings</h3>
+      <h3 data-i18n="Appearance & language">Appearance & language</h3>
+      <p class="muted small" data-i18n="Saved in this browser; the desktop app keeps its own choices.">Saved in this browser; the desktop app keeps its own choices.</p>
+      <div class="appearance">
+        <div class="row wrap" id="themeBtns"></div>
+        <div class="row wrap" id="accentBtns"></div>
+        <div class="row">
+          <button class="btn ghost small" id="langBtn"></button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="Settings">Settings</h3>
       <form id="settingsForm" class="form-grid">
-        <label>Sync interval (seconds)
+        <label>
+          <span data-i18n="Sync interval (seconds)">Sync interval (seconds)</span>
           <input id="setInterval" type="number" min="5" max="86400">
         </label>
-        <label>Default conflict policy
+        <label>
+          <span data-i18n="Default conflict policy">Default conflict policy</span>
           <select id="setPolicy">
-            <option value="newer">Keep newer file</option>
-            <option value="local">Keep local copy</option>
-            <option value="remote">Keep remote copy</option>
-            <option value="both">Keep both copies</option>
+            <option value="newer" data-i18n="Keep newer file">Keep newer file</option>
+            <option value="local" data-i18n="Keep local copy">Keep local copy</option>
+            <option value="remote" data-i18n="Keep remote copy">Keep remote copy</option>
+            <option value="both" data-i18n="Keep both copies">Keep both copies</option>
           </select>
         </label>
-        <label>Delete safety limit <span class="muted">(max deletions per pair per
-          pass; 0 = unlimited)</span>
+        <label>
+          <span data-i18n-html="set.delete">Delete safety limit <span class="muted">(max deletions per pair per pass; 0 = unlimited)</span></span>
           <input id="setDeleteLimit" type="number" min="0" max="100000">
         </label>
-        <label>Parallel transfers <span class="muted">(uploads/downloads at once, 1–16)</span>
+        <label>
+          <span data-i18n-html="set.concurrency">Parallel transfers <span class="muted">(uploads/downloads at once, 1–16)</span></span>
           <input id="setConcurrency" type="number" min="1" max="16">
         </label>
-        <label>Bandwidth limit <span class="muted">(KB/s shared by uploads + downloads; 0 = unlimited)</span>
+        <label>
+          <span data-i18n-html="set.history">Kept versions per file <span class="muted">(the previous local version is saved before a pull overwrites a file; 0 = off)</span></span>
+          <input id="setHistory" type="number" min="0" max="100">
+        </label>
+        <label>
+          <span data-i18n-html="set.bandwidth">Bandwidth limit <span class="muted">(KB/s shared by uploads + downloads; 0 = unlimited)</span></span>
           <input id="setBandwidth" type="number" min="0" max="1048576">
         </label>
-        <label>Sync window from <span class="muted">(HH:MM; empty = always)</span>
+        <label>
+          <span data-i18n-html="set.from">Sync window from <span class="muted">(HH:MM; empty = always)</span></span>
           <input id="setActiveFrom" type="time">
         </label>
-        <label>Sync window to <span class="muted">(may cross midnight)</span>
+        <label>
+          <span data-i18n-html="set.to">Sync window to <span class="muted">(may cross midnight)</span></span>
           <input id="setActiveTo" type="time">
         </label>
         <label class="check">
           <input id="setWatch" type="checkbox">
-          Sync local changes instantly <span class="muted">(needs watchdog)</span>
+          <span data-i18n-html="set.watch">Sync local changes instantly <span class="muted">(needs watchdog)</span></span>
         </label>
         <label class="check">
           <input id="setIncremental" type="checkbox">
-          Use the Drive changes feed <span class="muted">(incremental scan; off = full relist every pass)</span>
+          <span data-i18n-html="set.incremental">Use the Drive changes feed <span class="muted">(incremental scan; off = full relist every pass)</span></span>
         </label>
         <label class="check">
           <input id="setConvertDocs" type="checkbox">
-          Convert Google Docs/Sheets/Slides to Office files
-          <span class="muted">(Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .png)</span>
+          <span data-i18n-html="set.convert">Convert Google Docs/Sheets/Slides to Office files <span class="muted">(Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .png)</span></span>
         </label>
-        <label>Ignore patterns <span class="muted">(one per line, glob style)</span>
+        <label>
+          <span data-i18n-html="set.ignores">Ignore patterns <span class="muted">(one per line, glob style)</span></span>
           <textarea id="setIgnores" rows="6" spellcheck="false"></textarea>
         </label>
         <div class="row end">
-          <button type="submit" class="btn primary">Save settings</button>
+          <button type="submit" class="btn primary" data-i18n="Save settings">Save settings</button>
         </div>
         <p id="settingsMsg" class="msg"></p>
       </form>
     </div>
     <div class="card">
-      <h3>About</h3>
+      <h3 data-i18n="About">About</h3>
       <p class="muted small" id="aboutText"></p>
     </div>
   </section>
@@ -221,16 +256,18 @@
 <div class="modal-backdrop hidden" id="pickerBackdrop">
   <div class="modal">
     <div class="modal-head">
-      <h3>Choose a Drive folder</h3>
+      <h3 data-i18n="Choose a Drive folder">Choose a Drive folder</h3>
       <button class="icon-btn" id="pickerClose">✕</button>
     </div>
     <div class="row picker-path">
-      <button class="btn ghost" id="pickerUp">↑ Up</button>
+      <button class="btn ghost" id="pickerUp" data-i18n="↑ Up">↑ Up</button>
       <span id="pickerPath" class="muted">My Drive</span>
     </div>
-    <div id="pickerList" class="picker-list"><p class="muted">loading…</p></div>
+    <input id="pickerSearch" type="search" data-i18n-ph="Search all of Drive by folder name…"
+           placeholder="Search all of Drive by folder name…">
+    <div id="pickerList" class="picker-list"><p class="muted" data-i18n="loading…">loading…</p></div>
     <div class="row end">
-      <button class="btn primary" id="pickerChoose">Use this folder</button>
+      <button class="btn primary" id="pickerChoose" data-i18n="Use this folder">Use this folder</button>
     </div>
   </div>
 </div>
@@ -242,16 +279,102 @@
       <h3 id="scopeTitle">Choose subfolders</h3>
       <button class="icon-btn" id="scopeClose">✕</button>
     </div>
-    <p class="muted small" id="scopeHint">Files directly in the folder always sync.
+    <p class="muted small" data-i18n-html="scope-hint">Files directly in the folder always sync.
       Unchosen subfolders stay on Drive and on disk untouched.</p>
-    <div id="scopeList" class="picker-list"><p class="muted">loading…</p></div>
+    <div id="scopeList" class="picker-list"><p class="muted" data-i18n="loading…">loading…</p></div>
     <div class="row between">
       <div class="row">
-        <button class="btn ghost" id="scopeAll">Select all</button>
-        <button class="btn ghost" id="scopeNone">Select none</button>
+        <button class="btn ghost" id="scopeAll" data-i18n="Select all">Select all</button>
+        <button class="btn ghost" id="scopeNone" data-i18n="Select none">Select none</button>
       </div>
-      <button class="btn primary" id="scopeSave">Save</button>
+      <button class="btn primary" id="scopeSave" data-i18n="Save">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- pair edit modal -->
+<div class="modal-backdrop hidden" id="editBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="editTitle">Edit pair</h3>
+      <button class="icon-btn" id="editClose">✕</button>
+    </div>
+    <form id="editForm" class="form-grid">
+      <label>
+        <span data-i18n="Direction">Direction</span>
+        <select id="editDirection">
+          <option value="bidirectional" data-i18n="Two-way (bidirectional)">Two-way (bidirectional)</option>
+          <option value="upload" data-i18n="Upload only (local → Drive)">Upload only (local → Drive)</option>
+          <option value="download" data-i18n="Download only (Drive → local)">Download only (Drive → local)</option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="Conflict policy">Conflict policy</span>
+        <select id="editPolicy">
+          <option value="newer" data-i18n="Keep newer file">Keep newer file</option>
+          <option value="local" data-i18n="Keep local copy">Keep local copy</option>
+          <option value="remote" data-i18n="Keep remote copy">Keep remote copy</option>
+          <option value="both" data-i18n="Keep both copies">Keep both copies</option>
+        </select>
+      </label>
+      <label class="check">
+        <input id="editDeletes" type="checkbox">
+        <span data-i18n-html="edit.deletes">Allow deletions <span class="muted">(files go to trash, never vanish)</span></span>
+      </label>
+      <label>
+        <span data-i18n="Symlinks">Symlinks</span>
+        <select id="editSymlinks">
+          <option value="skip" data-i18n="Skip — never follow links (safest)">Skip — never follow links (safest)</option>
+          <option value="follow" data-i18n="Follow — sync what they point at">Follow — sync what they point at</option>
+        </select>
+      </label>
+      <label class="check">
+        <input id="editCaseFold" type="checkbox">
+        <span data-i18n-html="edit.casefold">Case-insensitive paths <span class="muted">(for pairs on FAT/exFAT/NTFS folders)</span></span>
+      </label>
+      <div class="row end">
+        <button type="submit" class="btn primary" data-i18n="Save">Save</button>
+      </div>
+      <p id="editMsg" class="msg"></p>
+    </form>
+  </div>
+</div>
+
+<!-- conflict copies modal -->
+<div class="modal-backdrop hidden" id="conflictsBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="conflictsTitle">Conflict copies</h3>
+      <button class="icon-btn" id="conflictsClose">✕</button>
+    </div>
+    <p class="muted small" data-i18n-html="conflicts-hint">Files kept as “<i>name.conflict-…</i>” copies by the
+      keep-both policy. Pick which side to keep — the copy wins at the original
+      path, the original stays and the copy is discarded, or leave both.</p>
+    <div id="conflictsList" class="picker-list"><p class="muted" data-i18n="loading…">loading…</p></div>
+  </div>
+</div>
+
+<!-- sync preview modal -->
+<div class="modal-backdrop hidden" id="previewBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="previewTitle">Preview</h3>
+      <button class="icon-btn" id="previewClose">✕</button>
+    </div>
+    <p class="muted small" id="previewSummary">loading…</p>
+    <div id="previewList" class="picker-list"><p class="muted" data-i18n="loading…">loading…</p></div>
+    <p class="muted small" data-i18n="Nothing is applied — this only shows what the next pass would do.">Nothing is applied — this only shows what the next pass would do.</p>
+  </div>
+</div>
+
+<!-- event detail modal -->
+<div class="modal-backdrop hidden" id="eventBackdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 data-i18n="Activity detail">Activity detail</h3>
+      <button class="icon-btn" id="eventClose">✕</button>
+    </div>
+    <pre id="eventDetail" class="muted" style="white-space:pre-wrap;word-break:break-word"></pre>
   </div>
 </div>
 

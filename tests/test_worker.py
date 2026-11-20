@@ -115,3 +115,48 @@ def test_run_pass_clears_previous_error(env, monkeypatch):
     w.status["last_error"] = "old failure"
     stats, ok = w.run_pass([env.pair["id"]])
     assert ok and w.status["last_error"] is None
+
+
+def test_run_pass_records_per_pair_status(env, monkeypatch):
+    """The GUI/dashboard read status['pairs'] for the per-pair columns."""
+    env.store.add_account("a@example.com", {})
+    (env.local / "a.txt").write_text("alpha")
+    w = Worker(env.store, env.cfg)
+    monkeypatch.setattr(w, "make_drive", lambda acc: env.drive)
+    w.run_pass([env.pair["id"]])
+    info = w.status["pairs"][env.pair["id"]]
+    assert info["ok"] is True and info["error"] is None
+    assert info["stats"]["pushed"] == 1
+    assert info["ts"] > 0
+
+
+def test_run_pass_records_error_per_pair(env, monkeypatch):
+    env.store.add_account("a@example.com", {})
+    env.store.update_pair(env.pair["id"],
+                          local_path=str(env.local / "missing"))
+    w = Worker(env.store, env.cfg)
+    monkeypatch.setattr(w, "make_drive", lambda acc: env.drive)
+    w.run_pass([env.pair["id"]])
+    info = w.status["pairs"][env.pair["id"]]
+    assert info["ok"] is False
+    assert info["error"]                 # message pulled from the event log
+
+
+def test_loop_arms_next_run_and_pause_clears_it(env):
+    """The countdown comes from status['next_run'] (None while paused)."""
+    import time as _time
+    w = Worker(env.store, {"sync_interval": 500})
+    w.start()
+    try:
+        deadline = _time.time() + 5
+        while _time.time() < deadline and w.status["next_run"] is None:
+            _time.sleep(0.05)
+        assert w.status["next_run"] is not None
+        assert 0 < w.status["next_run"] - _time.time() <= 500
+        w.pause()
+        deadline = _time.time() + 5
+        while _time.time() < deadline and w.status["next_run"] is not None:
+            _time.sleep(0.05)
+        assert w.status["next_run"] is None
+    finally:
+        w.stop()

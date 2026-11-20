@@ -232,6 +232,13 @@ def test_events_filter_param(client):
     assert len(rows) == 1 and rows[0]["level"] == "error"
 
 
+def test_events_limit_degrades_instead_of_500(client):
+    c, store = client
+    store.log(None, "test", "", "one")
+    assert c.get("/api/events?limit=nope").status_code == 200
+    assert c.get("/api/events?limit=0").status_code == 200
+
+
 def test_drive_folders_endpoint(client, monkeypatch):
     """Regression: folder picker crashed with 500 (Drive.FOLDER_MIME does not
     exist — the constant is module-level in drivesync.drive)."""
@@ -313,3 +320,61 @@ def test_pair_allow_deletes_roundtrip(client, tmp_path, monkeypatch):
     upd = c.patch(f"/api/pairs/{body['pair']['id']}",
                   json={"allow_deletes": 0}).get_json()
     assert upd["ok"] and upd["pair"]["allow_deletes"] is False
+
+
+def test_pair_json_includes_last_sync(client, tmp_path, monkeypatch):
+    """pair rows carry the worker's per-pair status for the UI column."""
+    fake_folder_drive(monkeypatch)
+    c, store = client
+    store.add_account("me@example.com", {})
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    app = create_app(store, worker=None)
+    c2 = app.test_client()
+    c2.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    pair = c2.post("/api/pairs", json={
+        "account_id": 1, "local_path": str(docs),
+        "remote_id": "abc", "direction": "download"}).get_json()["pair"]
+    assert pair["last_sync"] is None          # no worker -> nothing recorded
+
+    class StubWorker:
+        status = {"pairs": {pair["id"]: {"ts": 1234.0, "ok": True,
+                                         "stats": {"pushed": 1},
+                                         "error": None}}}
+
+    app2 = create_app(store, worker=StubWorker())
+    c3 = app2.test_client()
+    c3.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    row = c3.get("/api/pairs").get_json()["pairs"][0]
+    assert row["last_sync"]["ok"] is True
+    assert row["last_sync"]["stats"]["pushed"] == 1
+
+
+def test_conflicts_endpoints(client, tmp_path, monkeypatch):
+    fake_folder_drive(monkeypatch)
+    c, store = client
+    store.add_account("me@example.com", {})
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.conflict-20240102-030405.txt").write_text("copy")
+    pair_id = store.add_pair(1, str(docs), "abc", direction="download")["id"]
+    # conflict copies are listed from the base snapshot (every copy the
+    # engine creates has a row there) — plant the row a pass would leave
+    store.base_put(pair_id, "a.conflict-20240102-030405.txt", "file",
+                   remote_id="rx", local_size=4)
+    body = c.get(f"/api/pairs/{pair_id}/conflicts").get_json()
+    assert body["ok"] and len(body["conflicts"]) == 1
+    item = body["conflicts"][0]
+    assert item["path"] == "a.conflict-20240102-030405.txt"
+    assert item["original"] == "a.txt" and item["local_exists"] is True
+
+    # unknown path and bogus choice are clean 400s, never a traceback
+    bad_path = c.post(f"/api/pairs/{pair_id}/conflicts/resolve",
+                      json={"path": "a.txt", "choice": "keep_copy"})
+    assert bad_path.status_code == 400
+    bad_choice = c.post(f"/api/pairs/{pair_id}/conflicts/resolve",
+                        json={"path": "a.conflict-20240102-030405.txt",
+                              "choice": "bogus"})
+    assert bad_choice.status_code == 400
+    missing = c.get("/api/pairs/999/conflicts")
+    assert missing.status_code == 404

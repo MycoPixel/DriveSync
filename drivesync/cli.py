@@ -8,6 +8,7 @@
   drivesync sync            run one sync pass now (optionally one pair; --full
                             rehashes files saved with an unchanged mtime)
   drivesync status          show accounts, pairs and recent activity
+  drivesync conflicts       list / resolve conflict copies from the terminal
   drivesync config          get / set settings
   drivesync doctor          sanity-check the installation
 """
@@ -64,6 +65,11 @@ def cmd_serve(args):
     from .worker import Worker
     from .server import run_server
     store = _open_store()
+    if getattr(store, "recovered", False):
+        store.log(None, "db-recovered", "",
+                  "state.db was corrupt; it was restored from the automatic "
+                  "backup taken after the last clean pass")
+        print("note: state.db was corrupt — restored from state.db.bak")
     cfg = load_config()
     url = f"http://127.0.0.1:{args.port or cfg['server_port']}"
     # Probe first: werkzeug treats a busy port as a fatal error and exits
@@ -196,12 +202,13 @@ def cmd_pairs(args):
             k, _, v = kv.partition("=")
             if not k or k not in {"local_path", "remote_id", "remote_path",
                                   "direction", "conflict_policy", "enabled",
-                                  "allow_deletes", "include_patterns"}:
+                                  "allow_deletes", "include_patterns",
+                                  "symlink_policy", "case_insensitive"}:
                 sys.exit(f"error: unknown pair field '{kv}' — valid fields: "
                          "local_path, remote_id, remote_path, direction, "
                          "conflict_policy, enabled, allow_deletes, "
-                         "include_patterns")
-            if k in ("enabled", "allow_deletes"):
+                         "include_patterns, symlink_policy, case_insensitive")
+            if k in ("enabled", "allow_deletes", "case_insensitive"):
                 v = 1 if v.lower() in ("1", "true", "yes") else 0
             fields[k] = v
         if not store.pair(args.pair_id):
@@ -244,6 +251,91 @@ def cmd_sync(args):
         print(f"  {to_local(e['ts'])}  {e['action']:<22} {e['rel_path']}{lvl} {e['message']}")
     store.close()
     sys.exit(0 if ok else 2)
+
+
+def cmd_conflicts(args):
+    """Terminal access to the conflict-review engine (drivesync.conflicts)."""
+    from .conflicts import CHOICES, list_conflicts, resolve_conflict
+    store = _open_store()
+    try:
+        if args.action == "list":
+            pair_id = args.pair
+            if pair_id is None and args.target is not None:
+                try:
+                    pair_id = int(args.target)
+                except ValueError:
+                    sys.exit("error: 'conflicts list' takes an optional pair "
+                             "id (e.g. 'drivesync conflicts list 2')")
+            pairs = store.pairs()
+            if pair_id is not None:
+                pair = store.pair(pair_id)
+                if not pair:
+                    sys.exit(f"error: no sync pair #{pair_id} — list them "
+                             "with 'drivesync pairs list'")
+                pairs = [pair]
+            found = 0
+            for pair in pairs:
+                items = list_conflicts(store, pair)
+                for c in items:
+                    found += 1
+                    size = "-" if c["size"] is None else f"{c['size']} bytes"
+                    where = "" if c["local_exists"] else "  (missing on disk)"
+                    print(f"pair #{c['pair_id']}  {c['path']}")
+                    print(f"    original: {c['original']}  ({size}){where}")
+            if not found:
+                print("No conflict copies — everything is resolved.")
+            return
+        # resolve
+        if not args.target:
+            sys.exit("error: give the conflict copy path: "
+                     "'drivesync conflicts resolve <path> --keep ...'")
+        if not args.keep:
+            sys.exit("error: choose what to keep with --keep "
+                     "copy|original|both (both just re-checks and exits)")
+        choice = f"keep_{args.keep}"
+        if choice not in CHOICES:
+            sys.exit("error: --keep must be one of copy, original, both")
+        pair_id = args.pair
+        pair = store.pair(pair_id) if pair_id is not None else None
+        if pair_id is not None and not pair:
+            sys.exit(f"error: no sync pair #{pair_id} — list them with "
+                     "'drivesync pairs list'")
+        if pair is None:
+            # no --pair given: find the pair that tracks this copy path
+            matches = []
+            for p in store.pairs():
+                for c in list_conflicts(store, p):
+                    if c["path"] == args.target:
+                        matches.append((p, c))
+            if not matches:
+                sys.exit(f"error: no pair tracks a conflict copy named "
+                         f"{args.target!r} — run 'drivesync conflicts list' "
+                         "and pass --pair <id> to be explicit")
+            if len(matches) > 1:
+                listing = ", ".join(f"#{p['id']}" for p, _c in matches)
+                sys.exit(f"error: several pairs track {args.target!r} ({listing})"
+                         " — pass --pair <id>")
+            pair = matches[0][0]
+        account = store.account(pair["account_id"])
+        if not account:
+            sys.exit(f"error: pair #{pair['id']} has no authorized account")
+        from .auth import access_token_persisting, token_from_json
+        from .drive import Drive, DriveError
+        token = token_from_json(account["token_json"])
+        drive = Drive(lambda: access_token_persisting(store, account["id"],
+                                                      token))
+        try:
+            result = resolve_conflict(store, pair, drive, args.target, choice)
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
+        except DriveError as exc:
+            sys.exit(f"error: Drive refused the resolution: {exc}")
+        verb = {"keep_copy": "kept the copy", "keep_original": "kept the original",
+                "keep_both": "left both copies in place"}[choice]
+        print(f"pair #{result['pair_id']}: {verb} — {result['path']} "
+              f"(original: {result['original']})")
+    finally:
+        store.close()
 
 
 def cmd_status(args):
@@ -425,6 +517,17 @@ def build_parser():
                    help="re-list Drive and rehash local files — the recovery "
                         "for editors that save with an unchanged mtime")
     s.set_defaults(fn=cmd_sync)
+
+    s = sub.add_parser("conflicts", help="list/resolve conflict copies")
+    s.add_argument("action", choices=["list", "resolve"])
+    s.add_argument("target", nargs="?",
+                   help="pair id (list) / conflict copy path (resolve)")
+    s.add_argument("--pair", type=int, default=None,
+                   help="restrict listing to one pair / resolve within it")
+    s.add_argument("--keep", choices=["copy", "original", "both"],
+                   help="what wins when resolving (copy = the .conflict-… "
+                        "file replaces the original)")
+    s.set_defaults(fn=cmd_conflicts)
 
     s = sub.add_parser("status", help="show summary")
     s.set_defaults(fn=cmd_status)
