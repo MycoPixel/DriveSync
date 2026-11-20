@@ -84,10 +84,11 @@ def test_add_pair_and_delete(client, tmp_path, monkeypatch):
     good = c.post("/api/pairs", json={
         "account_id": 1, "local_path": str(docs),
         "remote_id": "abc123", "remote_path": "My Drive/docs",
-        "direction": "download"})
+        "direction": "download", "enabled": 0})
     assert good.status_code == 200
     body = good.get_json()
     assert body["ok"] and body["pair"]["direction"] == "download"
+    assert body["pair"]["enabled"] is False
     pid = body["pair"]["id"]
     assert c.patch(f"/api/pairs/{pid}", json={"enabled": 0}).get_json()["ok"]
     assert c.delete(f"/api/pairs/{pid}").get_json()["ok"]
