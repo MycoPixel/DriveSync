@@ -378,3 +378,21 @@ def test_conflicts_endpoints(client, tmp_path, monkeypatch):
     assert bad_choice.status_code == 400
     missing = c.get("/api/pairs/999/conflicts")
     assert missing.status_code == 404
+
+
+def test_dashboard_bind_host_is_loopback_only():
+    from drivesync.server import is_loopback_host
+
+    assert is_loopback_host("127.0.0.1")
+    assert is_loopback_host("localhost")
+    assert is_loopback_host("::1")
+    assert not is_loopback_host("0.0.0.0")
+    assert not is_loopback_host("192.168.1.10")
+    assert not is_loopback_host("example.com")
+
+
+def test_run_server_rejects_non_loopback_before_starting():
+    from drivesync.server import run_server
+
+    with pytest.raises(ValueError, match="must bind to localhost"):
+        run_server(None, None, host="0.0.0.0")
