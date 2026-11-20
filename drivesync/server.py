@@ -4,6 +4,7 @@ Bound to 127.0.0.1 by default — this server can read your Drive tokens,
 so it must never be exposed to the network.
 """
 
+import ipaddress
 import logging
 import os
 import sys
@@ -23,6 +24,20 @@ from .drive import Drive, DriveError, FOLDER_MIME, resolve_folder_entry
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def is_loopback_host(host):
+    """Return True only for an explicit loopback address or localhost.
+
+    The dashboard has no user authentication; binding it to a LAN/public
+    interface would expose the user's Google Drive operations to the network.
+    """
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _public_settings(cfg):
@@ -431,6 +446,10 @@ def check_tls(store):
 
 
 def run_server(store, worker, host="127.0.0.1", port=None):
+    if not is_loopback_host(host):
+        raise ValueError(
+            "DriveSync dashboard is unauthenticated and must bind to localhost "
+            "(127.0.0.1, ::1, or localhost). Remote binding is disabled.")
     check_tls(store)
     app = create_app(store, worker)
     port = port or load_config()["server_port"]
