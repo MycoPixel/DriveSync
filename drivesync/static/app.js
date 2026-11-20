@@ -42,6 +42,10 @@ function setMsg(id, text, cls) {
    HTML for the data-i18n-html labels (authored here, never user input). */
 const ES = {
   "Dashboard": "Panel",
+  "Google accounts": "Cuentas de Google",
+  "Recent issues": "Problemas recientes",
+  "Failed or conflicted pairs": "Pares con errores o conflictos",
+  "{active} active · {paused} paused": "{active} activos · {paused} pausados",
   "Sync pairs": "Pares de sincronización",
   "Accounts": "Cuentas",
   "Activity": "Actividad",
@@ -497,6 +501,7 @@ async function loadDashboard() {
   try {
     const { accounts } = await api("/api/accounts");
     state.accounts = accounts;
+    $("#metricAccounts").textContent = accounts.length;
     $("#accountCards").innerHTML = accounts.length
       ? accounts.map((a) => {
           const q = a.quota || {};
@@ -514,6 +519,11 @@ async function loadDashboard() {
   try {
     const { pairs } = await api("/api/pairs");
     state.pairs = pairs;
+    const activePairs = pairs.filter((p) => p.enabled && !(p.paused_until && new Date(p.paused_until) > new Date())).length;
+    const issuePairs = pairs.filter((p) => p.last_sync && !p.last_sync.ok).length;
+    $("#metricPairs").textContent = pairs.length;
+    $("#metricPairState").textContent = T("{active} active · {paused} paused", { active: activePairs, paused: pairs.length - activePairs });
+    $("#metricIssues").textContent = issuePairs;
     $("#pairsSummary").innerHTML = pairs.length
       ? `<table class="tbl"><tbody>${pairs.map((p) => `<tr>
           <td>#${p.id}</td><td>${esc(p.local_path)}</td>
