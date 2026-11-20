@@ -1823,12 +1823,12 @@ class DesktopApp:
         symlink_combo.append_text(i18n.t(
             "Follow — sync what they point at"))
         symlink_combo.set_active(
-            1 if pair.get("symlink_policy") == "follow" else 0)
+            1 if pair["symlink_policy"] == "follow" else 0)
         grid.attach(symlink_combo, 1, 3, 1, 1)
         chk_casefold = Gtk.CheckButton(
             label=i18n.t("Case-insensitive paths "
                          "(for pairs on FAT/exFAT/NTFS folders)"))
-        chk_casefold.set_active(bool(pair.get("case_insensitive")))
+        chk_casefold.set_active(bool(pair["case_insensitive"]))
         grid.attach(chk_casefold, 1, 4, 1, 1)
         dlg.get_content_area().pack_start(grid, True, True, 0)
         dlg.show_all()
