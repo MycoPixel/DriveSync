@@ -1027,8 +1027,9 @@ class DesktopApp:
         self.pairs_hint = self._dim_label("")
         box.pack_start(self.pairs_hint, False, False, 0)
 
+        # Keep the most common actions together in the first row.
         row = Gtk.Box(spacing=6)
-        btn_add = self._tr_button("Add folder\u2026")
+        btn_add = self._tr_button("Add folder\\u2026")
         btn_add.get_style_context().add_class("suggested-action")
         btn_add.connect("clicked", self._on_add_pair)
         row.pack_start(btn_add, False, False, 0)
@@ -1041,7 +1042,7 @@ class DesktopApp:
                   "manager (double-clicking a row does the same)")
         btn_open.connect("clicked", self._on_open_pair_folder)
         row.pack_start(btn_open, False, False, 0)
-        btn_edit = self._tr_button("Edit\u2026")
+        btn_edit = self._tr_button("Edit\\u2026")
         btn_edit.set_tooltip_text(i18n.t(
             "Change the selected pair's direction and conflict policy"))
         self._reg(btn_edit, "set_tooltip_text",
@@ -1051,6 +1052,13 @@ class DesktopApp:
         btn_toggle = self._tr_button("Pause / resume")
         btn_toggle.connect("clicked", self._on_toggle_pair)
         row.pack_start(btn_toggle, False, False, 0)
+        btn_sync = self._tr_button("Sync selected now")
+        btn_sync.connect("clicked", self._on_sync_pair)
+        row.pack_start(btn_sync, False, False, 0)
+        box.pack_start(row, False, False, 0)
+
+        # Less frequent and review actions live on a separate row.
+        more_row = Gtk.Box(spacing=6)
         btn_until = self._tr_button("Until tomorrow")
         btn_until.set_tooltip_text(i18n.t(
             "Pause until tomorrow at 09:00 — click again to cancel the "
@@ -1060,13 +1068,7 @@ class DesktopApp:
                   "the pause")
         btn_until.connect("clicked", self._on_pause_until)
         more_row.pack_start(btn_until, False, False, 0)
-        btn_sync = self._tr_button("Sync selected now")
-        btn_sync.connect("clicked", self._on_sync_pair)
-        row.pack_start(btn_sync, False, False, 0)
-        box.pack_start(row, False, False, 0)
-
-        more_row = Gtk.Box(spacing=6)
-        btn_preview = self._tr_button("Preview changes\u2026")
+        btn_preview = self._tr_button("Preview changes\\u2026")
         btn_preview.set_tooltip_text(i18n.t(
             "Dry-run the selected pair's next pass: what would change, "
             "nothing applied"))
@@ -1075,7 +1077,7 @@ class DesktopApp:
                   "nothing applied")
         btn_preview.connect("clicked", self._on_pair_preview)
         more_row.pack_start(btn_preview, False, False, 0)
-        btn_scope = self._tr_button("Subfolders\u2026")
+        btn_scope = self._tr_button("Subfolders\\u2026")
         btn_scope.set_tooltip_text(i18n.t(
             "Selective sync: choose which subfolders of this pair mirror; "
             "the rest stays on Drive and on disk, downloadable on demand "
@@ -1086,20 +1088,20 @@ class DesktopApp:
                   "on demand from the Drive tab")
         btn_scope.connect("clicked", self._on_pair_subfolders)
         more_row.pack_start(btn_scope, False, False, 0)
-        btn_conf = self._tr_button("Conflicts\u2026")
+        btn_conf = self._tr_button("Conflicts\\u2026")
         btn_conf.set_tooltip_text(i18n.t(
-            "Review conflict copies kept by the \u201cboth\u201d policy: "
+            "Review conflict copies kept by the \\u201cboth\\u201d policy: "
             "keep the copy, the original, or both"))
         self._reg(btn_conf, "set_tooltip_text",
-                  "Review conflict copies kept by the \u201cboth\u201d "
+                  "Review conflict copies kept by the \\u201cboth\\u201d "
                   "policy: keep the copy, the original, or both")
         btn_conf.connect("clicked", self._on_pair_conflicts)
         more_row.pack_start(btn_conf, False, False, 0)
         btn_rm = self._tr_button("Remove")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_pair)
-        row.pack_start(btn_rm, False, False, 0)
-        box.pack_start(row, False, False, 0)
+        more_row.pack_start(btn_rm, False, False, 0)
+        box.pack_start(more_row, False, False, 0)
 
         self._refresh_pairs()
         return _card(box)
