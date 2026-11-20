@@ -929,8 +929,8 @@ class DesktopApp:
         btn_rm = self._tr_button("Remove selected")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_account)
-        more_row.pack_start(btn_rm, False, False, 0)
-        box.pack_start(more_row, False, False, 0)
+        row.pack_start(btn_rm, False, False, 0)
+        box.pack_start(row, False, False, 0)
 
         note = self._tr_dim(
             "Google's consent page opens in your browser once per account "
