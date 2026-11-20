@@ -31,6 +31,11 @@
 <main>
   <!-- DASHBOARD -->
   <section id="tab-dashboard" class="tab active">
+    <div class="dashboard-metrics" aria-label="Sync overview">
+      <article class="metric-card"><span class="metric-label" data-i18n="Google accounts">Google accounts</span><strong id="metricAccounts">—</strong></article>
+      <article class="metric-card"><span class="metric-label" data-i18n="Sync pairs">Sync pairs</span><strong id="metricPairs">—</strong><small id="metricPairState"></small></article>
+      <article class="metric-card"><span class="metric-label" data-i18n="Recent issues">Recent issues</span><strong id="metricIssues">—</strong><small data-i18n="Failed or conflicted pairs">Failed or conflicted pairs</small></article>
+    </div>
     <div class="grid two">
       <div class="card">
         <h3 data-i18n="Background worker">Background worker</h3>
