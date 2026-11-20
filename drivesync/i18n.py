@@ -137,11 +137,7 @@ _STRINGS = {
 
     # ---- Folders tab ---------------------------------------------------
     "Direction": "Dirección",
-    "Local folder": "Carpeta local",
-    "Drive folder": "Carpeta de Drive",
     "Scope": "Alcance",
-    "State": "Estado",
-    "Last sync": "Última sincronización",
     "Add folder\u2026": "Agregar carpeta\u2026",
     "Open local folder": "Abrir carpeta local",
     "Open the selected pair's local folder in your file manager "
@@ -409,9 +405,6 @@ _STRINGS = {
     "Sort order": "Orden",
     "Clear activity\u2026": "Limpiar actividad\u2026",
     "Time": "Hora",
-    "Level": "Nivel",
-    "Action": "Acción",
-    "Path": "Ruta",
     "Detail": "Detalle",
     "Activity detail": "Detalle de actividad",
     "No detail.": "Sin detalle.",
