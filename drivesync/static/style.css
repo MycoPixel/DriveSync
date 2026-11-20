@@ -255,3 +255,12 @@ body[data-theme="dark"] .toast,
 body[data-theme="graphite-dark"] .toast,
 body[data-theme="glass-dark"] .toast{box-shadow:0 10px 30px rgba(0,0,0,.6)}
 input[type="search"],input[type="text"],input[type="number"],input[type="password"],input[type="time"]{color-scheme:light dark}
+
+/* Phase 2.1 — responsive dashboard summary */
+.dashboard-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.metric-card{display:flex;flex-direction:column;gap:5px;min-width:0;padding:18px 20px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius)}
+.metric-label{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.metric-card strong{font-size:30px;line-height:1.2;font-weight:750;color:var(--navy);font-variant-numeric:tabular-nums}
+.metric-card small{font-size:12px;color:var(--muted)}
+@media(max-width:760px){.dashboard-metrics{grid-template-columns:1fr 1fr}}
+@media(max-width:460px){.dashboard-metrics{grid-template-columns:1fr}}
