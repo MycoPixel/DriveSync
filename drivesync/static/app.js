@@ -879,8 +879,8 @@ $("#pairForm").addEventListener("submit", async (e) => {
     `${t("Conflict policy")}: ${t($("#pairPolicy option:checked").textContent)}`,
     startPaused ? t("The pair will remain paused until you review its preview and resume it.") :
       t("The first synchronization may begin immediately and transfer files."),
-  ].join("\\n");
-  if (!confirm(`${t("Review new sync pair")}\\n\\n${summary}\\n\\n${t("Continue?")}`)) return;
+  ].join("\n");
+  if (!confirm(`${t("Review new sync pair")}\n\n${summary}\n\n${t("Continue?")}`)) return;
   try {
     await api("/api/pairs", {
       method: "POST",
