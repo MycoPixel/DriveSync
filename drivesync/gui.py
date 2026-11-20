@@ -929,8 +929,8 @@ class DesktopApp:
         btn_rm = self._tr_button("Remove selected")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_account)
-        row.pack_start(btn_rm, False, False, 0)
-        box.pack_start(row, False, False, 0)
+        more_row.pack_start(btn_rm, False, False, 0)
+        box.pack_start(more_row, False, False, 0)
 
         note = self._tr_dim(
             "Google's consent page opens in your browser once per account "
@@ -1059,10 +1059,13 @@ class DesktopApp:
                   "Pause until tomorrow at 09:00 — click again to cancel "
                   "the pause")
         btn_until.connect("clicked", self._on_pause_until)
-        row.pack_start(btn_until, False, False, 0)
+        more_row.pack_start(btn_until, False, False, 0)
         btn_sync = self._tr_button("Sync selected now")
         btn_sync.connect("clicked", self._on_sync_pair)
         row.pack_start(btn_sync, False, False, 0)
+        box.pack_start(row, False, False, 0)
+
+        more_row = Gtk.Box(spacing=6)
         btn_preview = self._tr_button("Preview changes\u2026")
         btn_preview.set_tooltip_text(i18n.t(
             "Dry-run the selected pair's next pass: what would change, "
@@ -1071,7 +1074,7 @@ class DesktopApp:
                   "Dry-run the selected pair's next pass: what would change, "
                   "nothing applied")
         btn_preview.connect("clicked", self._on_pair_preview)
-        row.pack_start(btn_preview, False, False, 0)
+        more_row.pack_start(btn_preview, False, False, 0)
         btn_scope = self._tr_button("Subfolders\u2026")
         btn_scope.set_tooltip_text(i18n.t(
             "Selective sync: choose which subfolders of this pair mirror; "
@@ -1082,7 +1085,7 @@ class DesktopApp:
                   "mirror; the rest stays on Drive and on disk, downloadable "
                   "on demand from the Drive tab")
         btn_scope.connect("clicked", self._on_pair_subfolders)
-        row.pack_start(btn_scope, False, False, 0)
+        more_row.pack_start(btn_scope, False, False, 0)
         btn_conf = self._tr_button("Conflicts\u2026")
         btn_conf.set_tooltip_text(i18n.t(
             "Review conflict copies kept by the \u201cboth\u201d policy: "
@@ -1091,7 +1094,7 @@ class DesktopApp:
                   "Review conflict copies kept by the \u201cboth\u201d "
                   "policy: keep the copy, the original, or both")
         btn_conf.connect("clicked", self._on_pair_conflicts)
-        row.pack_start(btn_conf, False, False, 0)
+        more_row.pack_start(btn_conf, False, False, 0)
         btn_rm = self._tr_button("Remove")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_pair)
