@@ -45,6 +45,13 @@ def test_index_served(client):
     assert "DriveSync" in html and "app.js" in html
 
 
+def test_pair_form_defaults_new_pairs_to_paused_and_explains_review(client):
+    c, _ = client
+    html = c.get("/").get_data(as_text=True)
+    assert 'id="pairStartPaused" type="checkbox" checked' in html
+    assert "first-sync-review-hint" in html
+
+
 def test_settings_form_covers_worker_settings(client):
     """The form exposes the knobs the README promises (issue: UI gaps)."""
     c, _ = client
@@ -77,10 +84,11 @@ def test_add_pair_and_delete(client, tmp_path, monkeypatch):
     good = c.post("/api/pairs", json={
         "account_id": 1, "local_path": str(docs),
         "remote_id": "abc123", "remote_path": "My Drive/docs",
-        "direction": "download"})
+        "direction": "download", "enabled": 0})
     assert good.status_code == 200
     body = good.get_json()
     assert body["ok"] and body["pair"]["direction"] == "download"
+    assert body["pair"]["enabled"] is False
     pid = body["pair"]["id"]
     assert c.patch(f"/api/pairs/{pid}", json={"enabled": 0}).get_json()["ok"]
     assert c.delete(f"/api/pairs/{pid}").get_json()["ok"]
