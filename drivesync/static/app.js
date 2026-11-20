@@ -43,7 +43,7 @@ function setMsg(id, text, cls) {
 const ES = {
   "Dashboard": "Panel",
   "Google accounts": "Cuentas de Google",
-  "Recent issues": "Problemas recientes",
+  "Failed pairs": "Pares con última sincronización fallida",
   "Failed or conflicted pairs": "Pares con errores o conflictos",
   "{active} active · {paused} paused": "{active} activos · {paused} pausados",
   "Sync pairs": "Pares de sincronización",
