@@ -1186,6 +1186,7 @@ class DesktopApp:
         chk_paused.set_tooltip_text(i18n.t(
             "Creates the pair disabled — press \u201cPause / resume\u201d "
             "on the Folders tab when you are ready"))
+        chk_paused.set_active(True)
         grid.attach(chk_paused, 1, 7, 1, 1)
 
         scope = {"pick": False, "paths": []}
