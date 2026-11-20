@@ -655,11 +655,17 @@ async function loadPairs() {
               : `<button class="btn ghost small" data-resume="${p.id}">${esc(t("Resume"))}</button>`}</td>
           <td class="muted small">${esc(lastSyncText(p))}</td>
           <td>
-            <button class="btn ghost small" data-edit="${p.id}">${esc(t("Edit…"))}</button>
-            <button class="btn ghost small" data-preview="${p.id}">${esc(t("Preview"))}</button>
-            <button class="btn ghost small" data-conflicts="${p.id}">${esc(t("Conflicts"))}</button>
-            <button class="btn ghost small" data-sync="${p.id}">${esc(t("Sync"))}</button>
-            <button class="btn danger small" data-del="${p.id}">${esc(t("Remove"))}</button>
+            <div class="pair-actions">
+              <div class="pair-actions-main">
+                <button class="btn ghost small" data-edit="${p.id}">${esc(t("Edit…"))}</button>
+                <button class="btn ghost small" data-sync="${p.id}">${esc(t("Sync"))}</button>
+                <button class="btn ghost small" data-preview="${p.id}">${esc(t("Preview"))}</button>
+              </div>
+              <div class="pair-actions-review">
+                <button class="btn ghost small" data-conflicts="${p.id}">${esc(t("Conflicts"))}</button>
+                <button class="btn danger small" data-del="${p.id}">${esc(t("Remove"))}</button>
+              </div>
+            </div>
           </td></tr>`;
       }).join("")
       : `<tr><td colspan="10" class="muted">${esc(t("No sync pairs yet."))}</td></tr>`;
