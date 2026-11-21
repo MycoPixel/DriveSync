@@ -61,6 +61,34 @@ def test_settings_form_covers_worker_settings(client):
         assert field in html
 
 
+def test_transfer_queue_endpoint_is_empty_without_worker(client):
+    c, _ = client
+    response = c.get("/api/transfers")
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "transfers": []}
+
+
+def test_transfer_queue_endpoint_returns_newest_first(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path / "home"))
+    from drivesync.db import Store
+    store = Store(tmp_path / "other-state.db")
+
+    class FakeWorker:
+        status = {"transfers": [
+            {"id": "old", "status": "completed"},
+            {"id": "new", "status": "uploading"},
+        ]}
+
+    from drivesync.server import create_app
+    c = create_app(store, worker=FakeWorker()).test_client()
+    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    try:
+        rows = c.get("/api/transfers").get_json()["transfers"]
+        assert [row["id"] for row in rows] == ["new", "old"]
+    finally:
+        store.close()
+
+
 def test_empty_lists(client):
     c, _ = client
     assert c.get("/api/pairs").get_json()["pairs"] == []
