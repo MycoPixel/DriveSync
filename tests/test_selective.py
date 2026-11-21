@@ -400,9 +400,9 @@ def test_startup_page_logic(tmp_path, monkeypatch):
     pytest.importorskip("gi")
     from drivesync.gui import PAGE_ACTIVITY, startup_page
 
-    assert startup_page({}, []) == 0                       # Setup
-    assert startup_page({"client_id": "x"}, []) == 1       # Accounts
-    assert startup_page({"client_id": "x"}, [{"id": 1}]) == PAGE_ACTIVITY
+    assert startup_page({}, []) == 1                       # Setup
+    assert startup_page({"client_id": "x"}, []) == 2       # Accounts
+    assert startup_page({"client_id": "x"}, [{"id": 1}]) == 0  # Overview
 
 
 def test_drive_row_and_bytes_helpers():
