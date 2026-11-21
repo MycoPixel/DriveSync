@@ -56,6 +56,12 @@ def test_run_pass_returns_totals(env, monkeypatch):
     stats, ok = w.run_pass()
     assert ok is True
     assert int(stats.pushed) == 1 and int(stats.errors) == 0
+    transfers = w.status["transfers"]
+    assert len(transfers) == 1
+    assert transfers[0]["direction"] == "upload"
+    assert transfers[0]["path"] == "a.txt"
+    assert transfers[0]["status"] == "completed"
+    assert transfers[0]["size"] == 5
 
 
 def test_run_pass_reports_failure_and_marks_pair_stale(env, monkeypatch):
