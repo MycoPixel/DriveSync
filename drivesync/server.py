@@ -375,6 +375,14 @@ def create_app(store: Store, worker=None):
         threading.Thread(target=worker.run_pass, daemon=True).start()
         return jsonify({"ok": True, "started": True})
 
+    # ---- transfer queue ---------------------------------------------
+    @app.get("/api/transfers")
+    def transfers():
+        """Current and recently completed file transfers from the worker."""
+        rows = list((worker.status.get("transfers") or []) if worker else [])
+        rows.reverse()  # newest activity first
+        return jsonify({"ok": True, "transfers": rows})
+
     # ---- events -----------------------------------------------------
     @app.get("/api/events")
     def events():
