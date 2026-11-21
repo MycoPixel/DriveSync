@@ -18,6 +18,24 @@ def rfile(path):
     return path.read_bytes()
 
 
+# ---------------------------------------------------------- transfer queue
+def test_sync_pair_reports_transfer_lifecycle(env):
+    from drivesync import engine
+
+    wfile(env.local / "queued.txt", "hello")
+    events = []
+    stats, ok = engine.sync_pair(
+        env.store, env.cfg, env.pair, env.drive,
+        transfer_callback=events.append)
+
+    assert ok and stats.pushed == 1
+    assert [event["status"] for event in events] == [
+        "queued", "uploading", "completed"]
+    assert all(event["path"] == "queued.txt" for event in events)
+    assert all(event["direction"] == "upload" for event in events)
+    assert events[-1]["size"] == 5
+
+
 # ---------------------------------------------------------- basic transfers
 def test_new_local_file_uploads(env):
     wfile(env.local / "a.txt", "alpha")
