@@ -49,6 +49,20 @@ const ES = {
   "Sync pairs": "Pares de sincronización",
   "Accounts": "Cuentas",
   "Activity": "Actividad",
+  "Transfers": "Transferencias",
+  "Transfer queue": "Cola de transferencias",
+  "Status": "Estado",
+  "Sync pair": "Par de sincronización",
+  "File": "Archivo",
+  "Size": "Tamaño",
+  "Updated": "Actualizado",
+  "No transfers yet.": "Aún no hay transferencias.",
+  "transfer-queue-hint": "Muestra transferencias activas y los archivos completados o fallidos más recientes. La cola se reinicia al reiniciar DriveSync.",
+  "queued": "En cola",
+  "uploading": "Subiendo",
+  "downloading": "Descargando",
+  "completed": "Completado",
+  "failed": "Fallido",
   "Settings": "Ajustes",
   "Sync now": "Sincronizar ahora",
   "Background worker": "Trabajo en segundo plano",
@@ -473,6 +487,7 @@ function loadTab(name) {
   if (name === "pairs") loadPairs();
   if (name === "accounts") loadAccounts();
   if (name === "activity") loadEvents();
+  if (name === "transfers") loadTransfers();
   if (name === "settings") loadSettings();
 }
 
@@ -1078,6 +1093,27 @@ async function renderPickerSearch(query) {
   }
 }
 
+/* ---------- transfer queue ---------- */
+async function loadTransfers() {
+  const body = $("#transfersTable tbody");
+  try {
+    const { transfers } = await api("/api/transfers");
+    body.innerHTML = transfers.length
+      ? transfers.map((item) => {
+          const pair = state.pairs.find((p) => p.id === item.pair_id);
+          const pairName = pair ? `#${pair.id} · ${pair.local_path}` : `#${item.pair_id}`;
+          const direction = item.direction === "upload" ? "Upload" : "Download";
+          const size = item.size == null ? "—" : humanBytes(item.size);
+          const updated = item.updated_at ? new Date(item.updated_at * 1000).toLocaleTimeString() : "—";
+          const error = item.error ? `<div class="msg err small">${esc(item.error)}</div>` : "";
+          return `<tr><td><span class="pill ${item.status === "failed" ? "off" : item.status === "completed" ? "on" : ""}">${esc(t(item.status))}</span>${error}</td>
+            <td>${esc(t(direction))}</td><td>${esc(pairName)}</td><td>${esc(item.path)}</td><td>${esc(size)}</td><td>${esc(updated)}</td></tr>`;
+        }).join("")
+      : `<tr><td colspan="6" class="muted">${esc(t("No transfers yet."))}</td></tr>`;
+  } catch (e) { body.innerHTML = `<tr><td colspan="6" class="msg err">${esc(e.message)}</td></tr>`; }
+}
+$("#refreshTransfers").addEventListener("click", loadTransfers);
+
 /* ---------- activity ---------- */
 async function renderEvents(container, limit = 200) {
   const filter = $("#eventFilter") ? $("#eventFilter").value : "";
@@ -1194,3 +1230,6 @@ function humanBytes(n) {
 applyTheme();
 applyLang();
 loadDashboard();
+setInterval(() => {
+  if (state.tab === "transfers") loadTransfers();
+}, 1500);

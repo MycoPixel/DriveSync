@@ -256,6 +256,7 @@ class DesktopApp:
         self._add_page(self._drive_tab(), "Drive")
         self._add_page(self._activity_tab(), "Activity")
         self._add_page(self._options_tab(), "Options")
+        self._add_page(self._transfers_tab(), "Transfers")
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                         spacing=6, border_width=10)
@@ -2770,11 +2771,46 @@ class DesktopApp:
             self.store.clear_events()
             self._refresh_activity()
 
+    def _transfers_tab(self):
+        """Live view of active and recently completed file transfers."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      border_width=6)
+        box.pack_start(self._tr_dim(
+            "Active transfers and the most recent completed or failed files. "
+            "The queue resets when DriveSync restarts."), False, False, 0)
+        headers = ["Status", "Direction", "Sync pair", "File", "Size", "Updated"]
+        self.transfers_store, self.transfers_view, scroll = _list_view(
+            [i18n.t(h) for h in headers],
+            (str, str, str, str, str, str))
+        self._tr_columns(self.transfers_view, headers)
+        box.pack_start(scroll, True, True, 0)
+        self._refresh_transfers()
+        return _card(box)
+
+    def _refresh_transfers(self):
+        """Repaint the bounded worker queue on the GTK main thread."""
+        if not hasattr(self, "transfers_store"):
+            return
+        self.transfers_store.clear()
+        pairs = {p["id"]: p for p in self.store.pairs()}
+        for item in reversed(self.worker.status.get("transfers") or []):
+            pair = pairs.get(item.get("pair_id"))
+            pair_name = (f"#{pair['id']} · {pair['local_path']}" if pair
+                         else f"#{item.get('pair_id')}")
+            updated = item.get("updated_at")
+            when = (datetime.fromtimestamp(updated).strftime("%H:%M:%S")
+                    if updated else "")
+            direction = "Upload" if item.get("direction") == "upload" else "Download"
+            self.transfers_store.append([
+                i18n.t(item.get("status", "")), i18n.t(direction), pair_name,
+                item.get("path", ""), _drive_bytes(item.get("size")), when])
+
     def _tick(self):
         """Periodic UI refresh while the app is alive (even when hidden)."""
         if self._closing:
             return False
         self._refresh_activity()
+        self._refresh_transfers()
         self._refresh_pair_status_cells()
         self._refresh_overview()
         self._check_problems()

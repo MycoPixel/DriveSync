@@ -24,6 +24,7 @@
   <button data-tab="dashboard" class="active" data-i18n="Dashboard">Dashboard</button>
   <button data-tab="pairs" data-i18n="Sync pairs">Sync pairs</button>
   <button data-tab="accounts" data-i18n="Accounts">Accounts</button>
+  <button data-tab="transfers" data-i18n="Transfers">Transfers</button>
   <button data-tab="activity" data-i18n="Activity">Activity</button>
   <button data-tab="settings" data-i18n="Settings">Settings</button>
 </nav>
@@ -162,6 +163,23 @@
           <th data-i18n="Storage">Storage</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- TRANSFERS -->
+  <section id="tab-transfers" class="tab">
+    <div class="card">
+      <div class="row between">
+        <h3 data-i18n="Transfer queue">Transfer queue</h3>
+        <button class="btn ghost" id="refreshTransfers" data-i18n="Refresh">Refresh</button>
+      </div>
+      <p class="muted small" data-i18n="transfer-queue-hint">Shows active transfers and the most recent completed or failed files. Queue state resets when DriveSync restarts.</p>
+      <div class="table-scroll">
+        <table class="tbl" id="transfersTable">
+          <thead><tr><th data-i18n="Status">Status</th><th data-i18n="Direction">Direction</th><th data-i18n="Sync pair">Sync pair</th><th data-i18n="File">File</th><th data-i18n="Size">Size</th><th data-i18n="Updated">Updated</th></tr></thead>
+          <tbody><tr><td colspan="6" class="muted" data-i18n="No transfers yet.">No transfers yet.</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </section>
 

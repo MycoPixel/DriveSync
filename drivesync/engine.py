@@ -973,7 +973,8 @@ def preview_pair(store, cfg, pair, drive, force_full=False, changes=None):
     }
 
 
-def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
+def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
+              transfer_callback=None):
     """Run one sync pass for a pair row. Returns (SyncStats, ok).
 
     changes: a Drive changes feed (list of {'fileId','removed','file'})
@@ -992,13 +993,47 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
     ctx = _ApplyCtx(store, cfg, pair, drive, local_root, remote, local, stats,
                     fold)
 
+    def transfer_event(op, state, error=None):
+        if transfer_callback is None:
+            return
+        name, rel = op[0], op[1]
+        source = local.get(rel) if name == "upload" else remote.get(rel)
+        item = {
+            "id": f"{pair['id']}:{name}:{rel}",
+            "pair_id": pair["id"],
+            "direction": name,
+            "path": rel,
+            "size": (source or {}).get("size"),
+            "status": state,
+            "error": str(error) if error else None,
+            "updated_at": datetime.now(timezone.utc).timestamp(),
+        }
+        try:
+            transfer_callback(item)
+        except Exception:
+            pass  # UI telemetry must never interrupt a sync operation
+
     def apply_one(op):
+        is_transfer = op[0] in TRANSFER_OPS
+        if is_transfer:
+            transfer_event(op, "uploading" if op[0] == "upload"
+                           else "downloading")
         try:
             # one commit per op (base row + marker/activity rows) instead of
             # one per write: a first sync writes thousands of small rows
             with store.batch():
-                ctx.apply(op)
+                result = ctx.apply(op)
+            if is_transfer:
+                if result is False:
+                    rows = store.recent_events(limit=1, level="error",
+                                               pair_id=pair["id"])
+                    detail = rows[0]["message"] if rows else "transfer failed"
+                    transfer_event(op, "failed", detail)
+                else:
+                    transfer_event(op, "completed")
         except Exception as exc:
+            if is_transfer:
+                transfer_event(op, "failed", exc)
             stats.errors += 1
             store.log(pair["id"], "error", op[1] if len(op) > 1 else "",
                       f"{op[0]} failed: {exc}", level="error")
@@ -1016,6 +1051,8 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None):
             pre.append(op)
     for op in pre:
         apply_one(op)
+    for op in transfers:
+        transfer_event(op, "queued")
     workers = max(1, int(cfg.get("transfer_concurrency", 4)))
     if workers == 1 or len(transfers) < 2:
         for op in transfers:
@@ -1213,7 +1250,7 @@ class _ApplyCtx:
             "ack_local_delete": self.op_ack_local_delete,
             "ack_remote_delete": self.op_ack_remote_delete,
         }[op[0]]
-        fn(op)
+        return fn(op)
 
     def op_upload(self, op):
         rel = op[1]
@@ -1284,7 +1321,7 @@ class _ApplyCtx:
                     "refusing to overwrite a local file that is not a "
                     "tracked Drive export", level="error")
                 self.stats.errors += 1
-                return
+                return False
         if os.path.isfile(dest):
             self.keep_old_version(rel)   # the old local bytes are about to go
         self._pull_remote(rel, dest)
@@ -1302,6 +1339,7 @@ class _ApplyCtx:
                             **self._remote_meta(rel))
         self.stats.pulled += 1
         self.store.log(self.pid, "download", rel, note)
+        return True
 
     def _remote_iso(self, rel):
         return None  # retained for API compatibility; mtime set via utime
