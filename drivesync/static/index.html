@@ -24,7 +24,9 @@
   <button data-tab="dashboard" class="active" data-i18n="Dashboard">Dashboard</button>
   <button data-tab="pairs" data-i18n="Sync pairs">Sync pairs</button>
   <button data-tab="accounts" data-i18n="Accounts">Accounts</button>
+  <button data-tab="drive" data-i18n="Drive">Drive</button>
   <button data-tab="transfers" data-i18n="Transfers">Transfers</button>
+  <button data-tab="recovery" data-i18n="Recovery">Recovery</button>
   <button data-tab="activity" data-i18n="Activity">Activity</button>
   <button data-tab="settings" data-i18n="Settings">Settings</button>
 </nav>
@@ -103,6 +105,22 @@
             <option value="both" data-i18n="Keep both copies">Keep both copies</option>
           </select>
         </label>
+        <label>
+          <span data-i18n-html="pair.bw">Bandwidth cap <span class="muted">(KB/s for this pair; empty = the global limit)</span></span>
+          <input id="pairBw" type="number" min="0" max="1048576">
+        </label>
+        <label>
+          <span data-i18n-html="pair.peakbw">Peak bandwidth cap <span class="muted">(KB/s inside this pair's peak window; empty = inherit)</span></span>
+          <input id="pairPeakBw" type="number" min="0" max="1048576">
+        </label>
+        <label>
+          <span data-i18n-html="pair.peakfrom">Peak window from <span class="muted">(HH:MM; empty = no pair window)</span></span>
+          <input id="pairPeakFrom" type="time">
+        </label>
+        <label>
+          <span data-i18n-html="pair.peakto">Peak window to <span class="muted">(may cross midnight)</span></span>
+          <input id="pairPeakTo" type="time">
+        </label>
         <label class="check">
           <input id="pairStartPaused" type="checkbox" checked>
           <span data-i18n="Start new pairs paused">Start new pairs paused</span>
@@ -166,6 +184,72 @@
     </div>
   </section>
 
+  <!-- DRIVE BROWSER -->
+  <section id="tab-drive" class="tab">
+    <div class="card">
+      <div class="row between">
+        <h3 data-i18n="Google Drive browser">Google Drive browser</h3>
+        <button class="btn ghost" id="driveRefresh" data-i18n="Refresh">Refresh</button>
+      </div>
+      <p class="muted small" data-i18n="drive-hint">Browse this account's Drive without leaving DriveSync — descend into folders,
+        search everywhere, filter by type, and send any folder straight to the sync-pair form.</p>
+      <div class="row wrap">
+        <label class="inline">
+          <span data-i18n="Google account">Google account</span>
+          <select id="driveAccount"></select>
+        </label>
+        <label class="inline">
+          <span data-i18n="Type">Type</span>
+          <select id="driveType">
+            <option value="all" data-i18n="All types">All types</option>
+            <option value="folders" data-i18n="Folders">Folders</option>
+            <option value="google" data-i18n="Google files">Google files</option>
+            <option value="pdf" data-i18n="PDFs">PDFs</option>
+            <option value="image" data-i18n="Images">Images</option>
+            <option value="video" data-i18n="Videos">Videos</option>
+            <option value="audio" data-i18n="Audio">Audio</option>
+            <option value="archive" data-i18n="Archives">Archives</option>
+            <option value="text" data-i18n="Text files">Text files</option>
+            <option value="other" data-i18n="Other">Other</option>
+          </select>
+        </label>
+        <label class="inline">
+          <span data-i18n="Sort">Sort</span>
+          <select id="driveSort">
+            <option value="name-asc" data-i18n="Name (A→Z)">Name (A→Z)</option>
+            <option value="name-desc" data-i18n="Name (Z→A)">Name (Z→A)</option>
+            <option value="modified-desc" data-i18n="Newest first">Newest first</option>
+            <option value="modified-asc" data-i18n="Oldest first">Oldest first</option>
+            <option value="size-desc" data-i18n="Largest first">Largest first</option>
+            <option value="size-asc" data-i18n="Smallest first">Smallest first</option>
+          </select>
+        </label>
+        <label class="inline grow">
+          <span data-i18n="Search">Search</span>
+          <input id="driveSearch" type="search" data-i18n-ph="Search all of Drive… (Enter)"
+                 placeholder="Search all of Drive… (Enter)">
+        </label>
+      </div>
+      <div class="row between drive-nav">
+        <div class="row">
+          <button class="btn ghost" id="driveUp" data-i18n="↑ Up">↑ Up</button>
+        </div>
+        <button class="btn primary small" id="driveUseFolder" data-i18n="Use this folder for a new sync pair">Use this folder for a new sync pair</button>
+      </div>
+      <nav id="driveCrumbs" class="crumbs" aria-label="Folder path"></nav>
+      <p class="muted small" id="drivePath" style="word-break:break-all"></p>
+      <div class="table-scroll">
+        <table class="tbl" id="driveTable">
+          <thead><tr>
+            <th data-i18n="Name">Name</th><th data-i18n="Type">Type</th>
+            <th data-i18n="Size">Size</th><th data-i18n="Modified">Modified</th>
+            <th data-i18n="Owner">Owner</th></tr></thead>
+          <tbody><tr><td colspan="5" class="muted" data-i18n="loading…">loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <!-- TRANSFERS -->
   <section id="tab-transfers" class="tab">
     <div class="card">
@@ -178,6 +262,84 @@
         <table class="tbl" id="transfersTable">
           <thead><tr><th data-i18n="Status">Status</th><th data-i18n="Direction">Direction</th><th data-i18n="Sync pair">Sync pair</th><th data-i18n="File">File</th><th data-i18n="Size">Size</th><th data-i18n="Updated">Updated</th></tr></thead>
           <tbody><tr><td colspan="6" class="muted" data-i18n="No transfers yet.">No transfers yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- RECOVERY -->
+  <section id="tab-recovery" class="tab">
+    <div class="card" id="recoveryPendingCard">
+      <h3 data-i18n="Deletions awaiting confirmation">Deletions awaiting confirmation</h3>
+      <p class="muted small" data-i18n="recovery-pending-hint">A pass wanted to delete more files than the safety limit allows. Nothing was deleted — confirm below or keep every file. Recovery never propagates a deletion until you decide.</p>
+      <div id="recoveryPending" class="events"><span class="muted small" data-i18n="loading…">loading…</span></div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="Conflict copies">Conflict copies</h3>
+      <div id="recoveryConflicts" class="events"></div>
+      <p class="muted small" id="recoveryConflictsNote"></p>
+    </div>
+    <div class="card">
+      <div class="row between">
+        <h3 data-i18n="Locally preserved copies (trash)">Locally preserved copies (trash)</h3>
+        <button class="btn ghost" id="refreshRecovery" data-i18n="Refresh">Refresh</button>
+      </div>
+      <p class="muted small" data-i18n="recovery-trash-hint">Deleted files are never destroyed — the app moves them here first. Restore any copy to its original path; if the path is taken, it comes back renamed.</p>
+      <div class="table-scroll">
+        <table class="tbl" id="recoveryTrashTable">
+          <thead><tr><th data-i18n="Sync pair">Sync pair</th><th data-i18n="File">File</th><th data-i18n="Size">Size</th><th data-i18n="Deleted">Deleted</th><th data-i18n="Action">Action</th></tr></thead>
+          <tbody><tr><td colspan="5" class="muted" data-i18n="The local trash is empty.">The local trash is empty.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="Drive trash (whole account)">Drive trash (whole account)</h3>
+      <p class="muted small" data-i18n="recovery-drive-trash-hint">Google Drive's own trash is account-wide. Restoring a file here puts it back where it was on Drive; the next pass re-downloads it if it belongs to one of your pairs.</p>
+      <div class="row wrap">
+        <label class="inline">
+          <span data-i18n="Google account">Google account</span>
+          <select id="recoveryDrivePair"></select>
+        </label>
+        <div class="row end"><button class="btn ghost" id="loadDriveTrash" data-i18n="List Drive trash">List Drive trash</button></div>
+      </div>
+      <div class="table-scroll">
+        <table class="tbl" id="driveTrashTable">
+          <thead><tr><th data-i18n="Name">Name</th><th data-i18n="Size">Size</th><th data-i18n="Trashed">Trashed</th><th data-i18n="Action">Action</th></tr></thead>
+          <tbody><tr><td colspan="4" class="muted" data-i18n="recovery-drive-trash-empty">Choose a pair and press “List Drive trash”.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="Previous versions">Previous versions</h3>
+      <p class="muted small" data-i18n="recovery-versions-hint">Before an overwrite pull, the app keeps the previous bytes. Restore any version; the current file is itself kept, so a restore is undoable.</p>
+      <div class="row wrap">
+        <label class="inline">
+          <span data-i18n="Sync pair">Sync pair</span>
+          <select id="versionPair"></select>
+        </label>
+        <label class="inline grow">
+          <span data-i18n="File path">File path</span>
+          <input id="versionRel" type="text" data-i18n-ph="documents/report.docx" placeholder="documents/report.docx">
+        </label>
+        <div class="row end"><button class="btn ghost" id="loadVersions" data-i18n="List versions">List versions</button></div>
+      </div>
+      <div class="table-scroll">
+        <table class="tbl" id="versionsTable">
+          <thead><tr><th data-i18n="Version">Version</th><th data-i18n="File">File</th><th data-i18n="Size">Size</th><th data-i18n="Action">Action</th></tr></thead>
+          <tbody><tr><td colspan="4" class="muted" data-i18n="recovery-versions-empty">List the versions of a path to restore one.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="Recent failures">Recent failures</h3>
+      <div id="recoveryFailures" class="events"></div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="Recovery history">Recovery history</h3>
+      <div class="table-scroll">
+        <table class="tbl" id="recoveryHistoryTable">
+          <thead><tr><th data-i18n="When">When</th><th data-i18n="Sync pair">Sync pair</th><th data-i18n="Action">Action</th><th data-i18n="File">File</th><th data-i18n="Detail">Detail</th></tr></thead>
+          <tbody><tr><td colspan="5" class="muted" data-i18n="recovery-history-empty">Nothing to show yet.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -254,6 +416,45 @@
         <label>
           <span data-i18n-html="set.to">Sync window to <span class="muted">(may cross midnight)</span></span>
           <input id="setActiveTo" type="time">
+        </label>
+        <label>
+          <span data-i18n-html="set.peakfrom">Peak window from <span class="muted">(HH:MM; empty = no peak hours)</span></span>
+          <input id="setPeakFrom" type="time">
+        </label>
+        <label>
+          <span data-i18n-html="set.peakto">Peak window to <span class="muted">(may cross midnight)</span></span>
+          <input id="setPeakTo" type="time">
+        </label>
+        <label>
+          <span data-i18n-html="set.peakbw">Peak bandwidth limit <span class="muted">(KB/s inside the peak window; 0 = same as the general limit)</span></span>
+          <input id="setPeakBandwidth" type="number" min="0" max="1048576">
+        </label>
+        <label class="check">
+          <input id="setRespectMetered" type="checkbox">
+          <span data-i18n-html="set.metered">Respect metered connections <span class="muted">(NetworkManager reports the network as metered, e.g. a mobile hotspot; unknown networks count as not metered)</span></span>
+        </label>
+        <label>
+          <span data-i18n-html="set.meteredaction">On a metered connection <span class="muted">(pause defers automatic passes; throttle caps transfers at the rate below; manual syncs always run)</span></span>
+          <select id="setMeteredAction">
+            <option value="pause" data-i18n="Pause automatic sync">Pause automatic sync</option>
+            <option value="throttle" data-i18n="Throttle to the cap below">Throttle to the cap below</option>
+          </select>
+        </label>
+        <label>
+          <span data-i18n-html="set.meteredbw">Metered throttle cap <span class="muted">(KB/s while the connection is metered and throttling is on; 0 = no cap)</span></span>
+          <input id="setMeteredBw" type="number" min="0" max="1048576">
+        </label>
+        <label class="check">
+          <input id="setDigest" type="checkbox">
+          <span data-i18n-html="set.digest">Daily digest notification <span class="muted">(once a day, a summary of what synced — as a desktop notification and in the activity log)</span></span>
+        </label>
+        <label>
+          <span data-i18n-html="set.digesttime">Digest time <span class="muted">(HH:MM; fires on the first tick at/after it — a late boot catches up; empty = first tick of the day)</span></span>
+          <input id="setDigestTime" type="time">
+        </label>
+        <label class="check">
+          <input id="setDigestSkip" type="checkbox">
+          <span data-i18n-html="set.digestskip">Skip the digest on days with no activity <span class="muted">(nothing pushed, pulled or deleted, no conflicts, no errors)</span></span>
         </label>
         <label class="check">
           <input id="setWatch" type="checkbox">
@@ -364,6 +565,22 @@
         <input id="editCaseFold" type="checkbox">
         <span data-i18n-html="edit.casefold">Case-insensitive paths <span class="muted">(for pairs on FAT/exFAT/NTFS folders)</span></span>
       </label>
+      <label>
+        <span data-i18n-html="edit.bw">Bandwidth cap <span class="muted">(KB/s for this pair; empty = the global limit)</span></span>
+        <input id="editBw" type="number" min="0" max="1048576">
+      </label>
+      <label>
+        <span data-i18n-html="edit.peakbw">Peak bandwidth cap <span class="muted">(KB/s inside this pair's peak window; empty = inherit)</span></span>
+        <input id="editPeakBw" type="number" min="0" max="1048576">
+      </label>
+      <label>
+        <span data-i18n-html="edit.peakfrom">Peak window from <span class="muted">(HH:MM; empty = no pair window)</span></span>
+        <input id="editPeakFrom" type="time">
+      </label>
+      <label>
+        <span data-i18n-html="edit.peakto">Peak window to <span class="muted">(may cross midnight)</span></span>
+        <input id="editPeakTo" type="time">
+      </label>
       <div class="row end">
         <button type="submit" class="btn primary" data-i18n="Save">Save</button>
       </div>
@@ -395,7 +612,7 @@
     </div>
     <p class="muted small" id="previewSummary">loading…</p>
     <div id="previewList" class="picker-list"><p class="muted" data-i18n="loading…">loading…</p></div>
-    <p class="muted small" data-i18n="Nothing is applied — this only shows what the next pass would do.">Nothing is applied — this only shows what the next pass would do.</p>
+    <p class="muted small" data-i18n="Nothing is applied — this only shows what the next pass would do, and why.">Nothing is applied — this only shows what the next pass would do, and why.</p>
   </div>
 </div>
 

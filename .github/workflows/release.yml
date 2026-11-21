@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.14"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -64,6 +64,21 @@ jobs:
       - name: Lint (fatal errors only)
         run: python -m ruff check --select E9,F63,F7,F82 drivesync tests
       - run: python -m pytest tests/ -q
+
+  gui-smoke:
+    # Headless GTK: the unit tests skip the GUI when `gi` is missing, so this
+    # job is the only place the real window is built (under a virtual display).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK, PyGObject and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb python3-gi gir1.2-gtk-3.0 \
+            python3-pytest python3-flask python3-requests
+      - name: Build the window under Xvfb
+        run: xvfb-run -a python3 -m pytest tests/test_gui.py -q
 
   publish:
     needs: [deb, rpm, appimage, tests]

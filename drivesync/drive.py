@@ -9,7 +9,6 @@ import mimetypes
 import os
 import random
 import secrets
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -31,6 +30,8 @@ def _retryable(method, status):
 
 
 LIST_WORKERS = 4              # parallel folder listings on the first scan
+RESUMABLE_CHUNK = 8 << 20    # resumable upload chunk (256 KiB multiples)
+PART_SUFFIX = ".drivesync.part"   # download progress kept beside the destination
 FOLDER_MIME = "application/vnd.google-apps.folder"
 SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 
@@ -64,6 +65,119 @@ def resolve_folder_entry(item):
         if details.get("targetMimeType") == FOLDER_MIME:
             return {"id": details["targetId"], "name": item["name"]}
     return None
+
+
+def owner_name(item):
+    """Display name of a Drive row's owner ('' when absent or odd).
+
+    The listing fields include `owners` (displayName preferred, emailAddress
+    as fallback); shared-with-me rows and some Workspace items have none, so
+    the UIs show a dash rather than pretending there is one. Shared by the
+    web dashboard and the desktop Drive browser.
+    """
+    owners = item.get("owners") or []
+    if not isinstance(owners, list):
+        return ""
+    first = owners[0] if owners and isinstance(owners[0], dict) else None
+    if not first:
+        return ""
+    return str(first.get("displayName") or first.get("emailAddress") or "")
+
+
+# Shared file-type classification for the Drive browsers. The tokens are
+# stable identifiers (never shown to users directly); each UI maps them to
+# its own translated label and uses them for the type filter dropdown.
+ARCHIVE_MIMES = {"application/zip", "application/x-zip-compressed",
+                 "application/x-tar", "application/x-rar-compressed",
+                 "application/x-7z-compressed", "application/gzip",
+                 "application/x-gzip", "application/x-bzip2"}
+NATIVE_KINDS = {
+    "document": "document", "spreadsheet": "spreadsheet",
+    "presentation": "presentation", "drawing": "drawing",
+    "form": "form", "map": "map", "site": "site",
+}
+
+
+def file_category(item):
+    """Drive listing row -> one stable category token.
+
+    Folder shortcuts classify as 'folder' (the browsers descend into them);
+    unresolved shortcuts (target missing/private) classify as 'shortcut' so
+    they are still listed instead of disappearing. Everything else buckets
+    by mimeType: google-native kinds by suffix, regular files by prefix.
+    """
+    mime = (item.get("mimeType") or "").lower()
+    details = item.get("shortcutDetails") or {}
+    if details.get("targetMimeType"):
+        mime = str(details["targetMimeType"]).lower()
+    if mime == FOLDER_MIME:
+        return "folder"
+    if mime == SHORTCUT_MIME:
+        return "shortcut"
+    if mime.startswith("application/vnd.google-apps."):
+        suffix = mime.rsplit("vnd.google-apps.", 1)[-1]
+        if suffix in NATIVE_KINDS:
+            return NATIVE_KINDS[suffix]
+        return "doc"                       # third-party or unknown native kind
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("text/") or mime.endswith("+xml") or \
+            mime.endswith("/json"):
+        return "text"
+    if mime == "application/pdf":
+        return "pdf"
+    if mime in ARCHIVE_MIMES:
+        return "archive"
+    return "other"
+
+
+# Virtual folders the browsers show at the top level; they have no real
+# Drive id, so breadcrumbs and "sync this folder" treat them specially.
+VIRTUAL_ROOTS = {
+    "root": "My Drive",
+    "shared": "Shared with me",
+}
+
+# Breadcrumb walks stop well before the API would: a parent chain longer
+# than this is a corrupted tree or a crafted loop, never a real hierarchy.
+MAX_BREADCRUMB_DEPTH = 32
+
+
+def breadcrumbs(drive, folder_id):
+    """Root-first chain of {id, name} entries from My Drive to folder_id.
+
+    One metadata call per ancestor (the Files API has no reverse-parents
+    listing), so this stays O(depth) — fine for real hierarchies, and the
+    depth cap turns a crafted parent loop into a short, honest chain. The
+    virtual roots never hit the API. An unreachable ancestor truncates the
+    chain instead of failing the whole listing: showing 'My Drive / … /
+    This folder' beats showing nothing.
+    """
+    label = VIRTUAL_ROOTS.get(folder_id)
+    if label:
+        return [{"id": folder_id, "name": label}]
+    chain, seen, current = [], set(), folder_id
+    while current and current not in seen and len(chain) < MAX_BREADCRUMB_DEPTH:
+        seen.add(current)
+        try:
+            meta = drive.get(current, fields="id,name,parents")
+        except DriveError:
+            if chain:
+                break              # an ancestor is gone: show what we have
+            raise                  # the requested folder itself is broken
+        chain.append({"id": meta.get("id", current),
+                      "name": meta.get("name") or current})
+        parents = [p for p in (meta.get("parents") or [])
+                   if p and p != "root"]
+        if not parents:
+            break                          # reached the actual My Drive root
+        current = parents[0]
+    chain.reverse()
+    return chain
 
 
 def folders_for_parent(drive, parent):
@@ -312,13 +426,17 @@ class Drive:
 
     # ---- listing --------------------------------------------------
     def list_children(self, folder_id):
-        """Direct children of a folder (non-trashed), paged."""
+        """Direct children of a folder (non-trashed), paged.
+
+        `owners` feeds the Drive browsers' Owner column (engine ignores it).
+        """
         out, page_token = [], None
         while True:
             params = {
                 "q": f"'{folder_id}' in parents and trashed=false",
                 "fields": "nextPageToken, files(id,name,mimeType,md5Checksum,"
-                          "version,size,modifiedTime,parents,shortcutDetails)",
+                          "version,size,modifiedTime,parents,shortcutDetails,"
+                          "owners(displayName,emailAddress))",
                 "pageSize": self.page_size,
                 "orderBy": "name_natural",
             }
@@ -368,7 +486,8 @@ class Drive:
             params = {
                 "q": q,
                 "fields": "nextPageToken, files(id,name,mimeType,md5Checksum,"
-                          "version,size,modifiedTime,shortcutDetails)",
+                          "version,size,modifiedTime,shortcutDetails,"
+                          "owners(displayName,emailAddress))",
                 "pageSize": min(self.page_size, limit - len(out)),
                 "orderBy": "name_natural",
             }
@@ -482,6 +601,167 @@ class Drive:
                 if self.limiter else _PingBody(fh, self._ping))
         return resp.json()
 
+    # ---- resumable transfers (Phase 3.2) ---------------------------
+    def upload_resumable(self, local_path, name, parent_id, session=None,
+                         on_session=None, chunk_bytes=None):
+        """Create a new file through Google's resumable-upload protocol.
+
+        Instead of one multipart POST, a session URI is initiated with the
+        metadata and the body is PUT in chunks; each 308 response reports
+        how many bytes the server actually holds, so a broken chunk only
+        re-sends what is left.
+
+        session: a URI saved from an earlier attempt — its server-side
+        offset is queried first and the transfer continues from there
+        (a dead session simply starts over). on_session(uri) fires as
+        soon as the session exists so the caller can persist it between
+        passes and retries.
+        """
+        mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+        size = os.path.getsize(local_path)
+        # an explicit chunk_bytes is honored as given (tests, tuning);
+        # otherwise Google's recommended 8 MiB default applies
+        chunk = int(chunk_bytes) if chunk_bytes else RESUMABLE_CHUNK
+        meta = {"name": name, "parents": [parent_id]}
+
+        offset = 0
+        if session:
+            kind, val = self._session_status(session, size)
+            if kind == "done":
+                return val          # crash after the last chunk, before ack
+            if kind == "offset":
+                offset = val
+            else:
+                session = None      # server lost the session: start over
+
+        if not session:
+            resp = self._request(
+                "POST", f"{UPLOAD_API}/files",
+                params={"uploadType": "resumable",
+                        "fields": "id,name,mimeType,version,md5Checksum,"
+                                  "size,modifiedTime"},
+                json=meta, headers={"X-Upload-Content-Type": mime})
+            session = resp.headers["Location"]
+            if on_session:
+                try:
+                    on_session(session)
+                except Exception:
+                    pass  # state persistence must not fail the transfer
+        return self._send_session_chunks(
+            session, local_path, size, offset, chunk)
+
+    def update_content_resumable(self, file_id, local_path, session=None,
+                                 on_session=None, chunk_bytes=None):
+        """Replace file content through a resumable session (PATCH media)."""
+        mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+        size = os.path.getsize(local_path)
+        chunk = int(chunk_bytes) if chunk_bytes else RESUMABLE_CHUNK
+
+        offset = 0
+        if session:
+            kind, val = self._session_status(session, size)
+            if kind == "done":
+                return val
+            if kind == "offset":
+                offset = val
+            else:
+                session = None
+
+        if not session:
+            resp = self._request(
+                "PATCH", f"{UPLOAD_API}/files/{file_id}",
+                params={"uploadType": "resumable",
+                        "fields": "id,version,md5Checksum,size,modifiedTime"},
+                json={}, headers={"X-Upload-Content-Type": mime})
+            session = resp.headers["Location"]
+            if on_session:
+                try:
+                    on_session(session)
+                except Exception:
+                    pass
+        return self._send_session_chunks(
+            session, local_path, size, offset, chunk)
+
+    def _session_status(self, session, size):
+        """Ask the server how much of a session it already holds.
+
+        Returns ("done", metadata_json) when the upload finished (a pass
+        can crash between the final chunk and the local acknowledgement),
+        ("offset", n) when it is partially complete, ("dead", None) when
+        the session is gone and the transfer must start over.
+        """
+        try:
+            resp = self._session.put(
+                session, headers=self._headers(
+                    {"Content-Range": f"bytes */{size}"}), timeout=120)
+        except (requests.ConnectionError, requests.Timeout):
+            return ("dead", None)
+        if resp.status_code in (200, 201):
+            return ("done", resp.json())
+        if resp.status_code == 308:
+            rng = resp.headers.get("Range", "")
+            return ("offset", int(rng.rsplit("-", 1)[1]) + 1 if rng else 0)
+        return ("dead", None)
+
+    def _send_session_chunks(self, session, local_path, size, offset, chunk):
+        """PUT the remaining bytes of a resumable session, chunk by chunk.
+
+        A failed chunk re-queries the server-side offset and continues —
+        at worst one chunk is re-sent, never the whole file. Session PUTs
+        are raw requests: the session URI is the credential.
+        """
+        with open(local_path, "rb") as fh:
+            fh.seek(offset)
+            tries = 0
+            while offset < size:
+                body = fh.read(chunk)
+                end = offset + len(body)
+                cr_last = end >= size
+                content_range =                     f"bytes {offset}-{end - 1}/{size}" if cr_last else \
+                    f"bytes {offset}-{end - 1}/*"
+                if self.limiter:
+                    self.limiter.consume(len(body))
+                self._ping()
+                try:
+                    resp = self._session.put(
+                        session, data=body,
+                        headers=self._headers(
+                            {"Content-Range": content_range}), timeout=600)
+                except (requests.ConnectionError, requests.Timeout):
+                    resp = None
+                if resp is not None and resp.status_code in (200, 201):
+                    return resp.json()
+                if resp is not None and resp.status_code == 308:
+                    rng = resp.headers.get("Range", "")
+                    offset = int(rng.rsplit("-", 1)[1]) + 1 if rng else end
+                    fh.seek(offset)
+                    continue
+                # transport failure or 5xx: find what the server holds
+                tries += 1
+                if tries >= 4:
+                    raise DriveError(
+                        f"PUT {session.split('?')[0]} failed after "
+                        f"{offset}/{size} bytes (session kept — the next "
+                        "attempt resumes)")
+                time.sleep(self._retry_delay(resp, tries - 1))
+                kind, val = self._session_status(session, size)
+                if kind == "done":
+                    return val
+                if kind == "offset":
+                    offset = val
+                else:
+                    raise DriveError(
+                        f"PUT {session.split('?')[0]} lost its session "
+                        f"at {offset}/{size} bytes — restart the transfer")
+                fh.seek(offset)
+        # offset == size without a final 200: the server has everything but
+        # never confirmed — query once more to fetch the metadata
+        kind, val = self._session_status(session, size)
+        if kind == "done":
+            return val
+        raise DriveError(f"PUT {session.split('?')[0]} did not confirm "
+                         f"the completed upload")
+
     def rename(self, file_id, new_name, add_parent=None, remove_parent=None):
         """Rename and/or reparent a file or folder."""
         meta = {}
@@ -500,6 +780,40 @@ class Drive:
         return self._request("PATCH", f"{API}/files/{file_id}",
                              json={"trashed": True}).json()
 
+    def untrash(self, file_id):
+        """Take a file out of the Drive trash (keeps its original parents).
+
+        Drive restores the file where it lived; if that folder was deleted
+        too the API may refuse or reparent — callers surface the error.
+        """
+        return self._request("PATCH", f"{API}/files/{file_id}",
+                             json={"trashed": False}).json()
+
+    def list_trashed(self, limit=100):
+        """Files currently in the account's Drive trash, newest first.
+
+        Drive trash is account-wide (not per sync pair), so the recovery UI
+        labels it that way; `trashedTime` and `parents` are included so the
+        UI can show when something was deleted and where it would return.
+        """
+        out, page_token = [], None
+        while True:
+            params = {
+                "q": "trashed=true",
+                "fields": "nextPageToken, files(id,name,mimeType,size,"
+                          "modifiedTime,trashedTime,parents)",
+                "pageSize": min(1000, max(1, int(limit))),
+                "orderBy": "modifiedTime desc",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            data = self._request("GET", f"{API}/files", params=params).json()
+            out.extend(data.get("files", []))
+            page_token = data.get("nextPageToken")
+            if not page_token or len(out) >= limit:
+                break
+        return out[:limit]
+
     def download(self, file_id, dest_path):
         """Stream a regular file to dest_path via a temp file + atomic replace."""
         self._stream_to(f"{API}/files/{file_id}", {"alt": "media"}, dest_path)
@@ -512,50 +826,76 @@ class Drive:
         return dest_path
 
     def _stream_to(self, url, params, dest_path):
+        """Stream to dest_path via a .part file + atomic replace, resuming.
+
+        The bytes land in dest_path.part — a deterministic name, so a
+        broken transfer leaves its progress on disk. The next attempt
+        (same call or a later pass) resumes with a Range request from the
+        part size; a server that answers 200 anyway means the part cannot
+        be trusted and the transfer starts over. On success the part is
+        atomically renamed into place; on failure it stays — that IS the
+        resume state.
+        """
         os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest_path) or ".",
-                                   suffix=".drivesync")
-        os.close(fd)
+        part = f"{dest_path}{PART_SUFFIX}"
         params = dict(params)
         params.setdefault("supportsAllDrives", "true")
         max_tries = 4
-        try:
-            for attempt in range(max_tries):
-                try:
-                    resp = self._session.get(url, params=params,
-                                             headers=self._headers(),
-                                             stream=True, timeout=600)
-                except (requests.ConnectionError, requests.Timeout) as exc:
-                    if attempt >= max_tries - 1:
-                        raise DriveError(f"GET {url} failed: {exc}") from exc
-                    time.sleep(self._retry_delay(None, attempt))
-                    continue
-                if resp.status_code == 401 and attempt == 0:
-                    # token expired mid-flight: refresh and retry once
-                    resp.close()
-                    continue
-                if (_retryable("GET", resp.status_code)
-                        and attempt < max_tries - 1):
-                    delay = self._retry_delay(resp, attempt)
-                    resp.close()
-                    time.sleep(delay)
-                    continue
-                if resp.status_code >= 400:
-                    text, hint = resp.text[:300], _explain(resp)
-                    resp.close()
-                    raise DriveError(f"GET {url} -> {resp.status_code}: "
-                                     f"{text}{hint}")
-                with resp, open(tmp, "wb") as out:
+        for attempt in range(max_tries):
+            offset = os.path.getsize(part) if os.path.exists(part) else 0
+            headers = {"Range": f"bytes={offset}-"} if offset else {}
+            try:
+                resp = self._session.get(url, params=params,
+                                         headers=self._headers(headers),
+                                         stream=True, timeout=600)
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                if attempt >= max_tries - 1:
+                    raise DriveError(f"GET {url} failed: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
+                continue          # the part keeps whatever arrived
+            if resp.status_code == 401 and attempt == 0:
+                # token expired mid-flight: refresh and retry once
+                resp.close()
+                continue
+            if (_retryable("GET", resp.status_code)
+                    and attempt < max_tries - 1):
+                delay = self._retry_delay(resp, attempt)
+                resp.close()
+                time.sleep(delay)
+                continue
+            if resp.status_code == 416:
+                # the part already holds every byte (a crash landed between
+                # the last write and the rename): rename it and finish
+                resp.close()
+                os.replace(part, dest_path)
+                return
+            if resp.status_code >= 400:
+                text, hint = resp.text[:300], _explain(resp)
+                resp.close()
+                raise DriveError(f"GET {url} -> {resp.status_code}: "
+                                 f"{text}{hint}")
+            if resp.status_code == 200 and offset:
+                # server ignored the Range (fresh content, or an endpoint
+                # that does not do ranges): the part cannot be trusted
+                offset = 0
+            try:
+                with resp, open(part, "ab" if offset else "wb") as out:
                     for chunk in resp.iter_content(chunk_size=1 << 16):
                         if self.limiter:
                             self.limiter.consume(len(chunk))
                         self._ping()
                         out.write(chunk)
-                break
-            os.replace(tmp, dest_path)
-        finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            except (requests.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError) as exc:
+                if attempt >= max_tries - 1:
+                    raise DriveError(
+                        f"GET {url} broke mid-stream: {exc}") from exc
+                time.sleep(self._retry_delay(None, attempt))
+                continue          # resume from the part on the next attempt
+            break
+        else:
+            raise DriveError(f"GET {url} failed: retries exhausted")
+        os.replace(part, dest_path)
 
     def set_local_mtime(self, dest_path, remote_modified):
         """Best effort: mirror the Drive modifiedTime onto the local file."""

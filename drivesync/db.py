@@ -55,9 +55,21 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS recovery (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT NOT NULL,
+    pair_id   INTEGER,
+    rel_path  TEXT DEFAULT '',
+    action    TEXT NOT NULL,     -- safety_stop | deletions_allowed | deletions_kept
+                                 -- pending_cleared | trash_restored | drive_trash_restored
+                                 -- version_restored | conflict_resolved
+    reason    TEXT DEFAULT '',   -- what triggered it (limit tripped, user action...)
+    detail    TEXT DEFAULT ''    -- human-readable summary (counts, destinations)
+);
 CREATE INDEX IF NOT EXISTS idx_entries_pair ON entries(pair_id);
 CREATE INDEX IF NOT EXISTS idx_events_pair  ON events(pair_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts    ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_recovery_ts  ON recovery(ts);
 """
 
 _DIRECTIONS = ("bidirectional", "upload", "download")
@@ -133,6 +145,49 @@ def roots_overlap(a, b) -> bool:
     a = os.path.realpath(str(a))
     b = os.path.realpath(str(b))
     return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+
+
+def _valid_hhmm(v):
+    """'HH:MM' with 0<=HH<=23, 0<=MM<=59 (same rule as config.py)."""
+    try:
+        h, m = str(v).split(":")
+        return len(str(v)) == 5 and 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+    except (ValueError, AttributeError):
+        return False
+
+
+def _validate_pair_qos(bandwidth_limit_kb, peak_from, peak_to,
+                       bandwidth_limit_kb_peak):
+    """Normalize a per-pair QoS quartet or raise ValueError.
+
+    None means 'inherit the global setting'. The peak window must be
+    set as a pair; caps are integers >= 0 (0 keeps the fall-back
+    semantics of Phase 4.1: use the general cap inside the window).
+    """
+    out = []
+    for v in (bandwidth_limit_kb, bandwidth_limit_kb_peak):
+        if v is None or v == "":
+            out.append(None)
+            continue
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            raise ValueError("bandwidth limits must be integers (KB/s)")
+        if iv < 0:
+            raise ValueError("bandwidth limits must be 0 (inherit/fall "
+                             "back) or higher")
+        out.append(iv)
+    win = []
+    for v in (peak_from, peak_to):
+        v = str(v).strip() if v is not None else ""
+        if v and not _valid_hhmm(v):
+            raise ValueError("peak_from/peak_to must be empty or HH:MM "
+                             "(e.g. 08:00)")
+        win.append(v or None)
+    if (win[0] is not None) != (win[1] is not None):
+        raise ValueError("peak_from and peak_to must be set together "
+                         "(or both empty to inherit)")
+    return out[0], win[0], win[1], out[1]
 
 
 def to_local(iso: str) -> str:
@@ -262,7 +317,14 @@ class Store:
                   "include_patterns TEXT NOT NULL DEFAULT ''",
                   "symlink_policy TEXT NOT NULL DEFAULT 'skip'",
                   "case_insensitive INTEGER NOT NULL DEFAULT 0",
-                  "paused_until TEXT"],
+                  "paused_until TEXT",
+                  # per-pair QoS (Phase 4.2): NULL = inherit the global
+                  # settings; the window pair follows the same rules as
+                  # config peak_from/peak_to
+                  "bandwidth_limit_kb INTEGER",
+                  "peak_from TEXT",
+                  "peak_to TEXT",
+                  "bandwidth_limit_kb_peak INTEGER"],
         "entries": ["deleted_local INTEGER NOT NULL DEFAULT 0",
                     "deleted_remote INTEGER NOT NULL DEFAULT 0",
                     "remote_size REAL",
@@ -280,7 +342,21 @@ class Store:
 
     def close(self):
         with self._lock:
+            # Fold the WAL back into the main file so a stopped service
+            # leaves a compact state.db (and no large -wal sibling).
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.DatabaseError:
+                pass
             self._conn.close()
+
+    def optimize(self):
+        """Refresh SQLite planner statistics (cheap; safe to call often)."""
+        with self._lock:
+            try:
+                self._conn.execute("PRAGMA optimize")
+            except sqlite3.DatabaseError:
+                pass
 
     @contextmanager
     def batch(self):
@@ -337,7 +413,12 @@ class Store:
     def add_pair(self, account_id, local_path, remote_id, remote_path="",
                  direction="bidirectional", conflict_policy="newer", enabled=1,
                  allow_deletes=1, include_patterns=None, symlink_policy="skip",
-                 case_insensitive=0):
+                 case_insensitive=0,
+                 bandwidth_limit_kb=None, peak_from=None, peak_to=None,
+                 bandwidth_limit_kb_peak=None):
+        bw, pf, pt, bwp = _validate_pair_qos(
+            bandwidth_limit_kb, peak_from, peak_to,
+            bandwidth_limit_kb_peak)
         if direction not in _DIRECTIONS:
             raise ValueError(f"direction must be one of {_DIRECTIONS}")
         if conflict_policy not in _POLICIES:
@@ -355,12 +436,13 @@ class Store:
         cur = self._exec(
             "INSERT INTO pairs(account_id, local_path, remote_id, remote_path, "
             "direction, conflict_policy, enabled, allow_deletes, "
-            "include_patterns, symlink_policy, case_insensitive) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "include_patterns, symlink_policy, case_insensitive, "
+            "bandwidth_limit_kb, peak_from, peak_to, "
+            "bandwidth_limit_kb_peak) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, str(local_path), remote_id, remote_path,
              direction, conflict_policy, int(bool(enabled)),
              int(bool(allow_deletes)), scope, symlink_policy,
-             int(bool(case_insensitive))))
+             int(bool(case_insensitive)), bw, pf, pt, bwp))
         return self.pair(cur.lastrowid)
 
     def pairs(self, enabled_only=False):
@@ -376,7 +458,8 @@ class Store:
         allowed = {"local_path", "remote_id", "remote_path", "direction",
                    "conflict_policy", "enabled", "allow_deletes",
                    "include_patterns", "symlink_policy", "case_insensitive",
-                   "paused_until"}
+                   "paused_until", "bandwidth_limit_kb", "peak_from",
+                   "peak_to", "bandwidth_limit_kb_peak"}
         keys = [k for k in fields if k in allowed]
         if not keys:
             return self.pair(pair_id)
@@ -406,6 +489,21 @@ class Store:
                 raise ValueError("paused_until must be an ISO timestamp "
                                  "(e.g. 2026-11-21T09:00:00) or null")
         current = self.pair(pair_id)
+        if any(k in fields for k in ("bandwidth_limit_kb", "peak_from",
+                                     "peak_to",
+                                     "bandwidth_limit_kb_peak")):
+            # validate the RESOLVED quartet, not just the fields sent: a
+            # partial edit must not leave a half window behind
+            bw, pf, pt, bwp = _validate_pair_qos(
+                fields.get("bandwidth_limit_kb", current["bandwidth_limit_kb"]),
+                fields.get("peak_from", current["peak_from"]),
+                fields.get("peak_to", current["peak_to"]),
+                fields.get("bandwidth_limit_kb_peak",
+                           current["bandwidth_limit_kb_peak"]))
+            fields["bandwidth_limit_kb"] = bw
+            fields["peak_from"] = pf
+            fields["peak_to"] = pt
+            fields["bandwidth_limit_kb_peak"] = bwp
         # repointing a pair at a different tree invalidates its snapshot:
         # the old base rows would look like mass deletions on the next pass
         repointed = current and any(
@@ -423,8 +521,11 @@ class Store:
     def delete_pair(self, pair_id):
         self._exec("DELETE FROM entries WHERE pair_id=?", (pair_id,))
         self._exec("DELETE FROM pairs WHERE id=?", (pair_id,))
+        self._exec("DELETE FROM recovery WHERE pair_id=?", (pair_id,))
         self.kv_delete(f"pair_synced:{pair_id}")
         self.kv_delete(f"stale:{pair_id}")
+        self.kv_delete(f"pending_deletes:{pair_id}")
+        self.kv_delete(f"deletes_approved:{pair_id}")
 
     # ---- base snapshots -------------------------------------------
     def base_entries(self, pair_id):
@@ -503,6 +604,42 @@ class Store:
             (utcnow(), pair_id, level or "info", action,
              rel_path or "", message or ""))
 
+    def digest_summary(self, since_id=0):
+        """One-row activity rollup for the notifications digest (4.4).
+
+        Counts FILE-level actions after event id `since_id` (push/pull/
+        delete), plus conflicts and errors by level, and how many
+        distinct pairs saw file activity. The window is keyed on the
+        AUTOINCREMENT id, not the timestamp: ts has second precision, so
+        same-second rows would leak into (or out of) a time window.
+        Summary rows ('pass', 'metered-pause', the digest row itself)
+        are excluded, so re-running never compounds. SQL conditional
+        aggregation keeps it a single scan.
+        """
+        row = self._exec(
+            "SELECT"
+            "  SUM(action='push') AS pushed,"
+            "  SUM(action='pull') AS pulled,"
+            "  SUM(action='delete') AS deleted,"
+            "  SUM(level='conflict') AS conflicts,"
+            "  SUM(level='error') AS errors,"
+            "  COUNT(DISTINCT CASE WHEN action IN"
+            "    ('push','pull','delete','conflict') THEN pair_id END)"
+            "    AS pairs"
+            " FROM events WHERE id > ? AND action NOT IN"
+            " ('pass','metered-pause','metered-resume','digest')",
+            (int(since_id or 0),)).fetchone()
+        g = lambda k: int(row[k] or 0) if row is not None else 0
+        return {"pushed": g("pushed"), "pulled": g("pulled"),
+                "deleted": g("deleted"), "conflicts": g("conflicts"),
+                "errors": g("errors"), "pairs": g("pairs"),
+                "files": g("pushed") + g("pulled") + g("deleted")}
+
+    def last_event_id(self):
+        """Highest event id — the digest bookmark for the next window."""
+        row = self._exec("SELECT MAX(id) AS m FROM events").fetchone()
+        return int(row["m"] or 0) if row is not None else 0
+
     def recent_events(self, limit=200, level=None, pair_id=None, action=None,
                       since=None):
         """Newest-first activity rows, optionally filtered.
@@ -534,6 +671,40 @@ class Store:
                 self._exec("SELECT DISTINCT action FROM events "
                            "ORDER BY action").fetchall()]
 
+    # ---- recovery history (Phase 2.6) ------------------------------
+    def recovery_log(self, pair_id, rel_path, action, reason="", detail=""):
+        """One row in the recovery history.
+
+        Everything a user might later need to understand what happened to
+        their files: the original path, why (reason) and what was done
+        (action + detail). The events table stays a chronological activity
+        feed; this table is the queryable "what protection fired and what
+        did the user decide" record.
+        """
+        self._exec(
+            "INSERT INTO recovery(ts, pair_id, rel_path, action, reason, "
+            "detail) VALUES (?,?,?,?,?,?)",
+            (utcnow(), pair_id, rel_path or "", action, reason or "",
+             detail or ""))
+
+    def recent_recovery(self, limit=100, pair_id=None, action=None):
+        """Newest-first recovery rows, optionally filtered."""
+        sql = "SELECT * FROM recovery"
+        conds, params = [], []
+        if pair_id:
+            conds.append("pair_id=?"); params.append(pair_id)
+        if action:
+            conds.append("action=?"); params.append(action)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        return self._exec(sql, tuple(params)).fetchall()
+
+    def clear_recovery(self):
+        """Wipe the recovery history; returns the number of rows removed."""
+        return self._exec("DELETE FROM recovery").rowcount
+
     def count_events(self):
         return self._exec("SELECT COUNT(*) FROM events").fetchone()[0]
 
@@ -557,4 +728,8 @@ class Store:
                     "(SELECT id FROM events ORDER BY id DESC LIMIT ?)",
                     (keep,)).rowcount
             self._conn.commit()
+            try:
+                self._conn.execute("PRAGMA optimize")
+            except sqlite3.DatabaseError:
+                pass
             return removed

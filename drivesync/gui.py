@@ -41,6 +41,7 @@ from . import conflicts  # noqa: E402
 from . import i18n  # noqa: E402
 from . import instance  # noqa: E402
 from . import notify  # noqa: E402
+from . import present  # noqa: E402
 from . import themes  # noqa: E402
 
 from . import __version__  # noqa: E402
@@ -48,7 +49,9 @@ from .auth import (access_token_persisting, interactive_auth,  # noqa: E402
                    token_from_json, whoami)
 from .config import app_dir, load_config, update_config  # noqa: E402
 from .db import Store, parse_include_patterns, to_local  # noqa: E402
-from .drive import Drive, folders_for_parent, resolve_export_formats  # noqa: E402
+from .drive import (Drive, FOLDER_MIME, breadcrumbs, file_category,
+                    folders_for_parent, owner_name,
+                    resolve_export_formats)  # noqa: E402
 from .tray import _icon_image  # noqa: E402
 from .worker import Worker  # noqa: E402
 
@@ -60,6 +63,7 @@ POLICIES = ("newer", "local", "remote", "both")
 PAGE_DRIVE = 4
 PAGE_ACTIVITY = 5
 PAGE_OPTIONS = 6
+PAGE_TRANSFERS = 7
 
 # Activity tab time-frame presets: combo index → seconds back from now.
 _TIMEFRAME_SECS = {1: 15 * 60, 2: 3600, 3: 24 * 3600, 4: 7 * 24 * 3600}
@@ -78,14 +82,7 @@ def _activity_row(e):
 
 def _drive_bytes(n):
     """Byte count in human units ("" for unknown/zero-size rows)."""
-    n = float(n or 0)
-    if n <= 0:
-        return ""
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return ""
+    return present.human_bytes(n)
 
 
 def _drive_row(item):
@@ -93,22 +90,71 @@ def _drive_row(item):
 
     Folder shortcuts resolve to their target so double-click descends to
     the real folder; Google-native docs show no size (the API has none).
+    Columns: Name, Kind, Size, Modified, Owner + hidden id, mime, raw size.
     """
     name = item.get("name", "?")
-    mime = item.get("mimeType", "")
-    details = item.get("shortcutDetails") or {}
     modified = _drive_local_time(item.get("modifiedTime"))
-    if details.get("targetMimeType") == "application/vnd.google-apps.folder":
-        return [name, i18n.t("Folder"), "", modified,
-                details.get("targetId", ""), mime, ""]
-    if mime == "application/vnd.google-apps.folder":
-        return [name, i18n.t("Folder"), "", modified,
-                item.get("id", ""), mime, ""]
-    if mime.startswith("application/vnd.google-apps."):
-        return [name, i18n.t("Doc"), "", modified, item.get("id", ""), mime, ""]
-    size = str(item.get("size") or "")
-    return [name, i18n.t("File"), _drive_bytes(item.get("size")), modified,
-            item.get("id", ""), mime, size]
+    owner = owner_name(item)
+    token = file_category(item)
+    kind = i18n.t(_DRIVE_KIND_KEYS.get(token, "File"))
+    details = item.get("shortcutDetails") or {}
+    if details.get("targetMimeType"):
+        fid = details.get("targetId", item.get("id", ""))
+        mime = str(details["targetMimeType"])
+    else:
+        fid = item.get("id", "")
+        mime = item.get("mimeType", "")
+    raw_size = "" if token in ("folder", "shortcut") or \
+        token in _DRIVE_NATIVE_TOKENS else str(item.get("size") or "")
+    size_txt = "" if token in ("folder", "shortcut") or \
+        token in _DRIVE_NATIVE_TOKENS else _drive_bytes(item.get("size"))
+    return [name, kind, size_txt, modified, owner, fid, mime, raw_size]
+
+
+def _drive_size_value(item):
+    """Numeric sort key for the Drive browser's size ordering."""
+    try:
+        return float(item.get("size") or 0)
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _drive_mtime_value(item):
+    """Numeric sort key for the Drive browser's modified-time ordering."""
+    return engine.parse_remote_mtime(item.get("modifiedTime") or "") or 0.0
+
+
+# Stable category token (drivesync.drive.file_category) -> translated Kind
+# column label. Tokens are identifiers; every UI keeps its own label map.
+_DRIVE_KIND_KEYS = {
+    "folder": "Folder", "shortcut": "Shortcut",
+    "document": "Google Doc", "spreadsheet": "Google Sheets",
+    "presentation": "Google Slides", "drawing": "Google Drawing",
+    "form": "Google file", "map": "Google file", "site": "Google file",
+    "doc": "Google file", "pdf": "PDF", "image": "Image", "video": "Video",
+    "audio": "Audio", "archive": "Archive", "text": "Text file",
+    "other": "File",
+}
+_DRIVE_NATIVE_TOKENS = frozenset(
+    {"document", "spreadsheet", "presentation", "drawing", "form", "map",
+     "site", "doc"})
+# 'Show' filter combo: option labels and the category tokens each shows
+# (None = everything). Indexed together with the combo's active position.
+_DRIVE_TYPE_KEYS = ("All types", "Folders", "Google files", "PDF", "Images",
+                    "Videos", "Audio", "Archives", "Text files", "Other")
+_DRIVE_TYPE_TOKENS = (
+    None,
+    {"folder"},
+    {"document", "spreadsheet", "presentation", "drawing", "form", "map",
+     "site", "doc"},
+    {"pdf"}, {"image"}, {"video"}, {"audio"}, {"archive"}, {"text"},
+    {"other", "shortcut"},
+)
+# 'Sort order' combo: option labels and the (key, descending) they apply.
+_DRIVE_SORT_KEYS = ("Name (A\u2192Z)", "Name (Z\u2192A)", "Newest first",
+                    "Largest first")
+_DRIVE_SORT_ORDERS = (("name", False), ("name", True),
+                      ("modified", True), ("size", True))
 
 
 def _drive_local_time(iso):
@@ -181,6 +227,41 @@ def _card(child):
     return outer
 
 
+def _scrollable(child):
+    """Make a tall page scroll instead of dictating the window's height.
+
+    A Gtk.Box without a scrolled parent reports its full natural height as
+    the window's minimum: the Options page made the window taller than a
+    laptop screen and the bottom could not be reached. A ScrolledWindow
+    keeps the page's minimum small while still showing everything.
+    """
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroll.add(child)
+    return scroll
+
+
+def _fit_window(win, width, height):
+    """Set a default window size that fits the monitor's work area.
+
+    A hard-coded 860x600 is fine on a large display but can open below the
+    screen edge on small laptops. Clamp to 90% of the usable area (never
+    below a sane minimum) and keep the caller's preferred size otherwise.
+    """
+    try:
+        display = Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() if display else None
+        if monitor is None and display is not None:
+            monitor = display.get_monitor(0)
+        if monitor is not None:
+            area = monitor.get_workarea()
+            width = min(width, max(480, int(area.width * 0.9)))
+            height = min(height, max(360, int(area.height * 0.9)))
+    except Exception:
+        pass
+    win.set_default_size(width, height)
+
+
 class _TrayHandle:
     """One stop() hook for whichever tray backend is active."""
 
@@ -214,20 +295,27 @@ class DesktopApp:
         self._tr = []            # (widget, setter_name, string_key)
         self._tr_cols = []       # (treeview, [header keys])
         self._tr_rebuilders = [] # callables re-filling composite widgets
+        self._tr_accessible = [] # (widget, key, format args) a11y names
         self._pages = []         # (tab_label_widget, key)
         self._theme_guard = False
 
         # Give the window a stable WM_CLASS so the .desktop launcher (and
         # KDE's pinned icon) associates the running app with its entry even
         # while the window is hidden to the tray.
-        GLib.set_prgname("drivesync")
+        # Wayland/KDE associate a window with its .desktop entry through the
+        # application ID. Under Flatpak the ID is the sandbox app ID; outside
+        # it stays "drivesync" (the installed desktop file's basename).
+        app_id = os.environ.get("FLATPAK_ID", "drivesync")
+        GLib.set_prgname(app_id)
         GLib.set_application_name("DriveSync")
         self.win = Gtk.Window(title="DriveSync")
         try:
-            self.win.set_wmclass("drivesync", "DriveSync")
+            self.win.set_wmclass(app_id, "DriveSync")
         except Exception:
             pass
-        self.win.set_default_size(860, 600)
+        _fit_window(self.win,
+                    _cfg_int(self.cfg, "window_width", 900),
+                    _cfg_int(self.cfg, "window_height", 640))
         self.win.set_position(Gtk.WindowPosition.CENTER)
 
         hb = Gtk.HeaderBar()
@@ -247,6 +335,7 @@ class DesktopApp:
         hb.pack_start(self.btn_global_pause)
         self.win.connect("destroy", self._on_close)
         self.win.connect("delete-event", self._on_delete)
+        self._install_accelerators()
 
         self.nb = Gtk.Notebook()
         self._add_page(self._overview_tab(), "Overview")
@@ -263,7 +352,7 @@ class DesktopApp:
         outer.pack_start(self.nb, True, True, 0)
         self.win.add(outer)
 
-        self._startup_page = startup_page(self.cfg, self.store.accounts())
+        self._startup_page = self._startup_tab()
         if self.cfg.get("tray_enabled", True):
             self.tray = self._start_tray()
         # A second launch (KDE's pinned icon while the window is hidden)
@@ -314,6 +403,59 @@ class DesktopApp:
         self._tr_rebuilders.append(fn)
         return fn
 
+    def _reg_accessible(self, widget, key, **fmt):
+        """Give a widget an accessible name that follows the language."""
+        self._tr_accessible.append((widget, key, fmt))
+        try:
+            widget.get_accessible().set_name(i18n.T(key, **fmt))
+        except Exception:
+            pass
+        return widget
+
+    def _install_accelerators(self):
+        """Window-wide shortcuts (also listed on Options > About)."""
+        ag = Gtk.AccelGroup()
+        self.win.add_accel_group(ag)
+
+        def add(key, mods, fn):
+            # return True: the shortcut is handled, do not propagate it
+            ag.connect(key, mods, Gtk.AccelFlags.VISIBLE,
+                       lambda *_a: (fn(), True)[1])
+
+        add(Gdk.KEY_q, Gdk.ModifierType.CONTROL_MASK, self._quit)
+        add(Gdk.KEY_r, Gdk.ModifierType.CONTROL_MASK,
+            lambda: self._on_sync_all(None))
+        add(Gdk.KEY_comma, Gdk.ModifierType.CONTROL_MASK,
+            lambda: self.nb.set_current_page(PAGE_OPTIONS))
+        add(Gdk.KEY_f, Gdk.ModifierType.CONTROL_MASK, self._focus_search)
+        add(Gdk.KEY_F5, 0, self._refresh_current)
+
+    def _focus_search(self):
+        """Ctrl+F: jump to the search box of the list in view."""
+        page = self.nb.get_current_page()
+        if page == PAGE_DRIVE:
+            self.drive_filter.grab_focus()
+            return
+        if page != PAGE_ACTIVITY:
+            self.nb.set_current_page(PAGE_ACTIVITY)
+        GLib.idle_add(lambda: (self.ent_search.grab_focus(), False)[1])
+
+    def _refresh_current(self):
+        """F5: repaint the current tab without leaving it."""
+        page = self.nb.get_current_page()
+        if page == 0:
+            self._refresh_overview()
+        elif page == 2:
+            self._refresh_accounts()
+        elif page == 3:
+            self._refresh_pairs()
+        elif page == PAGE_DRIVE:
+            self._drive_refresh()
+        elif page == PAGE_ACTIVITY:
+            self._refresh_activity()
+        elif page == PAGE_TRANSFERS:
+            self._refresh_transfers()
+
     def _retranslate(self):
         """Relabel every registered widget after a language switch."""
         for widget, setter, key in self._tr:
@@ -329,6 +471,11 @@ class DesktopApp:
         for fn in self._tr_rebuilders:
             try:
                 fn()
+            except Exception:
+                pass
+        for widget, key, fmt in self._tr_accessible:
+            try:
+                widget.get_accessible().set_name(i18n.T(key, **fmt))
             except Exception:
                 pass
         self.win.set_title(i18n.t("DriveSync"))
@@ -386,6 +533,26 @@ class DesktopApp:
         lbl.set_xalign(0)
         lbl.set_halign(Gtk.Align.START)
         return lbl
+
+    def _choose_path(self, title, action, accept, name=None):
+        """Native file chooser, returning a path or None.
+
+        Gtk.FileChooserNative routes through xdg-desktop-portal where it is
+        available, so KDE users get Dolphin's picker and GNOME users get
+        Nautilus' instead of the GTK-internal dialog.
+        """
+        chooser = Gtk.FileChooserNative.new(title, self.win, action,
+                                            accept, i18n.t("Cancel"))
+        try:
+            if name:
+                chooser.set_current_name(name)
+            if action == Gtk.FileChooserAction.SAVE:
+                chooser.set_do_overwrite_confirmation(True)
+            if chooser.run() == Gtk.ResponseType.ACCEPT:
+                return chooser.get_filename()
+            return None
+        finally:
+            chooser.destroy()
 
     # ---- system tray (resident mode) -------------------------------
     def _start_tray(self):
@@ -547,9 +714,26 @@ class DesktopApp:
     def _tray_quit(self):
         self._quit()
 
-    # ---- Options tab (theme, accent, language, startup, about) --------
+    # ---- Options tab (short sub-tabs: appearance, sync, network, about)
     def _options_tab(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+        """Settings, split into short sub-tabs so nothing sits off-screen."""
+        nb = Gtk.Notebook()
+        self._add_subpage(nb, self._options_appearance_page(), "Appearance")
+        self._add_subpage(nb, self._options_sync_page(), "Sync")
+        self._add_subpage(nb, self._options_network_page(), "Network")
+        self._add_subpage(nb, self._options_about_page(), "About")
+        self._sync_theme_buttons()
+        self._sync_accent_selection()
+        return _card(nb)
+
+    def _add_subpage(self, nb, widget, key):
+        """Append a sub-tab whose label follows the language switch."""
+        lbl = Gtk.Label(label=i18n.t(key))
+        self._pages.append((lbl, key))
+        nb.append_page(widget, lbl)
+
+    def _options_appearance_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                       border_width=6)
 
         # --- appearance ------------------------------------------------
@@ -589,6 +773,7 @@ class DesktopApp:
             b.set_size_request(34, 30)
             b.set_tooltip_text(i18n.t("tooltip accent"))
             self._reg(b, "set_tooltip_text", "tooltip accent")
+            self._reg_accessible(b, "Accent color: {name}", name=name)
             b.connect("clicked", self._on_accent_button, name)
             self.swatches[name] = b
             row_accent.pack_start(b, False, False, 0)
@@ -611,6 +796,7 @@ class DesktopApp:
         row_auto = Gtk.Box(spacing=8)
         self.sw_autostart = Gtk.Switch()
         self.sw_autostart.set_active(autostart.is_enabled())
+        self._reg_accessible(self.sw_autostart, "Start DriveSync at login")
         self.sw_autostart.connect("notify::active", self._on_autostart_toggled)
         row_auto.pack_start(self.sw_autostart, False, False, 0)
         row_auto.pack_start(
@@ -619,23 +805,207 @@ class DesktopApp:
         row_tray = Gtk.Box(spacing=8)
         self.sw_tray = Gtk.Switch()
         self.sw_tray.set_active(bool(self.cfg.get("tray_enabled", True)))
+        self._reg_accessible(self.sw_tray, "Stay in the system tray")
         self.sw_tray.connect("notify::active", self._on_tray_toggled)
         row_tray.pack_start(self.sw_tray, False, False, 0)
         row_tray.pack_start(
             self._tr_label("Stay in the system tray", xalign=0), True, True, 0)
         box.pack_start(row_tray, False, False, 0)
+        return _scrollable(box)
+
+    def _options_sync_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      border_width=6)
+
+        # --- sync schedule + bandwidth (Phase 4.1) -----------------------
+        box.pack_start(self._tr_label("Sync schedule", xalign=0,
+                                      halign=Gtk.Align.START), False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Background passes run only inside the active window; inside "
+            "the peak window a separate bandwidth cap applies."), False,
+            False, 0)
+        sched = Gtk.Grid(column_spacing=12, row_spacing=6)
+        self.ent_active_from = Gtk.Entry()
+        self.ent_active_from.set_placeholder_text("HH:MM")
+        self.ent_active_to = Gtk.Entry()
+        self.ent_active_to.set_placeholder_text("HH:MM")
+        self.ent_peak_from = Gtk.Entry()
+        self.ent_peak_from.set_placeholder_text("HH:MM")
+        self.ent_peak_to = Gtk.Entry()
+        self.ent_peak_to.set_placeholder_text("HH:MM")
+        self.sp_bw = Gtk.SpinButton.new_with_range(0, 1048576, 8)
+        self.sp_bw_peak = Gtk.SpinButton.new_with_range(0, 1048576, 8)
+        for ent, key in ((self.ent_active_from, "active_from"),
+                         (self.ent_active_to, "active_to"),
+                         (self.ent_peak_from, "peak_from"),
+                         (self.ent_peak_to, "peak_to")):
+            ent.set_text(str(self.cfg.get(key) or ""))
+            ent.connect("changed", self._on_schedule_changed)
+        self.sp_bw.set_value(max(0, _cfg_int(self.cfg,
+                                             "bandwidth_limit_kb", 0)))
+        self.sp_bw_peak.set_value(max(0, _cfg_int(
+            self.cfg, "bandwidth_limit_kb_peak", 0)))
+        self.sp_bw.connect("value-changed", self._on_schedule_changed)
+        self.sp_bw_peak.connect("value-changed", self._on_schedule_changed)
+        for i, (label_key, w) in enumerate((
+                ("Active window from (HH:MM; empty = always)",
+                 self.ent_active_from),
+                ("Active window to (may cross midnight)",
+                 self.ent_active_to),
+                ("Bandwidth limit (KB/s; 0 = unlimited)", self.sp_bw),
+                ("Peak window from (HH:MM; empty = no peak hours)",
+                 self.ent_peak_from),
+                ("Peak window to (may cross midnight)", self.ent_peak_to),
+                ("Peak bandwidth limit (KB/s; 0 = same as general)",
+                 self.sp_bw_peak))):
+            sched.attach(self._tr_label(label_key, xalign=0), 0, i, 1, 1)
+            sched.attach(w, 1, i, 1, 1)
+            self._reg_accessible(w, label_key)
+        box.pack_start(sched, False, False, 0)
+
+        # --- transfers (engine resilience knobs, Phase 3.2) --------------
+        box.pack_start(self._tr_label("Transfers", xalign=0,
+                                      halign=Gtk.Align.START), False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Retry and resume settings for file transfers. Applies from "
+            "the next sync pass."), False, False, 0)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=6)
+        self.sp_retries = Gtk.SpinButton.new_with_range(0, 10, 1)
+        self.sp_backoff = Gtk.SpinButton.new_with_range(0, 30, 0.5)
+        self.sp_backoff.set_digits(1)
+        self.sp_threshold = Gtk.SpinButton.new_with_range(0, 512, 1)
+        self.sp_retries.set_value(
+            max(0, _cfg_int(self.cfg, "transfer_retries", 2)))
+        self.sp_backoff.set_value(
+            min(30.0, max(0.0, float(self.cfg.get("transfer_retry_base",
+                                                  2.0)))))
+        self.sp_threshold.set_value(
+            round(max(0, _cfg_int(self.cfg, "resumable_threshold",
+                                  8 << 20)) / (1 << 20)))
+        for i, (label_key, sp) in enumerate((
+                ("Retry attempts", self.sp_retries),
+                ("Backoff base (seconds)", self.sp_backoff),
+                ("Resumable threshold (MiB)", self.sp_threshold))):
+            grid.attach(self._tr_label(label_key, xalign=0), 0, i, 1, 1)
+            grid.attach(sp, 1, i, 1, 1)
+            self._reg_accessible(sp, label_key)
+            sp.connect("value-changed", self._on_transfer_option)
+        box.pack_start(grid, False, False, 0)
+        return _scrollable(box)
+
+    def _options_network_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      border_width=6)
+
+        # --- network (Phase 4.3) ------------------------------------------
+        box.pack_start(self._tr_label("Network", xalign=0,
+                                      halign=Gtk.Align.START), False, False, 0)
+        box.pack_start(self._tr_dim(
+            "What to do when NetworkManager reports the connection as "
+            "metered (mobile hotspot, capped plan). Manual syncs always "
+            "run; unknown networks count as not metered."), False, False, 0)
+        net = Gtk.Grid(column_spacing=12, row_spacing=6)
+        self.chk_metered = Gtk.CheckButton(
+            label=i18n.t("Respect metered connections"))
+        self.chk_metered.set_active(
+            bool(self.cfg.get("respect_metered", True)))
+        self.chk_metered.connect("toggled", self._on_schedule_changed)
+        self.cmb_metered = Gtk.ComboBoxText()
+        self.cmb_metered.append_text(i18n.t("Pause automatic sync"))
+        self.cmb_metered.append_text(i18n.t("Throttle to the cap below"))
+        self.cmb_metered.set_active(
+            1 if self.cfg.get("metered_action", "pause") == "throttle"
+            else 0)
+        self.cmb_metered.connect("changed", self._on_schedule_changed)
+        self.sp_metered_bw = Gtk.SpinButton.new_with_range(0, 1048576, 8)
+        self.sp_metered_bw.set_value(max(0, _cfg_int(
+            self.cfg, "metered_bandwidth_kb", 1024)))
+        self.sp_metered_bw.connect("value-changed",
+                                   self._on_schedule_changed)
+        for i, (label_key, wgt) in enumerate((
+                ("", self.chk_metered),
+                ("On a metered connection", self.cmb_metered),
+                ("Metered throttle cap (KB/s; 0 = no cap)",
+                 self.sp_metered_bw))):
+            if label_key:
+                net.attach(self._tr_label(label_key, xalign=0), 0, i, 1, 1)
+                net.attach(wgt, 1, i, 1, 1)
+                self._reg_accessible(wgt, label_key)
+            else:
+                net.attach(wgt, 1, i, 1, 1)
+        self._reg_accessible(self.chk_metered,
+                             "Respect metered connections")
+        box.pack_start(net, False, False, 0)
+
+        # --- daily digest (Phase 4.4) -------------------------------------
+        box.pack_start(self._tr_label("Daily digest", xalign=0,
+                                      halign=Gtk.Align.START), False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Once a day, a desktop notification summarizing what synced "
+            "(pushed, pulled, deleted, conflicts, errors). Without a "
+            "notification daemon the summary still lands in the activity "
+            "log and on the dashboard."), False, False, 0)
+        dig = Gtk.Grid(column_spacing=12, row_spacing=6)
+        self.chk_digest = Gtk.CheckButton(
+            label=i18n.t("Send a daily digest notification"))
+        self.chk_digest.set_active(
+            bool(self.cfg.get("digest_enabled", False)))
+        self.chk_digest.connect("toggled", self._on_digest_changed)
+        self.ent_digest_time = Gtk.Entry()
+        self.ent_digest_time.set_placeholder_text("HH:MM")
+        self.ent_digest_time.set_text(str(self.cfg.get("digest_time") or ""))
+        self.ent_digest_time.connect("changed", self._on_digest_changed)
+        self.chk_digest_skip = Gtk.CheckButton(
+            label=i18n.t("Skip the digest on days with no activity"))
+        self.chk_digest_skip.set_active(
+            bool(self.cfg.get("digest_skip_empty", True)))
+        self.chk_digest_skip.connect("toggled", self._on_digest_changed)
+        dig.attach(self.chk_digest, 1, 0, 1, 1)
+        dig.attach(self._tr_label(
+            "Digest time (HH:MM; empty = first tick of the day)",
+            xalign=0), 0, 1, 1, 1)
+        dig.attach(self.ent_digest_time, 1, 1, 1, 1)
+        dig.attach(self.chk_digest_skip, 1, 2, 1, 1)
+        self._reg_accessible(self.chk_digest,
+                             "Send a daily digest notification")
+        self._reg_accessible(
+            self.ent_digest_time,
+            "Digest time (HH:MM; empty = first tick of the day)")
+        self._reg_accessible(self.chk_digest_skip,
+                             "Skip the digest on days with no activity")
+        box.pack_start(dig, False, False, 0)
+        return _scrollable(box)
+
+    def _options_about_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      border_width=6)
 
         # --- about --------------------------------------------------------
         box.pack_start(self._tr_label("About", xalign=0,
                                       halign=Gtk.Align.START), False, False, 0)
-        about = self._dim_label(f"DriveSync v{__version__}")
-        box.pack_start(about, False, False, 0)
+        box.pack_start(self._dim_label(f"DriveSync v{__version__}"),
+                       False, False, 0)
         box.pack_start(self._dim_label(
             i18n.T("Data folder: {dir}", dir=app_dir())), False, False, 0)
 
-        self._sync_theme_buttons()
-        self._sync_accent_selection()
-        return _card(box)
+        # --- keyboard shortcuts -------------------------------------------
+        box.pack_start(self._tr_label("Keyboard shortcuts", xalign=0,
+                                      halign=Gtk.Align.START), False, False, 0)
+        for keys, action_key in (
+                ("Ctrl+R", "Sync all now"),
+                ("Ctrl+F", "Search the current list"),
+                ("Ctrl+,", "Open Settings"),
+                ("Ctrl+Q", "Quit DriveSync"),
+                ("F5", "Refresh the current view")):
+            row = Gtk.Box(spacing=8)
+            key_lbl = Gtk.Label(label=keys, xalign=0)
+            key_lbl.get_style_context().add_class("hint")
+            key_lbl.set_size_request(72, -1)
+            row.pack_start(key_lbl, False, False, 0)
+            row.pack_start(self._tr_label(action_key, xalign=0),
+                           True, True, 0)
+            box.pack_start(row, False, False, 0)
+        return _scrollable(box)
 
     def _sync_theme_buttons(self):
         """Reflect the configured theme without re-triggering toggles."""
@@ -701,6 +1071,103 @@ class DesktopApp:
             i18n.T("Language: Español") if new == "es"
             else i18n.T("Idioma: English"))
 
+    def _qos_kwargs(self, bw_ent, peak_ent, pf_ent, pt_ent):
+        """Parse the per-pair QoS fields of the add/edit dialogs.
+
+        Empty = inherit (None); caps must be integers; window times must
+        be HH:MM and appear together. ValueError propagates to the
+        dialog's existing error surface.
+        """
+        def cap(ent):
+            t = ent.get_text().strip()
+            if not t:
+                return None
+            try:
+                return int(t)
+            except ValueError:
+                raise ValueError(i18n.t(
+                    "bandwidth caps must be integers (KB/s)"))
+
+        def when(ent):
+            t = ent.get_text().strip()
+            if not t:
+                return None
+            try:
+                datetime.strptime(t, "%H:%M")
+            except ValueError:
+                raise ValueError(i18n.t(
+                    "peak window times must be HH:MM (e.g. 08:00) or empty"))
+            return t
+
+        bw, bwp = cap(bw_ent), cap(peak_ent)
+        pf, pt = when(pf_ent), when(pt_ent)
+        if (pf is None) != (pt is None):
+            raise ValueError(i18n.t(
+                "peak window must have both times (or neither)"))
+        return {"bandwidth_limit_kb": bw, "peak_from": pf, "peak_to": pt,
+                "bandwidth_limit_kb_peak": bwp}
+
+    def _on_schedule_changed(self, _w):
+        """Persist the Options > Sync schedule section (Phase 4.1).
+
+        Time entries save only when empty or a valid HH:MM — invalid
+        keystrokes are simply not saved instead of blocking the field.
+        The Worker re-evaluates the peak window each loop tick, so saved
+        values apply without a restart.
+        """
+        changes = {}
+        for ent, key in ((self.ent_active_from, "active_from"),
+                         (self.ent_active_to, "active_to"),
+                         (self.ent_peak_from, "peak_from"),
+                         (self.ent_peak_to, "peak_to")):
+            v = ent.get_text().strip()
+            if v:
+                try:
+                    datetime.strptime(v, "%H:%M")
+                except ValueError:
+                    return          # half-typed time — skip this edit
+            changes[key] = v
+        changes["bandwidth_limit_kb"] = int(self.sp_bw.get_value())
+        changes["bandwidth_limit_kb_peak"] = int(self.sp_bw_peak.get_value())
+        changes["respect_metered"] = bool(self.chk_metered.get_active())
+        changes["metered_action"] = (
+            "throttle" if self.cmb_metered.get_active() == 1 else "pause")
+        changes["metered_bandwidth_kb"] = \
+            int(self.sp_metered_bw.get_value())
+        self.cfg = update_config(**changes)
+
+    def _on_digest_changed(self, _w):
+        """Persist the Options > Daily digest section (Phase 4.4).
+
+        The time entry saves only when empty or a valid HH:MM — invalid
+        keystrokes are simply not saved instead of blocking the field.
+        The Worker re-evaluates the digest each loop tick, so saved
+        values apply without a restart.
+        """
+        v = self.ent_digest_time.get_text().strip()
+        if v:
+            try:
+                datetime.strptime(v, "%H:%M")
+            except ValueError:
+                return          # half-typed time — skip this edit
+        self.cfg = update_config(
+            digest_enabled=bool(self.chk_digest.get_active()),
+            digest_time=v,
+            digest_skip_empty=bool(self.chk_digest_skip.get_active()))
+
+    def _on_transfer_option(self, _spin):
+        """Persist the Options > Transfers section (Phase 3.2 knobs).
+
+        The Worker reloads config each pass (config_source), so saved
+        values apply from the next sync pass without a restart.
+        """
+        self.cfg = update_config(
+            transfer_retries=int(self.sp_retries.get_value()),
+            transfer_retry_base=round(
+                float(self.sp_backoff.get_value()), 1),
+            resumable_threshold=(
+                int(self.sp_threshold.get_value()) * (1 << 20)))
+
     def _on_autostart_toggled(self, sw, _pspec):
         on = sw.get_active()
         ok = autostart.enable() if on else autostart.disable()
@@ -758,12 +1225,14 @@ class DesktopApp:
             (str, str, str, str))
         self._tr_columns(self.overview_pairs_view,
                          ["Local folder", "Drive folder", "State", "Last sync"])
+        self._reg_accessible(self.overview_pairs_view, "Sync pairs overview")
         scroll.set_size_request(-1, 150)
         box.pack_start(_card(scroll), True, True, 0)
         self.overview_events_store, self.overview_events_view, ev_scroll = _list_view(
             ["When", "Level", "Action", "Path"], (str, str, str, str))
         self._tr_columns(self.overview_events_view,
                          ["When", "Level", "Action", "Path"])
+        self._reg_accessible(self.overview_events_view, "Recent activity")
         ev_scroll.set_size_request(-1, 120)
         box.pack_start(_card(ev_scroll), True, True, 0)
         actions = Gtk.Box(spacing=6)
@@ -779,7 +1248,7 @@ class DesktopApp:
         actions.pack_start(accounts, False, False, 0)
         box.pack_start(actions, False, False, 0)
         self._refresh_overview()
-        return _card(box)
+        return _scrollable(_card(box))
 
     def _refresh_overview(self):
         """Refresh overview labels and compact pair/activity lists."""
@@ -841,6 +1310,7 @@ class DesktopApp:
                      0, 0, 1, 1)
         self.ent_client_id = Gtk.Entry(hexpand=True)
         self.ent_client_id.set_text(str(self.cfg.get("client_id") or ""))
+        self._reg_accessible(self.ent_client_id, "Client ID:")
         table.attach(self.ent_client_id, 1, 0, 1, 1)
 
         table.attach(self._tr_label("Client secret:", halign=Gtk.Align.END),
@@ -849,6 +1319,7 @@ class DesktopApp:
         self.ent_client_secret = Gtk.Entry(hexpand=True)
         self.ent_client_secret.set_visibility(False)
         self.ent_client_secret.set_text(self.cfg.get("client_secret", ""))
+        self._reg_accessible(self.ent_client_secret, "Client secret:")
         sec_row.pack_start(self.ent_client_secret, True, True, 0)
         show = Gtk.ToggleButton()
         show.set_label(i18n.t("show"))
@@ -879,7 +1350,7 @@ class DesktopApp:
             "Closing this window keeps DriveSync running in the system tray "
             "(open it again from the tray icon)."), False, False, 0)
         self._refresh_setup_status()
-        return _card(box)
+        return _scrollable(_card(box))
 
     def _toggle_secret(self, btn):
         self.ent_client_secret.set_visibility(btn.get_active())
@@ -920,6 +1391,7 @@ class DesktopApp:
         self.acc_store, self.acc_view, scroll = _list_view(
             ["#", "Account", "Storage"], (int, str, str))
         self._tr_columns(self.acc_view, ["#", "Account", "Storage"])
+        self._reg_accessible(self.acc_view, "Accounts")
         box.pack_start(scroll, True, True, 0)
 
         row = Gtk.Box(spacing=6)
@@ -1021,6 +1493,7 @@ class DesktopApp:
         self.pair_store, self.pair_view, scroll = _list_view(
             [i18n.t(h) for h in headers], (int, str, str, str, str, str, str))
         self._tr_columns(self.pair_view, headers)
+        self._reg_accessible(self.pair_view, "Sync pairs")
         self.pair_view.connect(
             "row-activated", lambda *_a: self._on_open_pair_folder())
         box.pack_start(scroll, True, True, 0)
@@ -1107,7 +1580,13 @@ class DesktopApp:
         self._refresh_pairs()
         return _card(box)
 
-    def _on_add_pair(self, _btn):
+    def _on_add_pair(self, _btn, prefill=None):
+        """Add-sync-folder dialog.
+
+        prefill (from the Drive tab's \u201cSync this folder\u2026\u201d):
+        {account_id, remote_id, name} — account combo, Drive folder id and
+        display name start filled, so the browser doubles as a picker.
+        """
         accounts = self.store.accounts()
         if not accounts:
             self._error(i18n.t("No account yet — authorize one on the "
@@ -1120,15 +1599,29 @@ class DesktopApp:
         grid = Gtk.Grid(column_spacing=8, row_spacing=8, border_width=10)
         grid.attach(self._tr_label("Local folder:", halign=Gtk.Align.END),
                     0, 0, 1, 1)
-        chooser = Gtk.FileChooserButton(title=i18n.t("Pick a folder"),
-                                        action=Gtk.FileChooserAction.SELECT_FOLDER)
-        grid.attach(chooser, 1, 0, 1, 1)
+        local_row = Gtk.Box(spacing=6)
+        ent_local = Gtk.Entry(hexpand=True)
+        ent_local.set_placeholder_text(i18n.t("Pick a folder"))
+        self._reg_accessible(ent_local, "Local folder:")
+        btn_local = self._tr_button("Choose\u2026")
+        btn_local.connect("clicked", lambda _b: ent_local.set_text(
+            self._choose_path(i18n.t("Pick a folder"),
+                              Gtk.FileChooserAction.SELECT_FOLDER,
+                              i18n.t("Select")) or ent_local.get_text()))
+        local_row.pack_start(ent_local, True, True, 0)
+        local_row.pack_start(btn_local, False, False, 0)
+        grid.attach(local_row, 1, 0, 1, 1)
         grid.attach(self._tr_label("Google account:", halign=Gtk.Align.END),
                     0, 1, 1, 1)
         acc_combo = Gtk.ComboBoxText()
         for a in accounts:
             acc_combo.append_text(f"#{a['id']}  {a['email']}")
         acc_combo.set_active(0)
+        if prefill:
+            for i, a in enumerate(accounts):
+                if a["id"] == prefill.get("account_id"):
+                    acc_combo.set_active(i)
+                    break
         grid.attach(acc_combo, 1, 1, 1, 1)
         grid.attach(self._tr_label("Drive folder:", halign=Gtk.Align.END),
                     0, 2, 1, 1)
@@ -1136,6 +1629,8 @@ class DesktopApp:
         ent_remote = Gtk.Entry(hexpand=True)
         ent_remote.set_placeholder_text(i18n.t(
             "pick with Browse\u2026, or the \u2026/folders/<ID> from its URL"))
+        if prefill and prefill.get("remote_id"):
+            ent_remote.set_text(str(prefill["remote_id"]))
         remote_row.pack_start(ent_remote, True, True, 0)
         btn_browse = self._tr_button("Browse Drive\u2026")
         remote_row.pack_start(btn_browse, False, False, 0)
@@ -1144,6 +1639,8 @@ class DesktopApp:
                     0, 3, 1, 1)
         ent_path = Gtk.Entry()
         ent_path.set_placeholder_text("optional, e.g. My Drive/projects")
+        if prefill and prefill.get("name"):
+            ent_path.set_text(str(prefill["name"]))
         grid.attach(ent_path, 1, 3, 1, 1)
         btn_browse.connect("clicked", self._on_browse_drive,
                            acc_combo, ent_remote, ent_path)
@@ -1190,6 +1687,31 @@ class DesktopApp:
         chk_paused.set_active(True)
         grid.attach(chk_paused, 1, 7, 1, 1)
 
+        # per-pair QoS (Phase 4.2): empty inherits the global settings
+        grid.attach(self._tr_label(
+            "Bandwidth cap (KB/s; empty = inherit global):",
+            halign=Gtk.Align.END), 0, 8, 1, 1)
+        ent_bw = Gtk.Entry()
+        ent_bw.set_placeholder_text(i18n.t("inherit"))
+        grid.attach(ent_bw, 1, 8, 1, 1)
+        grid.attach(self._tr_label(
+            "Peak bandwidth cap (KB/s; empty = inherit):",
+            halign=Gtk.Align.END), 0, 9, 1, 1)
+        ent_bw_peak = Gtk.Entry()
+        ent_bw_peak.set_placeholder_text(i18n.t("inherit"))
+        grid.attach(ent_bw_peak, 1, 9, 1, 1)
+        grid.attach(self._tr_label(
+            "Peak window from (HH:MM; empty = none):",
+            halign=Gtk.Align.END), 0, 10, 1, 1)
+        ent_pf = Gtk.Entry()
+        ent_pf.set_placeholder_text("HH:MM")
+        grid.attach(ent_pf, 1, 10, 1, 1)
+        grid.attach(self._tr_label("Peak window to (HH:MM):",
+                                   halign=Gtk.Align.END), 0, 11, 1, 1)
+        ent_pt = Gtk.Entry()
+        ent_pt.set_placeholder_text("HH:MM")
+        grid.attach(ent_pt, 1, 11, 1, 1)
+
         scope = {"pick": False, "paths": []}
 
         def reset_scope(*_args):
@@ -1229,7 +1751,7 @@ class DesktopApp:
         dlg.show_all()
 
         if dlg.run() == Gtk.ResponseType.OK:
-            local = chooser.get_filename()
+            local = ent_local.get_text().strip()
             remote_id = ent_remote.get_text().strip()
             try:
                 if not local:
@@ -1247,7 +1769,9 @@ class DesktopApp:
                     conflict_policy=POLICIES[pol_combo.get_active()],
                     enabled=0 if paused else 1,
                     include_patterns=(scope["paths"] if scope["pick"]
-                                      else []))
+                                      else []),
+                    **self._qos_kwargs(ent_bw, ent_bw_peak, ent_pf,
+                                       ent_pt))
                 self._refresh_pairs()
                 if paused:
                     self._info(i18n.T(
@@ -1485,9 +2009,9 @@ class DesktopApp:
         box.set_spacing(6)
         summary = self._dim_label(i18n.t("Scanning\u2026"))
         box.pack_start(summary, False, False, 0)
-        headers = ["Action", "Path", "Detail"]
+        headers = ["Action", "Path", "Size", "Detail", "Why"]
         model, view, scroll = _list_view([i18n.t(h) for h in headers],
-                                         (str, str, str))
+                                         (str, str, str, str, str))
         box.pack_start(scroll, True, True, 0)
         box.pack_start(self._dim_label(i18n.t(
             "Nothing is applied — this only shows what the next pass "
@@ -1518,11 +2042,18 @@ class DesktopApp:
                         i18n.T("Both sides match, but {n} deletion(s) "
                                "remain blocked by the safety limit.",
                                n=res["blocked"]))
+            if res.get("scan"):
+                text += " " + present.scan_note(res["scan"])
             summary.set_text(text)
-            for op in res["ops"]:
-                label = i18n.t(self._OP_LABELS.get(op[0], op[0]))
-                detail = op[2] if len(op) > 2 else ""
-                model.append([label, op[1], detail])
+            # the shared presentation logic builds the rows exactly like
+            # the web preview does (Phase 3.1 explanations, sizes, the
+            # destructive marker)
+            for row in present.preview_rows(res):
+                name, path, size_text, detail, reason, destructive = row
+                label = i18n.t(self._OP_LABELS.get(name, name))
+                if destructive:
+                    label = present.DESTRUCTIVE_MARK + label
+                model.append([label, path, size_text, detail, reason])
 
         def work():
             drive = self._drive_for(pair["account_id"])
@@ -1832,6 +2363,38 @@ class DesktopApp:
                          "(for pairs on FAT/exFAT/NTFS folders)"))
         chk_casefold.set_active(bool(pair["case_insensitive"]))
         grid.attach(chk_casefold, 1, 4, 1, 1)
+
+        # per-pair QoS (Phase 4.2): empty inherits the global settings
+        grid.attach(self._tr_label(
+            "Bandwidth cap (KB/s; empty = inherit global):",
+            halign=Gtk.Align.END), 0, 5, 1, 1)
+        ent_bw = Gtk.Entry()
+        ent_bw.set_placeholder_text(i18n.t("inherit"))
+        ent_bw.set_text(str(pair["bandwidth_limit_kb"])
+                        if pair["bandwidth_limit_kb"] is not None else "")
+        grid.attach(ent_bw, 1, 5, 1, 1)
+        grid.attach(self._tr_label(
+            "Peak bandwidth cap (KB/s; empty = inherit):",
+            halign=Gtk.Align.END), 0, 6, 1, 1)
+        ent_bw_peak = Gtk.Entry()
+        ent_bw_peak.set_placeholder_text(i18n.t("inherit"))
+        ent_bw_peak.set_text(
+            str(pair["bandwidth_limit_kb_peak"])
+            if pair["bandwidth_limit_kb_peak"] is not None else "")
+        grid.attach(ent_bw_peak, 1, 6, 1, 1)
+        grid.attach(self._tr_label(
+            "Peak window from (HH:MM; empty = none):",
+            halign=Gtk.Align.END), 0, 7, 1, 1)
+        ent_pf = Gtk.Entry()
+        ent_pf.set_placeholder_text("HH:MM")
+        ent_pf.set_text(pair["peak_from"] or "")
+        grid.attach(ent_pf, 1, 7, 1, 1)
+        grid.attach(self._tr_label("Peak window to (HH:MM):",
+                                   halign=Gtk.Align.END), 0, 8, 1, 1)
+        ent_pt = Gtk.Entry()
+        ent_pt.set_placeholder_text("HH:MM")
+        ent_pt.set_text(pair["peak_to"] or "")
+        grid.attach(ent_pt, 1, 8, 1, 1)
         dlg.get_content_area().pack_start(grid, True, True, 0)
         dlg.show_all()
         if dlg.run() == Gtk.ResponseType.OK:
@@ -1843,7 +2406,8 @@ class DesktopApp:
                     allow_deletes=1 if chk_del.get_active() else 0,
                     symlink_policy=("follow" if symlink_combo.get_active()
                                     == 1 else "skip"),
-                    case_insensitive=1 if chk_casefold.get_active() else 0)
+                    case_insensitive=1 if chk_casefold.get_active() else 0,
+                    **self._qos_kwargs(ent_bw, ent_bw_peak, ent_pf, ent_pt))
                 self.store.log(pair_id, "pair-edited", "",
                                f"direction {DIRECTIONS[dir_combo.get_active()]}"
                                f", conflicts {POLICIES[pol_combo.get_active()]}"
@@ -2022,6 +2586,14 @@ class DesktopApp:
         top.pack_start(btn_refresh, False, False, 0)
         box.pack_start(top, False, False, 0)
 
+        # clickable ancestor strip (breadcrumbs) + current folder ID line;
+        # the status line below reports search results / filter counts
+        self.drive_crumbs = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                    spacing=2)
+        box.pack_start(self.drive_crumbs, False, False, 0)
+        self.drive_crumb_id = self._dim_label("")
+        self.drive_crumb_id.set_selectable(True)   # hand-copy into the pair form
+        box.pack_start(self.drive_crumb_id, False, False, 0)
         self.drive_crumb = self._dim_label(i18n.t("My Drive"))
         box.pack_start(self.drive_crumb, False, False, 0)
 
@@ -2046,13 +2618,46 @@ class DesktopApp:
         nav.pack_start(self.drive_filter, True, True, 0)
         box.pack_start(nav, False, False, 0)
 
+        # type filter + sort order — plain client-side views of the listing
+        # already in memory, so re-sorting never re-queries Drive
+        filters = Gtk.Box(spacing=6)
+        filters.pack_start(self._tr_label("Show:"), False, False, 0)
+        self.drive_type = Gtk.ComboBoxText()
+        for key in _DRIVE_TYPE_KEYS:
+            self.drive_type.append_text(i18n.t(key))
+        self.drive_type.set_active(0)
+        self.drive_type.connect("changed", lambda _c: self._render_drive())
+        filters.pack_start(self.drive_type, False, False, 0)
+        filters.pack_start(self._tr_label("Sort order"), False, False, 0)
+        self.drive_sort = Gtk.ComboBoxText()
+        for key in _DRIVE_SORT_KEYS:
+            self.drive_sort.append_text(i18n.t(key))
+        self.drive_sort.set_active(0)
+        self.drive_sort.connect("changed", lambda _c: self._render_drive())
+        filters.pack_start(self.drive_sort, False, False, 0)
+        box.pack_start(filters, False, False, 0)
+
+        def refill_drive_combos():
+            """Re-fill the fixed-item combos after a language switch."""
+            for combo, keys in ((self.drive_type, _DRIVE_TYPE_KEYS),
+                                (self.drive_sort, _DRIVE_SORT_KEYS)):
+                active = combo.get_active()
+                combo.remove_all()
+                for key in keys:
+                    combo.append_text(i18n.t(key))
+                combo.set_active(max(0, active))
+
+        self._reg_rebuilder(refill_drive_combos)
+        self._reg_rebuilder(lambda: self._drive_render_crumbs())
+
         # hidden columns carry id, mimeType and the raw byte size so a
         # selected row can be downloaded without re-querying Drive
-        headers = ["Name", "Kind", "Size", "Modified"]
+        headers = ["Name", "Kind", "Size", "Modified", "Owner"]
         self.drive_store, self.drive_view, self.drive_scroll = _list_view(
             [i18n.t(h) for h in headers],
-            (str, str, str, str, str, str, str))
+            (str, str, str, str, str, str, str, str))
         self._tr_columns(self.drive_view, headers)
+        self._reg_accessible(self.drive_view, "Drive files")
         self.drive_view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
         self.drive_view.connect("row-activated", self._on_drive_row_activated)
         box.pack_start(self.drive_scroll, True, True, 0)
@@ -2088,13 +2693,23 @@ class DesktopApp:
         btn_dlf = self._tr_button("Download this folder\u2026")
         btn_dlf.connect("clicked", self._on_drive_download_folder)
         row.pack_start(btn_dlf, False, False, 0)
+        btn_pair = self._tr_button("Sync this folder\u2026")
+        btn_pair.set_tooltip_text(i18n.t(
+            "Open the \u201cAdd sync folder\u201d dialog with this Drive "
+            "folder already chosen as the destination"))
+        self._reg(btn_pair, "set_tooltip_text",
+                  "Open the \u201cAdd sync folder\u201d dialog with this "
+                  "Drive folder already chosen as the destination")
+        btn_pair.connect("clicked", self._on_drive_sync_folder)
+        row.pack_start(btn_pair, False, False, 0)
         box.pack_start(row, False, False, 0)
 
         # busy counts RUNNING download jobs (not a bool): downloads may be
         # started concurrently and no click is ever silently swallowed
         self._drive_state = {"stack": [("root", "My Drive", "My Drive")],
                              "loading": False, "open": True, "busy": 0,
-                             "loaded": False, "items": [], "search": None}
+                             "loaded": False, "items": [], "search": None,
+                             "chain": []}
         # lazy: list Drive only when the user first opens the tab, so a
         # stale token or offline network never pops a dialog at launch
         self.nb.connect("switch-page", self._on_nb_switch)
@@ -2104,6 +2719,10 @@ class DesktopApp:
         if page_num == PAGE_DRIVE and not self._drive_state["loaded"]:
             self._drive_state["loaded"] = True
             self._drive_load()
+        try:
+            self.cfg = update_config(last_tab=page_num)
+        except Exception:
+            pass        # a read-only config dir must not block tab switches
 
     def _drive_account_id(self):
         accounts = self.store.accounts()
@@ -2173,6 +2792,9 @@ class DesktopApp:
         acc_id = self._drive_account_id()
         st["loading"] = True
         st["search"] = needle
+        st["chain"] = []           # crumb strip degrades to a plain label
+        self.drive_crumb_id.set_text("")
+        self._drive_render_crumbs()
         self.drive_store.clear()
         st["items"] = []
         self.drive_crumb.set_text(
@@ -2199,8 +2821,52 @@ class DesktopApp:
 
         self._bg(work, done)
 
+    def _drive_render_crumbs(self):
+        """Rebuild the clickable ancestor strip for the current position.
+
+        In search mode (and whenever the ancestor walk failed) the strip
+        degrades to a plain path label: a wrong jump target must never be
+        offered as clickable.
+        """
+        for child in self.drive_crumbs.get_children():
+            self.drive_crumbs.remove(child)
+        st = self._drive_state
+        chain = st.get("chain") or []
+        if st.get("search") or not chain:
+            lbl = Gtk.Label(label=st["stack"][-1][2])
+            lbl.get_style_context().add_class("dim")
+            lbl.set_xalign(0)
+            self.drive_crumbs.pack_start(lbl, False, False, 0)
+            lbl.show_all()
+            return
+        for i, entry in enumerate(chain):
+            if i:
+                sep = Gtk.Label(label="/")
+                sep.get_style_context().add_class("dim")
+                self.drive_crumbs.pack_start(sep, False, False, 2)
+                sep.show_all()
+            btn = Gtk.Button(label=entry.get("name") or entry.get("id", "?"))
+            btn.get_style_context().add_class("flat")
+            btn.connect("clicked", self._on_drive_crumb_clicked, i)
+            self.drive_crumbs.pack_start(btn, False, False, 0)
+            btn.show_all()
+
+    def _on_drive_crumb_clicked(self, _btn, index):
+        """Jump back to an ancestor folder from the breadcrumb strip."""
+        st = self._drive_state
+        chain = st.get("chain") or []
+        if st["loading"] or st.get("search") or index >= len(chain) - 1:
+            return                      # the active crumb is this folder
+        new_stack, names = [], []
+        for entry in chain[:index + 1]:
+            names.append(entry.get("name") or entry.get("id", "?"))
+            new_stack.append((entry["id"], names[-1], "/".join(names)))
+        st["stack"] = new_stack
+        self._drive_load()
+
     def _render_drive(self):
-        """Paint the current listing, applying the filter box."""
+        """Paint the current listing with the filter box, type filter and
+        sort order applied; folders always surface first."""
         st = self._drive_state
         items = st.get("items", [])
         needle = self.drive_filter.get_text().strip().lower() \
@@ -2208,6 +2874,23 @@ class DesktopApp:
         visible = [it for it in items
                    if not needle
                    or needle in (it.get("name") or "").lower()]
+        type_idx = self.drive_type.get_active()
+        tokens = _DRIVE_TYPE_TOKENS[type_idx if type_idx >= 0 else 0]
+        if tokens is not None:
+            visible = [it for it in visible
+                       if it.get("_category") in tokens]
+        sort_idx = self.drive_sort.get_active()
+        key, desc = _DRIVE_SORT_ORDERS[sort_idx if sort_idx >= 0 else 0]
+        if key == "size":
+            visible.sort(key=_drive_size_value, reverse=desc)
+        elif key == "modified":
+            visible.sort(key=_drive_mtime_value, reverse=desc)
+        else:
+            visible.sort(key=lambda it: (it.get("name") or "").lower(),
+                         reverse=desc)
+        # stable second pass: folders first, within-group order preserved
+        visible.sort(key=lambda it: 0 if it.get("_category") == "folder"
+                     else 1)
         self.drive_store.clear()
         for item in visible:
             self.drive_store.append(_drive_row(item))
@@ -2220,9 +2903,14 @@ class DesktopApp:
                 q=st['search'], n=len(items)))
             return
         path = st["stack"][-1][2]
-        if needle:
+        filtered = bool(needle) or tokens is not None
+        if not visible:
+            self.drive_crumb.set_text(i18n.t("No items match the filter.")
+                                      if items else
+                                      i18n.t("This folder is empty."))
+        elif filtered:
             self.drive_crumb.set_text(i18n.T(
-                "{path} \u2014 {seen} of {total} match",
+                "{path} \u2014 {seen} of {total} shown",
                 path=path, seen=len(visible), total=len(items)))
         else:
             self.drive_crumb.set_text(i18n.T(
@@ -2237,6 +2925,8 @@ class DesktopApp:
                 "No account yet — authorize one on the Accounts tab first."))
             self.drive_store.clear()
             st["items"] = []
+            st["chain"] = []
+            self._drive_render_crumbs()
             return
         fid, _name, path = st["stack"][-1]
         self.drive_crumb.set_text(path)
@@ -2248,8 +2938,15 @@ class DesktopApp:
             try:
                 drive = self._drive_for(self._drive_account_id())
                 if fid == "shared":
-                    return drive.list_shared_folders()
-                return drive.list_children(fid)
+                    chain = [{"id": "shared",
+                              "name": i18n.t("Shared with me")}]
+                    return drive.list_shared_folders(), chain
+                chain = []
+                try:
+                    chain = breadcrumbs(drive, fid)
+                except Exception:
+                    chain = []     # crumb strip degrades to the plain path
+                return drive.list_children(fid), chain
             except Exception as exc:
                 return {"error": str(exc)}
 
@@ -2260,17 +2957,26 @@ class DesktopApp:
             if isinstance(res, dict):        # error marker from work()
                 # shown in the list area, not a modal: a broken token or
                 # offline network must not hijack the app at tab switch
+                st["chain"] = []
+                self.drive_crumb_id.set_text("")
+                self._drive_render_crumbs()
                 self.drive_crumb.set_text(
                     f"Drive listing failed — {res.get('error', '?')}")
                 return
-            rows = ([{"id": "shared", "name": i18n.t("Shared with me"),
-                      "mimeType": "application/vnd.google-apps.folder"}]
-                    if fid == "root" else [])
-            st["items"] = rows + sorted(res, key=lambda x: (
-                0 if x.get("mimeType") == "application/vnd.google-apps.folder"
-                or (x.get("shortcutDetails") or {}).get("targetMimeType")
-                == "application/vnd.google-apps.folder" else 1,
-                x.get("name", "").lower()))
+            rows, chain = res
+            shown = ([{"id": "shared", "name": i18n.t("Shared with me"),
+                       "mimeType": FOLDER_MIME, "_category": "folder"}]
+                     if fid == "root" else [])
+            for it in rows:
+                it["_category"] = file_category(it)
+            st["items"] = shown + rows
+            st["chain"] = chain
+            self._drive_render_crumbs()
+            if chain:
+                self.drive_crumb_id.set_text(i18n.T(
+                    "Folder ID: {id}", id=chain[-1]["id"]))
+            else:
+                self.drive_crumb_id.set_text("")
             self._render_drive()
 
         self._bg(work, done)
@@ -2280,7 +2986,8 @@ class DesktopApp:
         if st["loading"]:
             return
         row = self.drive_store[treepath]
-        name, kind, _size, _mod, fid = row[0], row[1], row[2], row[3], row[4]
+        name, kind = row[0], row[1]
+        fid, mime, size = row[5], row[6], row[7]
         if kind == i18n.t("Folder"):
             if fid == "shared":
                 st["stack"].append(("shared", i18n.t("Shared with me"),
@@ -2291,9 +2998,32 @@ class DesktopApp:
             self._drive_load()
             return
         # double-click on a file = quick download to a picked destination
-        entry = {"id": fid, "name": name, "mimeType": row[5],
-                 "size": row[6]}
+        entry = {"id": fid, "name": name, "mimeType": mime, "size": size}
         self._drive_download_entries([entry])
+
+    def _on_drive_sync_folder(self, _btn):
+        """Bind the folder shown in the browser to a new sync pair.
+
+        Opens the same \u201cAdd sync folder\u201d dialog the Folders tab
+        uses, prefilled with this account and Drive folder — the browser
+        becomes a destination picker instead of an ID-copying exercise.
+        """
+        st = self._drive_state
+        if st["loading"]:
+            return
+        fid, _name, path = st["stack"][-1]
+        if fid == "shared":
+            self._info(i18n.t(
+                "Open a folder inside \u201cShared with me\u201d first — "
+                "the virtual view itself cannot be a sync destination."))
+            return
+        if not self.store.accounts():
+            self._error(i18n.t("No account yet — authorize one on the "
+                               "Accounts tab first."))
+            return
+        self._on_add_pair(None, prefill={
+            "account_id": self._drive_account_id(),
+            "remote_id": fid, "name": path})
 
     def _on_drive_download_selected(self, _btn):
         st = self._drive_state
@@ -2306,8 +3036,8 @@ class DesktopApp:
             if row[1] == i18n.t("Folder"):
                 folders += 1
                 continue
-            entries.append({"id": row[4], "name": row[0],
-                            "mimeType": row[5], "size": row[6]})
+            entries.append({"id": row[5], "name": row[0],
+                            "mimeType": row[6], "size": row[7]})
         if folders:
             self._info(i18n.T(
                 "{folders} folder(s) in the selection were skipped — use "
@@ -2327,24 +3057,13 @@ class DesktopApp:
                                "Accounts tab first."))
             return
         if len(entries) == 1:
-            dlg = Gtk.FileChooserDialog(
-                title=i18n.t("Save file"), transient_for=self.win,
-                modal=True, action=Gtk.FileChooserAction.SAVE)
-            dlg.add_buttons(i18n.t("Cancel"), Gtk.ResponseType.CANCEL,
-                            i18n.t("Save"), Gtk.ResponseType.ACCEPT)
-            dlg.set_current_name(entries[0]["name"])
-            dlg.set_do_overwrite_confirmation(True)
+            dest = self._choose_path(
+                i18n.t("Save file"), Gtk.FileChooserAction.SAVE,
+                i18n.t("Save"), entries[0]["name"])
         else:
-            dlg = Gtk.FileChooserDialog(
-                title=i18n.T("Choose where to save {n} files",
-                             n=len(entries)),
-                transient_for=self.win, modal=True,
-                action=Gtk.FileChooserAction.SELECT_FOLDER)
-            dlg.add_buttons(i18n.t("Cancel"), Gtk.ResponseType.CANCEL,
-                            i18n.t("Select"), Gtk.ResponseType.ACCEPT)
-        dest = dlg.get_filename() if dlg.run() == Gtk.ResponseType.ACCEPT \
-            else None
-        dlg.destroy()
+            dest = self._choose_path(
+                i18n.T("Choose where to save {n} files", n=len(entries)),
+                Gtk.FileChooserAction.SELECT_FOLDER, i18n.t("Select"))
         if not dest:
             return
         acc_id = self._drive_account_id()
@@ -2428,16 +3147,9 @@ class DesktopApp:
             self._error(i18n.t("No account yet — authorize one on the "
                                "Accounts tab first."))
             return
-        dlg = Gtk.FileChooserDialog(
-            title=i18n.t("Choose where to save the folder contents"),
-            transient_for=self.win, modal=True,
-            action=Gtk.FileChooserAction.SELECT_FOLDER)
-        dlg.add_buttons(i18n.t("Cancel"), Gtk.ResponseType.CANCEL,
-                        i18n.t("Select"), Gtk.ResponseType.ACCEPT)
-        dlg.set_current_name(fname)
-        dest = dlg.get_filename() if dlg.run() == Gtk.ResponseType.ACCEPT \
-            else None
-        dlg.destroy()
+        dest = self._choose_path(
+            i18n.t("Choose where to save the folder contents"),
+            Gtk.FileChooserAction.SELECT_FOLDER, i18n.t("Select"), fname)
         if not dest:
             return
         acc_id = self._drive_account_id()
@@ -2566,6 +3278,7 @@ class DesktopApp:
             [i18n.t(h) for h in headers],
             (str, str, str, str, str, str))
         self._tr_columns(self.evt_view, headers)
+        self._reg_accessible(self.evt_view, "Activity log")
         self.evt_view.connect("row-activated", self._on_activity_activated)
         box.pack_start(self.evt_scroll, True, True, 0)
         self._action_items = ["All actions"]
@@ -2779,10 +3492,27 @@ class DesktopApp:
             "Active transfers and the most recent completed or failed files. "
             "The queue resets when DriveSync restarts."), False, False, 0)
         headers = ["Status", "Direction", "Sync pair", "File", "Size", "Updated"]
+        # a 7th hidden column keeps the raw (untranslated) status so the
+        # color function does not depend on the active language
         self.transfers_store, self.transfers_view, scroll = _list_view(
-            [i18n.t(h) for h in headers],
-            (str, str, str, str, str, str))
+            [i18n.t(h) for h in headers] + [""],
+            (str, str, str, str, str, str, str))
         self._tr_columns(self.transfers_view, headers)
+        self._reg_accessible(self.transfers_view, "Transfers")
+        self.transfers_view.remove_column(
+            self.transfers_view.get_column(6))
+        status_col = self.transfers_view.get_column(0)
+        status_cell = status_col.get_cells()[0]
+
+        def _paint_status(_col, cell, model, it, _data):
+            color = present.transfer_status_color(model.get_value(it, 6))
+            if color:
+                cell.set_property("foreground", color)
+                cell.set_property("foreground-set", True)
+            else:
+                cell.set_property("foreground-set", False)
+
+        status_col.set_cell_data_func(status_cell, _paint_status)
         box.pack_start(scroll, True, True, 0)
         self._refresh_transfers()
         return _card(box)
@@ -2803,7 +3533,8 @@ class DesktopApp:
             direction = "Upload" if item.get("direction") == "upload" else "Download"
             self.transfers_store.append([
                 i18n.t(item.get("status", "")), i18n.t(direction), pair_name,
-                item.get("path", ""), _drive_bytes(item.get("size")), when])
+                item.get("path", ""), _drive_bytes(item.get("size")), when,
+                item.get("status", "")])
 
     def _tick(self):
         """Periodic UI refresh while the app is alive (even when hidden)."""
@@ -2861,6 +3592,7 @@ class DesktopApp:
     # ---- lifecycle ----------------------------------------------------
     def _on_delete(self, _win, _event):
         """Window close button: hide to tray when a tray exists."""
+        self._save_window_state()
         if self.tray is not None:
             self.win.hide()
             return True            # swallow the event — app stays resident
@@ -2870,6 +3602,7 @@ class DesktopApp:
         """Full exit (tray menu or no-tray close): stop everything."""
         if self._closing:
             return
+        self._save_window_state()
         self._closing = True
         try:
             if self._listener is not None:
@@ -2894,8 +3627,40 @@ class DesktopApp:
     def _on_close(self, _win):
         self._quit()
 
+    def _startup_tab(self):
+        """Tab to open on launch.
+
+        Fresh installs keep the Setup -> Accounts -> Overview flow. Once the
+        app is configured, restore the tab the user left open; a stale or
+        invalid saved index falls back to the normal startup page.
+        """
+        page = startup_page(self.cfg, self.store.accounts())
+        if self.cfg.get("client_id") and self.store.accounts():
+            saved = _cfg_int(self.cfg, "last_tab", -1)
+            if 0 <= saved < self.nb.get_n_pages():
+                return saved
+        return page
+
+    def _save_window_state(self):
+        """Persist the normal (non-maximized) size, maximized flag and tab."""
+        try:
+            changes = {
+                "window_maximized": bool(self.win.is_maximized()),
+                "last_tab": self.nb.get_current_page(),
+            }
+            if not self.win.is_maximized():
+                width, height = self.win.get_size()
+                changes["window_width"] = width
+                changes["window_height"] = height
+            self.cfg = update_config(**changes)
+        except Exception:
+            # geometry is a convenience: never block closing the app
+            pass
+
     def show(self):
         self.win.show_all()
+        if self.cfg.get("window_maximized"):
+            self.win.maximize()
         # set_current_page only works once the window is shown (GTK >=
         # 3.24.49 ignores it pre-show) — apply the startup tab here
         self.nb.set_current_page(self._startup_page)
@@ -2932,6 +3697,34 @@ def _already_running_notice():
     dlg.destroy()
 
 
+_CRASH_LOG_MAX = 256 * 1024
+
+
+def _write_crash_log(text, log_path=None):
+    """Append a crash report, keeping gui-crash.log bounded.
+
+    A crash loop used to grow the log without limit. When the file passes
+    the cap, keep the newest half and start a fresh block so the most
+    recent tracebacks — the useful ones — survive.
+    """
+    path = log_path or (app_dir() / "gui-crash.log")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > _CRASH_LOG_MAX:
+            with open(path, "rb") as fh:
+                fh.seek(-_CRASH_LOG_MAX // 2, os.SEEK_END)
+                tail = fh.read()
+            with open(path, "wb") as fh:
+                fh.write(b"[... older log entries truncated ...]\n")
+                fh.write(tail)
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"\n[{stamp}]\n{text}")
+    except OSError:
+        return None
+    return path
+
+
 def _launch_failure():
     """The window could not be built: show why instead of dying silently.
 
@@ -2942,15 +3735,7 @@ def _launch_failure():
     """
     text = traceback.format_exc()
     print(text, file=sys.stderr)
-    log_path = None
-    try:
-        app_dir().mkdir(parents=True, exist_ok=True)
-        log_path = app_dir() / "gui-crash.log"
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"\n[{stamp}]\n{text}")
-    except OSError:
-        pass
+    log_path = _write_crash_log(text)
     tail = "\n".join(text.strip().splitlines()[-6:])
     try:
         dlg = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR,

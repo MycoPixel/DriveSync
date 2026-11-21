@@ -16,6 +16,8 @@ import os
 import re
 import shutil
 
+from .recovery import A_CONFLICT_RESOLVED
+
 # Mirrors engine.Engine.conflict_name(): the first dot separates the stem
 # from the extension, and hidden files (".foo") produce ".conflict-<ts>.foo".
 CONFLICT_RE = re.compile(
@@ -115,7 +117,6 @@ def resolve_conflict(store, pair, drive, copy_rel, choice):
               "original": original_rel, "choice": choice}
     if choice == "keep_both":
         return result
-
     root = pair["local_path"]
     copy_path = _local(root, copy_rel)
     original_path = _local(root, original_rel)
@@ -131,6 +132,9 @@ def resolve_conflict(store, pair, drive, copy_rel, choice):
         store.base_delete(pair["id"], copy_rel)
         store.log(pair["id"], "conflict-resolved", copy_rel,
                   f"kept original {original_rel}; discarded the conflict copy")
+        store.recovery_log(pair["id"], copy_rel, A_CONFLICT_RESOLVED,
+                           f"kept the original {original_rel}",
+                           "the conflict copy was discarded on both sides")
         return result
 
     # keep_copy: the copy wins. Put its content at the original path, make
@@ -172,4 +176,7 @@ def resolve_conflict(store, pair, drive, copy_rel, choice):
         remote_size=int(meta["size"]) if meta.get("size") else None)
     store.log(pair["id"], "conflict-resolved", copy_rel,
               f"kept {copy_rel} as {original_rel}; removed the other copy")
+    store.recovery_log(pair["id"], original_rel, A_CONFLICT_RESOLVED,
+                       f"kept the conflict copy over {original_rel}",
+                       f"{copy_rel} won and was removed afterwards")
     return result

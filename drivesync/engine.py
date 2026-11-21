@@ -14,19 +14,42 @@ The classic cases fall out of that comparison:
 
 The decide() step is pure (maps in, op list out) so it is fully unit-testable
 against a mock Drive; apply() then performs the ops and updates the base.
+
+The pass runs in three stages (Phase 3.1):
+
+  SCANNER  scan_pair_state()  gathers everything input-shaped: local walk,
+           Drive state (delta feed or full listing), the base snapshot,
+           export folding, case canonicalization, the md5 cache. It
+           decides nothing.
+  PLANNER  build_plan()       runs the pure decide() over the scan, records
+           WHY each op happens (PlannedOp.reason), orders the ops and
+           applies the delete-safety gate. A Plan is data: serializable,
+           previewable, the executor's whole input.
+  EXECUTOR execute_plan()     applies the Plan (pre-ops -> parallel
+           transfers -> deletions last), records per-op outcomes in an
+           ExecReport, updates the base. One failed op never aborts the
+           pass; partial progress always lands.
+
+sync_pair() is the thin orchestration; preview_pair() is scanner+planner
+with cleanup=False (strictly read-only).
 """
 
 import fnmatch
 import hashlib
+import json
 import os
+import re
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .config import app_dir
 from .db import parse_include_patterns
-from .drive import FOLDER_MIME, resolve_export_formats, safe_name
+from .drive import (FOLDER_MIME, PART_SUFFIX,
+                    resolve_export_formats, safe_name)
 
 GDOC_PREFIX = "application/vnd.google-apps."
 CONFLICT_TAG = "%Y%m%d-%H%M%S"
@@ -209,6 +232,8 @@ def scan_local(root, patterns, include=None, symlink_policy="skip"):
         for f in sorted(filenames):
             full = os.path.join(dirpath, f)
             rel = f"{rel_dir}/{f}" if rel_dir else f
+            if f.endswith(PART_SUFFIX):
+                continue       # a half-downloaded transfer in progress
             if ignored(rel, patterns) or not included(rel, include,
                                                       is_file=True):
                 continue
@@ -456,7 +481,7 @@ def scan_remote_delta(pair, base_rows, export_map, patterns, changes,
 
 # ---------------------------------------------------------------- decide
 def decide(local, remote, base, direction="bidirectional", policy="newer",
-           md5_of=None, force=False, allow_deletes=True):
+           md5_of=None, force=False, allow_deletes=True, reasons=None):
     """Return the ordered op list. Pure function of the three maps.
 
     force=True re-checks content hashes even when size and mtime look
@@ -464,6 +489,9 @@ def decide(local, remote, base, direction="bidirectional", policy="newer",
     allow_deletes=False replaces destructive ops with ack_* acknowledgements:
     files are kept on both sides and the base is tombstoned so the state is
     stable — no resurrection churn on later passes.
+    reasons: optional dict; every emitted op records rel -> a short human
+    explanation (what changed and which policy branch fired). The planner
+    passes one so previews can show WHY each op happens.
     """
     md5_of = md5_of or (lambda rel: None)
     ops = []
@@ -478,7 +506,7 @@ def decide(local, remote, base, direction="bidirectional", policy="newer",
 
     # ---- pass 1: rename detection (files only) ---------------------
     ops.extend(_detect_renames(local, remote, base, can_push, can_pull,
-                               md5_of, handled))
+                               md5_of, handled, reasons))
 
     # ---- pass 2: files ---------------------------------------------
     for rel in sorted(set(local) | set(remote) | set(base)):
@@ -494,14 +522,15 @@ def decide(local, remote, base, direction="bidirectional", policy="newer",
             continue  # dirs handled in pass 3
         if r and r["kind"] == "dir" and not l:
             continue  # stale base/remote dirs handled in pass 3
-        op = _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of, force)
+        op = _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of,
+                          force, reasons)
         if op:
             ops.extend(op)
 
     # ---- pass 3: directories ---------------------------------------
     ops.extend(_decide_dirs(local, remote, base, can_push, can_pull, handled,
-                            allow_deletes))
-    ops = _filter_deletes(ops, allow_deletes)
+                            allow_deletes, reasons))
+    ops = _filter_deletes(ops, allow_deletes, reasons)
 
     # order: mkdirs first, renames, then files ops, deletions last
     def rank(op):
@@ -517,7 +546,8 @@ def decide(local, remote, base, direction="bidirectional", policy="newer",
     return sorted(ops, key=rank)
 
 
-def _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of, force=False):
+def _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of,
+                 force=False, reasons=None):
     """Ops for one file path. Returns a list (possibly empty)."""
     l_exists, r_exists, b_exists = bool(l), bool(r), bool(b)
 
@@ -552,17 +582,22 @@ def _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of, force=False):
     # ---- deleted on both sides --------------------------------------
     if not l_exists and not r_exists:
         if b_exists:
+            _note_reason(reasons, rel, "deleted on both sides")
             return [("forget", rel)]          # just drop the base row
         return []
 
     # ---- new on one side --------------------------------------------
     if l_exists and not r_exists and not b_exists:
+        _note_reason(reasons, rel, "new local file")
         return [("upload", rel)] if can_push else []
     if not l_exists and r_exists and not b_exists:
         if r["kind"] == "gdoc":
             if r.get("export"):
+                _note_reason(reasons, rel, "new Google doc on Drive (materializing the export)")
                 return [("download", rel)] if can_pull else []
+            _note_reason(reasons, rel, "Google-native doc: record only (no export format)")
             return [("record_gdoc", rel)]
+        _note_reason(reasons, rel, "new file on Drive")
         return [("download", rel)] if can_pull else []
 
     # ---- deletions (exists in base, gone on one side) ----------------
@@ -575,26 +610,34 @@ def _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of, force=False):
                 return []          # unconvertible doc: nothing to sync
             # materialized export: behave like a real file below
         if not remote_changed():
+            _note_reason(reasons, rel, "local file deleted — propagating to Drive")
             return [("delete_remote", rel)] if can_push else []
         # remote changed since base while local was deleted
-        return _conflict_delete_local(rel, policy, can_pull)
+        return _conflict_delete_local(rel, policy, can_pull, reasons)
     if l_exists and not r_exists:                       # remote deleted
         if not local_changed():
-            return [("delete_local", rel)] if can_pull else [("upload", rel)]
+            if can_pull:
+                _note_reason(reasons, rel, "deleted on Drive — propagating locally")
+                return [("delete_local", rel)]
+            _note_reason(reasons, rel, "deleted on Drive; pull is off — re-uploading the local copy")
+            return [("upload", rel)]
         # local changed since base while remote was deleted
-        return _conflict_delete_remote(rel, policy, can_push, can_pull)
+        return _conflict_delete_remote(rel, policy, can_push, can_pull, reasons)
 
     # ---- present on both sides ---------------------------------------
     if r["kind"] == "gdoc":
         if not r.get("export"):
+            _note_reason(reasons, rel, "local file sits where a Google doc would export")
             return [("skip_gdoc_collision", rel)]   # never touches native docs
         if not l.get("folded"):
             # a user-made file sits where the export would go — never
             # overwrite it, even when an old base row exists
+            _note_reason(reasons, rel, "a local file occupies the Google doc's export path")
             return [("skip_gdoc_collision", rel)]
         if not b_exists or b.get("kind") != "file":
             # tracked but not yet materialized: export (the fold is proof
             # this local file is ours)
+            _note_reason(reasons, rel, "materializing the Google doc export")
             return [("download", rel)] if can_pull else []
         # materialized export: falls through to the normal three-way compare
 
@@ -602,16 +645,50 @@ def _decide_file(rel, l, r, b, can_push, can_pull, policy, md5_of, force=False):
     if not lc and not rc:
         return []
     if lc and not rc:
+        _note_reason(reasons, rel, "local changes since last sync")
         return [("upload", rel)] if can_push else []
     if rc and not lc:
+        _note_reason(reasons, rel, "changed on Drive since last sync")
         return [("download", rel)] if can_pull else []
 
     # both changed
     if can_push and can_pull and r["md5"] and local_md5() == r["md5"]:
+        _note_reason(reasons, rel, "identical change on both sides")
         return [("reconcile", rel)]          # same content, just refresh base
     if not (can_push and can_pull):
+        _note_reason(reasons, rel, "changed on both sides; the direction is one-way")
         return [("upload", rel)] if can_push else [("download", rel)]
-    return _conflict_both_changed(rel, l, r, policy, local_md5())
+    return _conflict_both_changed(rel, l, r, policy, local_md5(), reasons)
+
+
+# Worth retrying: 5xx/429 replies, throttles, and transport breaks.
+# Auth (401/403), not-found, quota-exceeded and local OS errors are fatal —
+# retrying the same op cannot help (401 refreshes are handled inside the
+# Drive client already).
+_TRANSIENT_RE = re.compile(
+    r"->\s*5\d\d|->\s*429|failed:\s*(Connection|Timeout|Read)|"
+    r"(ChunkedEncoding|ConnectionError|ReadTimeout|ProtocolError|"
+    r"SSLError)|(rate limit|backend error|internal error|bad gateway|"
+    r"service unavailable)", re.I)
+
+# Exception type names (requests / urllib3) that are transport-shaped.
+_TRANSIENT_EXC = {"ChunkedEncodingError", "ConnectionError", "Timeout",
+                  "ReadTimeout", "ProtocolError", "SSLError"}
+
+
+def is_transient_transfer_error(exc):
+    """True when retrying this transfer op is worth one more attempt."""
+    if isinstance(exc, OSError):
+        return False
+    if type(exc).__name__ in _TRANSIENT_EXC:
+        return True
+    return bool(_TRANSIENT_RE.search(str(exc)))
+
+
+def _note_reason(reasons, rel, text):
+    """Record why the planner emitted an op for rel (None dict = no-op)."""
+    if reasons is not None and rel not in reasons:
+        reasons[rel] = text
 
 
 def _mtime_neq(a, b):
@@ -620,37 +697,56 @@ def _mtime_neq(a, b):
     return abs(float(a) - float(b)) > 1e-6
 
 
-def _conflict_both_changed(rel, l, r, policy, local_md5):
+def _conflict_both_changed(rel, l, r, policy, local_md5, reasons=None):
     if policy == "local":
+        _note_reason(reasons, rel, "conflict — policy 'local' keeps the local version")
         return [("upload", rel)]
     if policy == "remote":
+        _note_reason(reasons, rel, "conflict — policy 'remote' keeps the Drive version")
         return [("download", rel)]
     if policy == "newer":
         newer_local = float(l["mtime"] or 0) >= float(r["mtime"] or 0)
+        _note_reason(reasons, rel,
+                     "conflict — policy 'newer' keeps the " +
+                     ("local" if newer_local else "Drive") + " version (newer)")
         return [("upload" if newer_local else "download", rel)]
+    _note_reason(reasons, rel, "conflict — both versions kept (policy 'both')")
     return [("conflict_both", rel)]
 
 
-def _conflict_delete_local(rel, policy, can_pull):
+def _conflict_delete_local(rel, policy, can_pull, reasons=None):
     """Local file deleted, remote edited since base."""
     if policy == "local":
+        _note_reason(reasons, rel, "local deleted, remote edited — policy 'local' deletes on Drive")
         return [("delete_remote", rel)]
     if policy == "both":
+        _note_reason(reasons, rel, "local deleted, remote edited — policy 'both' restores the Drive copy")
         return [("restore_local_conflict", rel)]
-    return [("download", rel)] if can_pull else [("delete_remote", rel)]
+    if can_pull:
+        _note_reason(reasons, rel, "local deleted, remote edited — keeping the edited Drive copy")
+        return [("download", rel)]
+    _note_reason(reasons, rel, "local deleted, remote edited; pull off — deleting on Drive")
+    return [("delete_remote", rel)]
 
 
-def _conflict_delete_remote(rel, policy, can_push, can_pull):
+def _conflict_delete_remote(rel, policy, can_push, can_pull, reasons=None):
     """Remote file deleted, local edited since base."""
     if policy == "remote":
+        _note_reason(reasons, rel, "deleted on Drive, local edited — policy 'remote' deletes locally")
         return [("delete_local", rel)]
     if policy == "both":
+        _note_reason(reasons, rel, "deleted on Drive, local edited — policy 'both' keeps both versions")
         return [("upload_conflict_copy", rel)]
     # 'local' and 'newer' both keep the edited local copy (no data loss)
-    return [("upload", rel)] if can_push else [("delete_local", rel)]
+    if can_push:
+        _note_reason(reasons, rel, "deleted on Drive, local edited — keeping the edited local copy")
+        return [("upload", rel)]
+    _note_reason(reasons, rel, "deleted on Drive, local edited; push off — deleting the local copy")
+    return [("delete_local", rel)]
 
 
-def _detect_renames(local, remote, base, can_push, can_pull, md5_of, handled):
+def _detect_renames(local, remote, base, can_push, can_pull, md5_of, handled,
+                    reasons=None):
     """Detect file renames on either side; emits rename ops."""
     ops = []
     used_new = set()
@@ -669,6 +765,7 @@ def _detect_renames(local, remote, base, can_push, can_pull, md5_of, handled):
                 match = new_rel
                 break
         if match and can_push:
+            _note_reason(reasons, old_rel, f"renamed locally — now {match}")
             ops.append(("rename_local", old_rel, match))
             used_new.add(match)
             handled.add(old_rel)
@@ -691,6 +788,7 @@ def _detect_renames(local, remote, base, can_push, can_pull, md5_of, handled):
             match = new_rel
             break
         if match and can_pull:
+            _note_reason(reasons, old_rel, f"renamed on Drive — now {match}")
             ops.append(("rename_remote", old_rel, match))
             used_new.add(match)
             handled.add(old_rel)
@@ -699,7 +797,7 @@ def _detect_renames(local, remote, base, can_push, can_pull, md5_of, handled):
 
 
 def _decide_dirs(local, remote, base, can_push, can_pull, handled,
-                 allow_deletes=True):
+                 allow_deletes=True, reasons=None):
     ops = []
     for rel in sorted(set(local) | set(remote) | set(base)):
         if rel in handled or rel == "":
@@ -714,23 +812,37 @@ def _decide_dirs(local, remote, base, can_push, can_pull, handled,
             if not r and l_dir and b.get("deleted_remote"):
                 continue  # remote dir deletion already acknowledged
         if b and not b_dir and (l_dir or r_dir):
+            _note_reason(reasons, rel, "path changed between file and folder")
             ops.append(("forget", rel))  # file replaced by a folder; drop stale row
             continue
         if l_dir and not r_dir and not b_dir and can_push:
+            _note_reason(reasons, rel, "new local folder")
             ops.append(("mkdir_remote", rel))
         elif r_dir and not l_dir and not b_dir and can_pull:
+            _note_reason(reasons, rel, "new folder on Drive")
             ops.append(("mkdir_local", rel))
         elif not l and b_dir and r_dir:
             # local dir removed: propagate when pushing, else keep base
-            ops.append(("rmdir_remote", rel)) if can_push else ops.append(("forget", rel))
+            if can_push:
+                _note_reason(reasons, rel, "local folder removed — propagating to Drive")
+                ops.append(("rmdir_remote", rel))
+            else:
+                _note_reason(reasons, rel, "local folder removed; push off — leaving the Drive copy untracked")
+                ops.append(("forget", rel))
         elif not r and b_dir and l_dir:
-            ops.append(("rmdir_local", rel)) if can_pull else ops.append(("forget", rel))
+            if can_pull:
+                _note_reason(reasons, rel, "folder removed on Drive — propagating locally")
+                ops.append(("rmdir_local", rel))
+            else:
+                _note_reason(reasons, rel, "folder removed on Drive; pull off — leaving the local copy untracked")
+                ops.append(("forget", rel))
         elif not l and not r and b_dir:
+            _note_reason(reasons, rel, "folder removed on both sides")
             ops.append(("forget", rel))
     return ops
 
 
-def _filter_deletes(ops, allow_deletes):
+def _filter_deletes(ops, allow_deletes, reasons=None):
     """Deletes-off mode: swap destructive ops for acknowledgements.
 
     The file the user still has stays exactly where it is; the absence on
@@ -743,8 +855,14 @@ def _filter_deletes(ops, allow_deletes):
     for op in ops:
         if op[0] in ("delete_remote", "rmdir_remote"):
             out.append(("ack_local_delete", op[1]))   # local gone, keep remote
+            if reasons is not None:
+                reasons[op[1]] = (
+                    "local file deleted — deletes are off, Drive copy kept")
         elif op[0] in ("delete_local", "rmdir_local"):
             out.append(("ack_remote_delete", op[1]))  # remote gone, keep local
+            if reasons is not None:
+                reasons[op[1]] = (
+                    "deleted on Drive — deletes are off, local copy kept")
         else:
             out.append(op)
     return out
@@ -816,26 +934,44 @@ class SyncStats:
         return self
 
 
-def _scan_pair_ops(store, cfg, pair, drive, force_full=False, changes=None,
-                   cleanup=True):
-    """Scan both sides and decide the op list.
+# ================================================================ scanner
+@dataclass
+class ScanResult:
+    """What one pair's scan gathered — the planner's entire input.
 
-    Shared by sync_pair (applies the ops) and preview_pair (returns them
-    untouched). Returns (ops, stats, fold, local_root, remote, local,
-    error, blocked): ops is None when a fatal scan problem stopped the pass
-    (error carries the message); remote/local are the scanned maps the
-    apply phase needs; blocked is the number of destructive ops the
-    delete-safety limit filtered out. cleanup=False (preview) never writes
-    the base table and never logs — the caller gets diagnostics in the
-    return value instead.
+    error is None on success; on a fatal scan problem it carries the
+    message and the maps stay empty. stats accumulates scan-phase error
+    counts so sync_pair can report them exactly as before.
+    """
+
+    local: dict = field(default_factory=dict)
+    remote: dict = field(default_factory=dict)
+    base: dict = field(default_factory=dict)
+    fold: dict = field(default_factory=dict)
+    local_root: str = ""
+    md5_of: object = None
+    delta_used: bool = False
+    stats: "SyncStats" = field(default_factory=SyncStats)
+    error: str = None
+
+
+def scan_pair_state(store, cfg, pair, drive, force_full=False, changes=None,
+                    cleanup=True):
+    """Scan one pair: local tree, Drive state (delta feed or full), base.
+
+    The scanner owns everything input-shaped: path checks, the empty-base
+    refusal, delta-vs-full choice, ignore/include filtering, symlink
+    policy, case canonicalization, Google-doc export folding and the pass-
+    local md5 cache. It decides nothing — that is build_plan()'s job.
+    cleanup=False (preview) never writes the base table and never logs.
     """
     log = store.log if cleanup else (lambda *a, **k: None)
     stats = SyncStats()
     local_root = str(pair["local_path"])
     if not os.path.isdir(local_root):
         stats.errors += 1
-        return (None, stats, None, local_root, None, None,
-                f"local path missing: {local_root}", 0)
+        return ScanResult(local_root=local_root, stats=stats,
+                          error=f"local path missing: {local_root}")
 
     patterns = list(cfg.get("ignore_patterns", []))
     include = parse_include_patterns(pair["include_patterns"])
@@ -853,17 +989,19 @@ def _scan_pair_ops(store, cfg, pair, drive, force_full=False, changes=None,
         previous_count = 0
     if not base_rows and previous_count > 0 and not force_full:
         stats.errors += 1
-        return (None, stats, None, local_root, None, None,
-                "base snapshot is empty but this pair synced before — "
-                "refusing to reconcile from scratch (run "
-                "'drivesync sync --full --pair "
-                f"{pair['id']}' once to rebuild it)", 0)
+        return ScanResult(local_root=local_root, stats=stats, error=(
+            "base snapshot is empty but this pair synced before — "
+            "refusing to reconcile from scratch (run "
+            "'drivesync sync --full --pair "
+            f"{pair['id']}' once to rebuild it)"))
 
     remote = None
+    delta_used = False
     if changes is not None and not force_full:
         try:
             remote = scan_remote_delta(pair, base_rows, export_map, patterns,
                                        changes, include=include)
+            delta_used = True
         except DeltaUnsupported:
             remote = None
         except Exception as exc:
@@ -876,8 +1014,8 @@ def _scan_pair_ops(store, cfg, pair, drive, force_full=False, changes=None,
                                  include=include)
         except Exception as exc:
             stats.errors += 1
-            return (None, stats, None, local_root, None, None,
-                    f"Drive listing failed: {exc}", 0)
+            return ScanResult(local_root=local_root, stats=stats,
+                              error=f"Drive listing failed: {exc}")
 
     local = scan_local(local_root, patterns, include=include,
                        symlink_policy=pair["symlink_policy"] or "skip")
@@ -918,47 +1056,173 @@ def _scan_pair_ops(store, cfg, pair, drive, force_full=False, changes=None,
         md5_cache[rel] = digest
         return digest
 
-    ops = decide(local, remote, base, pair["direction"],
-                 pair["conflict_policy"] or cfg.get("conflict_policy", "newer"),
-                 md5_of, force=force_full,
-                 allow_deletes=bool(pair["allow_deletes"]))
+    return ScanResult(local=local, remote=remote, base=base, fold=fold,
+                      local_root=local_root, md5_of=md5_of,
+                      delta_used=delta_used, stats=stats, error=None)
 
-    # safety valve: refuse to wipe out more files than allowed in one pass
+
+# ================================================================ planner
+@dataclass
+class PlannedOp:
+    """One planned operation with its explanation.
+
+    The plan is data, not code: serializable, previewable, and the
+    executor's whole input. reason is the truthful "why" recorded by
+    decide(); size is the transfer payload when known.
+    """
+
+    name: str
+    rel: str
+    target: str = None          # rename destination
+    reason: str = ""
+    size: int = None
+    destructive: bool = False
+    transfer: bool = False
+
+    def row(self):
+        """[name, rel, target] — the positional form previews render."""
+        return [self.name, self.rel] + ([self.target] if self.target else [])
+
+
+@dataclass
+class Plan:
+    """The full work program for one sync pass."""
+
+    pair_id: int
+    ops: list                    # [PlannedOp], apply-ordered
+    counts: dict                 # op name -> n
+    blocked: int                 # destructive ops the safety gate removed
+    error: str = None            # fatal scan error (ops empty when set)
+    scan: dict = field(default_factory=dict)   # local_n, remote_n, base_n, delta
+    policy: str = ""
+    direction: str = ""
+    local_root: str = ""
+    local_map: dict = field(default_factory=dict)   # executor inputs
+    remote_map: dict = field(default_factory=dict)
+    fold: dict = field(default_factory=dict)
+    scan_stats: "SyncStats" = field(default_factory=SyncStats)
+
+
+def _planned_op(op, reasons, local, remote, fold):
+    """PlannedOp from a decided op tuple, with reason and transfer size."""
+    name, rel = op[0], op[1]
+    target = op[2] if len(op) > 2 else None
+    destructive = name in DESTRUCTIVE_OPS
+    transfer = name in TRANSFER_OPS
+    size = None
+    if transfer:
+        source = local.get(rel) if name == "upload" else remote.get(rel)
+        size = (source or {}).get("size")
+    return PlannedOp(name=name, rel=rel, target=target,
+                     reason=reasons.get(rel, ""),
+                     size=size, destructive=destructive, transfer=transfer)
+
+
+def build_plan(store, cfg, pair, drive, force_full=False, changes=None,
+               cleanup=True):
+    """Scan the pair and plan the pass: decide() + ordering + safety gate.
+
+    cleanup=True (real passes) writes the safety-valve holds and the
+    recovery history; cleanup=False (preview) is strictly read-only and
+    only reports `blocked`.
+    """
+    scan = scan_pair_state(store, cfg, pair, drive, force_full=force_full,
+                           changes=changes, cleanup=cleanup)
+    plan = Plan(pair_id=pair["id"], ops=[], counts={}, blocked=0,
+                error=scan.error, policy=pair["conflict_policy"]
+                or cfg.get("conflict_policy", "newer"),
+                direction=pair["direction"], local_root=scan.local_root,
+                local_map=scan.local, remote_map=scan.remote, fold=scan.fold,
+                scan_stats=scan.stats,
+                scan={"local_n": len(scan.local), "remote_n": len(scan.remote),
+                      "base_n": len(scan.base), "delta_used": scan.delta_used})
+    if scan.error:
+        return plan
+
+    reasons = {}
+    ops = decide(scan.local, scan.remote, scan.base, pair["direction"],
+                 plan.policy, scan.md5_of, force=force_full,
+                 allow_deletes=bool(pair["allow_deletes"]), reasons=reasons)
+
+    # safety gate: refuse to wipe out more files than allowed in one pass.
+    # A tripped gate is not just logged — the held deletions are stored (kv)
+    # so the Recovery page can ask the user: allow them once, or keep every
+    # file (deletes off). A later pass back under the limit releases the
+    # hold. Preview runs read-only: it reports `blocked` but never writes.
     blocked = 0
     limit = int(cfg.get("delete_safety_limit", 10))
     destructive = [op for op in ops if op[0] in DESTRUCTIVE_OPS]
-    if limit and len(destructive) > limit:
+    pending_key = f"pending_deletes:{pair['id']}"
+    approved = store.kv_get(f"deletes_approved:{pair['id']}") == "once"
+    rlog = store.recovery_log if cleanup else (lambda *a, **k: None)
+    log = store.log if cleanup else (lambda *a, **k: None)
+    if limit and len(destructive) > limit and not approved:
+        paths = sorted({op[1] for op in destructive})
+        previous = store.kv_get(pending_key)     # None = a brand-new incident
+        pending = {
+            "count": len(destructive),
+            "limit": limit,
+            "kinds": {},
+            "paths": paths[:200],      # the full plan stays in the preview
+            "more": max(0, len(paths) - 200),
+        }
+        for op in destructive:
+            pending["kinds"][op[0]] = pending["kinds"].get(op[0], 0) + 1
+        store.kv_set(pending_key, json.dumps(pending))
         log(pair["id"], "safety-stop", "",
             f"{len(destructive)} deletions blocked — exceeds "
-            f"delete_safety_limit={limit}; raise it in Settings if this "
-            "is expected", level="error")
+            f"delete_safety_limit={limit}; confirm them on the Recovery "
+            "page (or raise the limit in Settings) if this is expected",
+            level="error")
+        if cleanup and not previous:
+            rlog(pair["id"], "", "safety_stop",
+                 f"delete_safety_limit={limit} exceeded",
+                 f"{len(destructive)} deletions held for confirmation: " +
+                 ", ".join(paths[:5]) + ("…" if len(paths) > 5 else ""))
         ops = [op for op in ops if op[0] not in DESTRUCTIVE_OPS]
-        stats.errors += 1
+        scan.stats.errors += 1
         blocked = len(destructive)
-    return ops, stats, fold, local_root, remote, local, None, blocked
+    elif store.kv_get(pending_key):
+        # the risky pass resolved itself (files came back, scope changed):
+        # release the hold so the Recovery page stops asking
+        store.kv_delete(pending_key)
+        rlog(pair["id"], "", "pending_cleared",
+             f"destructive ops back under delete_safety_limit={limit}",
+             "the held deletions are no longer part of the plan")
+
+    plan.blocked = blocked
+    plan.ops = [_planned_op(op, reasons, scan.local, scan.remote, scan.fold)
+                for op in ops]
+    counts = {}
+    for p in plan.ops:
+        counts[p.name] = counts.get(p.name, 0) + 1
+    plan.counts = counts
+    return plan
 
 
 def preview_pair(store, cfg, pair, drive, force_full=False, changes=None):
     """What the next sync pass WOULD do, without touching anything.
 
-    Runs the same scan and three-way decision as sync_pair but stops right
-    before the apply phase: no transfers, no deletions, no base writes, no
-    activity-log rows. Returns a dict: {"ops": [[name, rel, ...], ...],
-    "counts": {name: n}, "error": None|msg, "blocked": n_deletions_blocked,
-    "totals": {uploads, downloads, deletions, renames, other}}. Ops arrive
-    already ordered (mkdirs, renames, transfers, deletions last) — exactly
-    the order a real pass would apply them in.
+    Runs the scanner + planner (no transfers, no deletions, no base
+    writes, no activity-log rows) and returns a dict: {"ops": [...],
+    "counts": {...}, "error": None|msg, "blocked": n, "totals": {...}} —
+    plus the Phase 3.1 explanations: "reasons" (per op: why it is planned),
+    "sizes" (transfer payloads when known) and "destructive" flags, each
+    aligned with ops, and "scan" metadata (file counts, delta vs full).
+    Ops arrive already ordered (mkdirs, renames, transfers, deletions
+    last) — exactly the order a real pass would apply them in.
     """
-    ops, stats, fold, local_root, remote, local, error, blocked = \
-        _scan_pair_ops(store, cfg, pair, drive, force_full=force_full,
-                       changes=changes, cleanup=False)
-    counts = {}
-    for op in ops or []:
-        counts[op[0]] = counts.get(op[0], 0) + 1
+    plan = build_plan(store, cfg, pair, drive, force_full=force_full,
+                      changes=changes, cleanup=False)
+    counts = dict(plan.counts)
     return {
-        "pair_id": pair["id"], "error": error,
-        "ops": [list(op) for op in (ops or [])],
-        "counts": counts, "blocked": blocked,
+        "pair_id": pair["id"], "error": plan.error,
+        "ops": [p.row() for p in plan.ops],
+        "reasons": [p.reason for p in plan.ops],
+        "sizes": [p.size for p in plan.ops],
+        "destructive": [p.destructive for p in plan.ops],
+        "counts": counts, "blocked": plan.blocked,
+        "scan": plan.scan,
         "totals": {
             "uploads": counts.get("upload", 0),
             "downloads": counts.get("download", 0),
@@ -973,22 +1237,30 @@ def preview_pair(store, cfg, pair, drive, force_full=False, changes=None):
     }
 
 
-def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
-              transfer_callback=None):
-    """Run one sync pass for a pair row. Returns (SyncStats, ok).
+# ================================================================ executor
+@dataclass
+class ExecReport:
+    """Per-op outcomes of applying a Plan — 3.2 resumability reads this."""
 
-    changes: a Drive changes feed (list of {'fileId','removed','file'})
-    captured since the previous pass. When given, the remote map is rebuilt
-    from the base snapshot + the feed instead of re-listing the whole tree —
-    one-file edits in large pairs cost 1-2 API calls instead of one per
-    folder. Structural feed changes fall back to a full scan automatically.
+    stats: SyncStats
+    ok: bool
+    failures: list               # [(op_name, rel, error)] for failed ops
+    blocked: int                 # destructive ops the planner held back
+    retries: int = 0             # transient failures retried in-pass
+
+
+def execute_plan(store, cfg, pair, drive, plan, transfer_callback=None):
+    """Apply a Plan (pre-ops -> parallel transfers -> deletions last).
+
+    One commit per op: a failed op is recorded (report.failures + error
+    event + failed transfer telemetry) and the pass continues — partial
+    progress always lands. Updates the pair-synced marker and spends a
+    one-time deletion approval when the pass ran with one.
     """
-    ops, stats, fold, local_root, remote, local, error, _blocked = \
-        _scan_pair_ops(store, cfg, pair, drive, force_full=force_full,
-                       changes=changes)
-    if ops is None:
-        store.log(pair["id"], "error", message=error, level="error")
-        return stats, False
+    stats = SyncStats()
+    failures = []
+    remote, local, fold = plan.remote_map, plan.local_map, plan.fold
+    local_root = plan.local_root
 
     ctx = _ApplyCtx(store, cfg, pair, drive, local_root, remote, local, stats,
                     fold)
@@ -1013,39 +1285,60 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
         except Exception:
             pass  # UI telemetry must never interrupt a sync operation
 
+    retries = [0]
+
     def apply_one(op):
         is_transfer = op[0] in TRANSFER_OPS
         if is_transfer:
             transfer_event(op, "uploading" if op[0] == "upload"
                            else "downloading")
-        try:
-            # one commit per op (base row + marker/activity rows) instead of
-            # one per write: a first sync writes thousands of small rows
-            with store.batch():
-                result = ctx.apply(op)
-            if is_transfer:
-                if result is False:
-                    rows = store.recent_events(limit=1, level="error",
-                                               pair_id=pair["id"])
-                    detail = rows[0]["message"] if rows else "transfer failed"
-                    transfer_event(op, "failed", detail)
-                else:
-                    transfer_event(op, "completed")
-        except Exception as exc:
-            if is_transfer:
-                transfer_event(op, "failed", exc)
-            stats.errors += 1
-            store.log(pair["id"], "error", op[1] if len(op) > 1 else "",
-                      f"{op[0]} failed: {exc}", level="error")
+        # transient failures (5xx, throttles, transport breaks) get another
+        # attempt with a short backoff; resumable sessions and .part files
+        # make every retry cheap — only the missing bytes move
+        attempts = 1 + (transfer_retries if is_transfer else 0)
+        for attempt in range(attempts):
+            try:
+                # one commit per op (base row + marker/activity rows) instead
+                # of one per write: a first sync writes thousands of rows
+                with store.batch():
+                    result = ctx.apply(op)
+                if is_transfer:
+                    if result is False:
+                        rows = store.recent_events(limit=1, level="error",
+                                                   pair_id=pair["id"])
+                        detail = (rows[0]["message"] if rows
+                                  else "transfer failed")
+                        transfer_event(op, "failed", detail)
+                    else:
+                        transfer_event(op, "completed")
+                break
+            except Exception as exc:
+                if is_transfer and attempt < attempts - 1 and \
+                        is_transient_transfer_error(exc):
+                    retries[0] += 1
+                    transfer_event(op, "retrying", exc)
+                    store.log(pair["id"], "info",
+                              op[1] if len(op) > 1 else "",
+                              f"{op[0]} failed ({exc}); retrying")
+                    time.sleep(min(30.0, retry_base * (2 ** attempt)))
+                    continue
+                if is_transfer:
+                    transfer_event(op, "failed", exc)
+                stats.errors += 1
+                failures.append((op[0], op[1] if len(op) > 1 else "",
+                                 str(exc)))
+                store.log(pair["id"], "error", op[1] if len(op) > 1 else "",
+                          f"{op[0]} failed: {exc}", level="error")
+                break
 
     # Same rank order as the sequential loop: mkdirs/renames and per-file
     # bookkeeping first, then file transfers (parallel), deletions last.
     pre, transfers, post = [], [], []
-    for op in ops:
-        name = op[0]
-        if name in TRANSFER_OPS:
+    for p in plan.ops:
+        op = p.row()
+        if p.transfer:
             transfers.append(op)
-        elif name in DESTRUCTIVE_OPS:
+        elif p.destructive:
             post.append(op)
         else:
             pre.append(op)
@@ -1054,6 +1347,14 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
     for op in transfers:
         transfer_event(op, "queued")
     workers = max(1, int(cfg.get("transfer_concurrency", 4)))
+    try:
+        transfer_retries = max(0, int(cfg.get("transfer_retries", 2)))
+    except (TypeError, ValueError):
+        transfer_retries = 2
+    try:
+        retry_base = max(0.0, float(cfg.get("transfer_retry_base", 2.0)))
+    except (TypeError, ValueError):
+        retry_base = 2.0
     if workers == 1 or len(transfers) < 2:
         for op in transfers:
             apply_one(op)
@@ -1064,9 +1365,46 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
         apply_one(op)
     # remember what a healthy base looked like: an empty snapshot after a
     # non-empty one means state loss, not "everything was deleted"
-    marker = f"pair_synced:{pair['id']}"       # same key _scan_pair_ops read
+    marker = f"pair_synced:{pair['id']}"       # same key the scanner read
     store.kv_set(marker, str(len(store.base_entries(pair["id"]))))
-    return stats, stats.errors == 0
+    # a one-time approval is spent by the pass that runs it: record what it
+    # actually allowed and release the Recovery-page hold
+    approved_key = f"deletes_approved:{pair['id']}"
+    if store.kv_get(approved_key):
+        store.kv_delete(approved_key)
+        store.kv_delete(f"pending_deletes:{pair['id']}")
+        store.recovery_log(
+            pair["id"], "", "deletions_allowed",
+            "user confirmed on the Recovery page (one pass)",
+            f"{int(stats.deleted)} deletion(s) applied")
+    return ExecReport(stats=stats, ok=stats.errors == 0 and plan.blocked == 0,
+                      failures=failures, blocked=plan.blocked,
+                      retries=retries[0])
+
+
+# ============================================================ orchestration
+def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
+              transfer_callback=None):
+    """Run one sync pass for a pair row: scan -> plan -> execute.
+
+    Returns (SyncStats, ok). changes: a Drive changes feed (list of
+    {'fileId','removed','file'}) captured since the previous pass. When
+    given, the remote map is rebuilt from the base snapshot + the feed
+    instead of re-listing the whole tree — one-file edits in large pairs
+    cost 1-2 API calls instead of one per folder. Structural feed changes
+    fall back to a full scan automatically.
+    """
+    plan = build_plan(store, cfg, pair, drive, force_full=force_full,
+                      changes=changes)
+    if plan.error:
+        store.log(pair["id"], "error", message=plan.error, level="error")
+        return plan.scan_stats, False
+
+    report = execute_plan(store, cfg, pair, drive, plan,
+                          transfer_callback=transfer_callback)
+    # the safety gate counts as a pass error, exactly as before the split
+    report.stats.errors += 1 if plan.blocked else 0
+    return report.stats, report.ok
 
 
 class _ApplyCtx:
@@ -1219,6 +1557,79 @@ class _ApplyCtx:
             f"{name}.conflict-{self.now_tag()}"
         return f"{d}/{new}" if d else new
 
+    # ---- resumable push (Phase 3.2) --------------------------------
+    def _resumable_min(self):
+        """Files at or above this size push through resumable sessions."""
+        try:
+            return max(0, int(self.cfg.get("resumable_threshold",
+                                           8 << 20)))
+        except (TypeError, ValueError):
+            return 8 << 20
+
+    def _session_key(self, rel):
+        return f"upsession:{self.pid}:{rel}"
+
+    def _stored_session(self, rel, path):
+        """The saved session URI, but only for this exact file version.
+
+        A session is bound to the bytes that opened it: if the file changed
+        since the failed attempt (size or mtime), the session is stale and
+        must not be resumed — the caller starts a fresh one.
+        """
+        raw = self.store.kv_get(self._session_key(rel))
+        if not raw:
+            return None
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            return None
+        try:
+            same = (rec.get("size") == os.path.getsize(path) and
+                    rec.get("mtime") == os.path.getmtime(path))
+        except OSError:
+            return None
+        return rec.get("session") if same and rec.get("session") else None
+
+    def _push_resumable(self, rel, path, update_id=None, name=None,
+                        parent_id=None):
+        """Create or update a Drive file, resumably when it is worth it.
+
+        Files below resumable_threshold go through the plain one-shot
+        calls as before. Large files use the resumable protocol with the
+        session URI persisted in the kv store: a failed attempt (mid-pass
+        retry or a later pass re-planning the same upload) continues from
+        the server-side offset instead of restarting the transfer. The kv
+        entry is deleted on success.
+        """
+        size = os.path.getsize(path)
+        can_create = hasattr(self.drive, "upload_resumable")
+        can_update = hasattr(self.drive, "update_content_resumable")
+        if size < self._resumable_min() or \
+                not (can_update if update_id is not None else can_create):
+            if update_id is not None:
+                return self.drive.update_content(update_id, path)
+            return self.drive.upload(path, name, parent_id)
+
+        key = self._session_key(rel)
+        session = self._stored_session(rel, path)
+        if session is None:
+            self.store.kv_delete(key)
+        mtime = os.path.getmtime(path)
+
+        def on_session(uri):
+            self.store.kv_set(key, json.dumps(
+                {"session": uri, "size": size, "mtime": mtime}))
+
+        if update_id is not None:
+            meta = self.drive.update_content_resumable(
+                update_id, path, session=session, on_session=on_session)
+        else:
+            meta = self.drive.upload_resumable(
+                path, name, parent_id, session=session,
+                on_session=on_session)
+        self.store.kv_delete(key)      # completed — nothing left to resume
+        return meta
+
     def _pull_remote(self, rel, dest):
         """Download rel, exporting first for Google-native docs."""
         r = self.remote_map.get(rel) or {}
@@ -1263,7 +1674,7 @@ class _ApplyCtx:
             self.remote_map[rel]["id"] == rid_known
         base_rel = rel
         if still_live:
-            meta = self.drive.update_content(rid_known, path)
+            meta = self._push_resumable(rel, path, update_id=rid_known)
             rid = rid_known
         elif rel in self.fold:
             # the native doc is no longer live: push the exported file as a
@@ -1271,12 +1682,16 @@ class _ApplyCtx:
             # (rel+ext) so the pair stays aligned from now on
             base_rel = self.fold[rel]
             pid = self.parent_remote_id(base_rel)
-            meta = self.drive.upload(path, base_rel.rsplit("/", 1)[-1], pid)
+            meta = self._push_resumable(rel, path,
+                                        name=base_rel.rsplit("/", 1)[-1],
+                                        parent_id=pid)
             rid = meta["id"]
             self.store.base_delete(self.pid, rel)
         else:
             pid = self.parent_remote_id(rel)
-            meta = self.drive.upload(path, rel.rsplit("/", 1)[-1], pid)
+            meta = self._push_resumable(rel, path,
+                                        name=rel.rsplit("/", 1)[-1],
+                                        parent_id=pid)
             rid = meta["id"]
         # Google-native docs never expose an md5 for their content — leaving
         # it None keeps remote change detection on the version field
@@ -1494,7 +1909,8 @@ class _ApplyCtx:
         # push the local copy
         name = copy_rel.rsplit("/", 1)[-1]
         pid = self.parent_remote_id(copy_rel)
-        meta = self.drive.upload(copy_path, name, pid)
+        meta = self._push_resumable(copy_rel, copy_path, name=name,
+                                    parent_id=pid)
         # pull remote to rel (export for Google-native docs)
         r = self.remote_map[rel]
         self._pull_remote(rel, path)
@@ -1528,7 +1944,8 @@ class _ApplyCtx:
         # the local deletion itself still propagates on the next pass
         name = copy_rel.rsplit("/", 1)[-1]
         pid = self.parent_remote_id(copy_rel)
-        meta = self.drive.upload(copy_path, name, pid)
+        meta = self._push_resumable(copy_rel, copy_path, name=name,
+                                    parent_id=pid)
         self.store.base_put(self.pid, copy_rel, "file", remote_id=meta["id"],
                             local_md5=md5_file(copy_path),
                             local_size=os.path.getsize(copy_path),
@@ -1554,7 +1971,8 @@ class _ApplyCtx:
         shutil.copy2(self.lpath(rel), copy_path)
         name = copy_rel.rsplit("/", 1)[-1]
         pid = self.parent_remote_id(copy_rel)
-        meta = self.drive.upload(copy_path, name, pid)
+        meta = self._push_resumable(copy_rel, copy_path, name=name,
+                                    parent_id=pid)
         self.store.base_put(self.pid, copy_rel, "file", remote_id=meta["id"],
                             local_md5=md5_file(copy_path),
                             local_size=os.path.getsize(copy_path),

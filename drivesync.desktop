@@ -9,3 +9,12 @@ Terminal=false
 Categories=Network;FileTransfer;
 Keywords=drive;sync;google;backup;
 StartupWMClass=DriveSync
+StartupNotify=true
+# KDE Plasma 5.24+: one main window; launching again raises the running one
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true
+Actions=SyncNow;
+
+[Desktop Action SyncNow]
+Name=Sync all now
+Exec=__BIN__/drivesync sync

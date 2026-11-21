@@ -365,6 +365,13 @@ def system_prefers_dark():
     exposes its choice in kdeglobals; other desktops fall back to GTK_THEME
     / XDG_CURRENT_DESKTOP name hints.
     """
+    # On Plasma, ask KDE first: the GNOME schema may be installed with a
+    # default value and would otherwise mask the user's Breeze Dark choice.
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+    if "KDE" in desktop or "PLASMA" in desktop:
+        kde = _kde_prefers_dark()
+        if kde is not None:
+            return kde
     try:
         import gi
         gi.require_version("Gtk", "3.0")

@@ -1,5 +1,6 @@
 """Tests for the 'drivesync gui' subcommand (environment-independent)."""
 
+import os
 import sys
 
 import pytest
@@ -116,3 +117,113 @@ def test_startup_page_prioritizes_setup_then_accounts_then_overview():
     assert startup_page({}, []) == 1
     assert startup_page({"client_id": "configured"}, []) == 2
     assert startup_page({"client_id": "configured"}, [{"email": "a@example.com"}]) == 0
+
+
+def test_crash_log_is_bounded(tmp_path, monkeypatch):
+    """A crash loop must not grow gui-crash.log without limit."""
+    pytest.importorskip("gi")
+    from drivesync import gui as gui_mod
+
+    log = tmp_path / "gui-crash.log"
+    log.write_bytes(b"x" * 4000)
+    monkeypatch.setattr(gui_mod, "_CRASH_LOG_MAX", 1000)
+    out = gui_mod._write_crash_log("latest traceback\n", log)
+    assert out == log
+    data = log.read_bytes()
+    assert len(data) <= 1000 + 200          # kept tail + new block
+    assert b"latest traceback" in data
+    assert b"truncated" in data
+
+
+def test_desktop_window_builds_under_a_display(tmp_path):
+    """Smoke-test the real window under Xvfb (CI's gui-smoke job).
+
+    Runs in a subprocess: an earlier test can leave a pystray GTK thread
+    alive, and building a second GTK window on the main thread next to it
+    crashes libgtk. Everything that talks to the outside world (worker,
+    tray, single-instance socket) is stubbed; the point is that every page
+    builds and Options exposes its four sub-tabs.
+    """
+    pytest.importorskip("gi")
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        pytest.skip("no display (run under xvfb-run)")
+
+    import subprocess
+    import textwrap
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    script = textwrap.dedent("""
+        from drivesync import gui
+
+        RealWorker = gui.Worker
+
+        class FakeWorker(RealWorker):
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+        class FakeListener:
+            def __init__(self, callback):
+                pass
+
+            def start(self):
+                return False
+
+            def stop(self):
+                pass
+
+        gui.Worker = FakeWorker
+        gui.instance.ShowListener = FakeListener
+        gui.DesktopApp._start_tray = lambda self: None
+        gui.GLib.timeout_add_seconds = lambda *a, **k: 0
+
+        app = gui.DesktopApp()
+        app.show()
+        assert app.nb.get_n_pages() == 8, app.nb.get_n_pages()
+
+        from gi.repository import Gtk
+
+        def find_notebook(widget):
+            if isinstance(widget, Gtk.Notebook):
+                return widget
+            if isinstance(widget, Gtk.Container):
+                for child in widget.get_children():
+                    found = find_notebook(child)
+                    if found is not None:
+                        return found
+            return None
+
+        options = app.nb.get_nth_page(gui.PAGE_OPTIONS)
+        sub = find_notebook(options)
+        assert sub is not None and sub.get_n_pages() == 4
+        assert app._startup_page in range(app.nb.get_n_pages())
+        app.win.destroy()
+        print("window ok")
+    """)
+    env = dict(os.environ, DRIVE_SYNC_HOME=str(tmp_path),
+               PYTHONPATH=str(root))
+    proc = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
+                          capture_output=True, text=True, timeout=90)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "window ok" in proc.stdout
+
+
+def test_tall_pages_scroll_instead_of_growing_the_window():
+    """Regression: the Options page used to report its full content height
+    as the window minimum, opening taller than a laptop screen. Tall pages
+    are wrapped in a vertical scroller so the window can always shrink."""
+    pytest.importorskip("gi")
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+
+    from drivesync.gui import _scrollable
+
+    scroll = _scrollable(Gtk.Label(label="tall page"))
+    assert isinstance(scroll, Gtk.ScrolledWindow)
+    policy = scroll.get_policy()
+    assert policy.vscrollbar_policy == Gtk.PolicyType.AUTOMATIC

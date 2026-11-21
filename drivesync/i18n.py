@@ -43,11 +43,59 @@ _STRINGS = {
     "queued": "En cola",
     "uploading": "Subiendo",
     "downloading": "Descargando",
+    "retrying": "Reintentando",
     "completed": "Completado",
     "failed": "Fallido",
     "Active transfers and the most recent completed or failed files. The queue resets when DriveSync restarts.":
         "Transferencias activas y los archivos completados o fallidos más recientes. La cola se reinicia al reiniciar DriveSync.",
     "Options": "Opciones",
+    "Retry and resume settings for file transfers. Applies from the next sync pass.":
+        "Ajustes de reintento y reanudación para transferencias. Se aplican desde la próxima pasada.",
+    "Retry attempts": "Reintentos",
+    "Backoff base (seconds)": "Base de espera (segundos)",
+    "Resumable threshold (MiB)": "Umbral reanudable (MiB)",
+    "Sync schedule": "Horario de sincronización",
+    "Background passes run only inside the active window; inside the peak window a separate bandwidth cap applies.":
+        "Las pasadas en segundo plano solo se ejecutan dentro de la ventana activa; dentro del horario punta se aplica un límite de ancho de banda independiente.",
+    "Active window from (HH:MM; empty = always)":
+        "Ventana activa desde (HH:MM; vacío = siempre)",
+    "Active window to (may cross midnight)":
+        "Ventana activa hasta (puede cruzar la medianoche)",
+    "Bandwidth limit (KB/s; 0 = unlimited)":
+        "Límite de ancho de banda (KB/s; 0 = sin límite)",
+    "Peak window from (HH:MM; empty = no peak hours)":
+        "Horario punta desde (HH:MM; vacío = sin horas punta)",
+    "Peak window to (may cross midnight)":
+        "Horario punta hasta (puede cruzar la medianoche)",
+    "Peak bandwidth limit (KB/s; 0 = same as general)":
+        "Límite de ancho de banda en punta (KB/s; 0 = igual que el general)",
+    "Network": "Red",
+    "Respect metered connections":
+        "Respetar conexiones de tarifa medida",
+    "On a metered connection": "En una conexión de tarifa medida",
+    "Metered throttle cap (KB/s; 0 = no cap)":
+        "Tasa en conexiones de tarifa medida (KB/s; 0 = sin límite)",
+    "Daily digest": "Resumen diario",
+    "Send a daily digest notification":
+        "Enviar una notificación de resumen diario",
+    "Skip the digest on days with no activity":
+        "Omitir el resumen en días sin actividad",
+    "Digest time (HH:MM; empty = first tick of the day)":
+        "Hora del resumen (HH:MM; vacío = primer tick del día)",
+    "Bandwidth cap (KB/s; empty = inherit global):":
+        "Límite de ancho de banda (KB/s; vacío = heredar el global):",
+    "Peak bandwidth cap (KB/s; empty = inherit):":
+        "Límite de ancho de banda en punta (KB/s; vacío = heredar):",
+    "Peak window from (HH:MM; empty = none):":
+        "Horario punta desde (HH:MM; vacío = ninguna):",
+    "Peak window to (HH:MM):": "Horario punta hasta (HH:MM):",
+    "inherit": "heredar",
+    "bandwidth caps must be integers (KB/s)":
+        "los límites de ancho de banda deben ser enteros (KB/s)",
+    "peak window times must be HH:MM (e.g. 08:00) or empty":
+        "las horas del horario punta deben ser HH:MM (p. ej. 08:00) o vacías",
+    "peak window must have both times (or neither)":
+        "el horario punta debe tener ambas horas (o ninguna)",
     "Local folder": "Carpeta local",
     "Drive folder": "Carpeta de Drive",
     "State": "Estado",
@@ -360,8 +408,8 @@ _STRINGS = {
     "{n} download(s) running\u2026": "{n} descarga(s) en curso\u2026",
     "{summary}  \u00b7  {n} other download(s) still running\u2026":
         "{summary}  \u00b7  otras {n} descarga(s) siguen en curso\u2026",
-    "{path} \u2014 {seen} of {total} match":
-        "{path} — {seen} de {total} coinciden",
+    "{path} \u2014 {seen} of {total} shown":
+        "{path} — {seen} de {total} mostrados",
     "{path} \u2014 {n} item(s)": "{path} — {n} elemento(s)",
     "Search \u201c{q}\u201d \u2014 {n} result(s) in all of Drive (double-click "
     "a folder to browse it)":
@@ -370,6 +418,46 @@ _STRINGS = {
     "Searching all of Drive for \u201c{q}\u201d\u2026":
         "Buscando \u201c{q}\u201d en todo Drive\u2026",
     "Search failed — {err}": "La búsqueda falló — {err}",
+
+    # ---- Drive browser (Phase 2.5) ------------------------------------
+    "Show:": "Mostrar:",
+    "Owner": "Propietario",
+    "All types": "Todos los tipos",
+    "Folders": "Carpetas",
+    "Google files": "Archivos de Google",
+    "PDF": "PDF",
+    "Images": "Imágenes",
+    "Videos": "Vídeos",
+    "Audio": "Audio",
+    "Archives": "Comprimidos",
+    "Text files": "Texto",
+    "Other": "Otros",
+    "Name (A\u2192Z)": "Nombre (A\u2192Z)",
+    "Name (Z\u2192A)": "Nombre (Z\u2192A)",
+    "Newest first": "Lo más nuevo primero",
+    "Largest first": "Lo más grande primero",
+    "Shortcut": "Acceso directo",
+    "Google Doc": "Doc de Google",
+    "Google Sheets": "Hoja de Google",
+    "Google Slides": "Presentación de Google",
+    "Google Drawing": "Dibujo de Google",
+    "Google file": "Archivo de Google",
+    "Image": "Imagen",
+    "Video": "Vídeo",
+    "Archive": "Comprimido",
+    "Text file": "Archivo de texto",
+    "This folder is empty.": "Esta carpeta está vacía.",
+    "No items match the filter.": "Ningún elemento coincide con el filtro.",
+    "Folder ID: {id}": "ID de la carpeta: {id}",
+    "Sync this folder\u2026": "Sincronizar esta carpeta\u2026",
+    "Open the \u201cAdd sync folder\u201d dialog with this Drive folder "
+    "already chosen as the destination":
+        "Abre el diálogo \u201cAgregar carpeta de sincronización\u201d con "
+        "esta carpeta de Drive ya elegida como destino",
+    "Open a folder inside \u201cShared with me\u201d first \u2014 the "
+    "virtual view itself cannot be a sync destination.":
+        "Abre antes una carpeta dentro de \u201cCompartido conmigo\u201d — "
+        "la vista virtual en sí no puede ser un destino de sincronización.",
     "{folders} folder(s) in the selection were skipped — use \u201cDownload "
     "this folder\u2026\u201d for those.":
         "{folders} carpeta(s) de la selección se omitieron — usa "
@@ -424,6 +512,12 @@ _STRINGS = {
     "Clear activity\u2026": "Limpiar actividad\u2026",
     "Time": "Hora",
     "Detail": "Detalle",
+    "Why": "Motivo",
+    "delta": "delta",
+    "full": "completo",
+    "{l} local, {r} remote — {m} scan":
+        "{l} locales, {r} en Drive — escaneo {m}",
+    "plus {n} other op(s)": "más {n} otra(s) operación(es)",
     "Activity detail": "Detalle de actividad",
     "No detail.": "Sin detalle.",
     "Worker {state} \u2014 last pass: {last}{stats}{err}":
@@ -491,6 +585,17 @@ _STRINGS = {
     "tooltip tray": "Al cerrar la ventana, la app sigue viva en la bandeja "
     "del sistema",
     "About": "Acerca de",
+    "Keyboard shortcuts": "Atajos de teclado",
+    "Search the current list": "Buscar en la lista actual",
+    "Open Settings": "Abrir los ajustes",
+    "Refresh the current view": "Actualizar la vista actual",
+    "Choose\u2026": "Elegir\u2026",
+    "Accent color: {name}": "Color de resaltado: {name}",
+    "Sync pairs overview": "Resumen de pares de sincronización",
+    "Recent activity": "Actividad reciente",
+    "Sync pairs": "Pares de sincronización",
+    "Drive files": "Archivos de Drive",
+    "Activity log": "Registro de actividad",
     "version line": "DriveSync v{version}",
     "Data folder: {dir}": "Carpeta de datos: {dir}",
     "Theme saved.": "Tema guardado.",

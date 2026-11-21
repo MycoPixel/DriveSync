@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from drivesync.drive import DriveError, PART_SUFFIX
+
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
@@ -22,9 +24,16 @@ class MockDrive:
         self.root.mkdir(parents=True, exist_ok=True)
         self.files = {}          # id -> meta dict
         self._changes = []       # mutation log feeding changes_list()
-        self.calls = {"list_tree": 0, "changes_list": 0}
+        self.calls = {"list_tree": 0, "changes_list": 0,
+                      "upload_resumable": 0, "upload": 0}
         self.root_id = self._new_folder("My Drive")
         self._version_counter = {}
+        # ---- Phase 3.2 resumable emulation + failure injection ----
+        self.sessions = {}       # session uri -> {"dest","offset",...}
+        self.fail_uploads_after = None   # inject: break once ≥N bytes in
+        self.fail_uploads_status = None  # inject: raise -> {status} at init
+        self.download_budget = None      # inject: bytes before a mid-stream
+                                         # break (None = never break)
 
     # ---- helpers --------------------------------------------------
     def _new_id(self):
@@ -110,12 +119,122 @@ class MockDrive:
         return dict(self.files[self._new_folder(name, parent_id)])
 
     def upload(self, local_path, name, parent_id):
+        self.calls["upload"] += 1
         fid = self._new_id()
         dest_dir = self._dir_path(parent_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / name
         shutil.copy2(local_path, dest)
         data = dest.read_bytes()
+        self.files[fid] = {
+            "id": fid, "name": name, "mimeType": "application/octet-stream",
+            "parents": [parent_id], "version": "1",
+            "modifiedTime": self._now_iso(), "trashed": False,
+            "md5Checksum": hashlib.md5(data).hexdigest(),
+            "size": str(len(data)),
+        }
+        self._changes.append(fid)
+        return dict(self.files[fid])
+
+    def upload_resumable(self, local_path, name, parent_id, session=None,
+                         on_session=None, chunk_bytes=None):
+        """Resumable create: same protocol semantics as the real client.
+
+        The session object tracks how many bytes the "server" holds; a
+        failure injection advances it (the server did receive the chunk)
+        before raising, so the resume path can be tested end to end.
+        """
+        self.calls["upload_resumable"] += 1
+        size = os.path.getsize(local_path)
+        dest_dir = self._dir_path(parent_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / name
+        data = Path(local_path).read_bytes()
+
+        st = None
+        if session and session in self.sessions:
+            st = self.sessions[session]
+            offset = st["offset"]
+            self.calls["session_resumes"] = \
+                self.calls.get("session_resumes", 0) + 1
+        else:
+            if self.fail_uploads_status:
+                code = self.fail_uploads_status
+                self.fail_uploads_status = None
+                raise DriveError(f"POST -> {code}: injected init failure")
+            session = self._new_id()
+            st = {"dest": dest, "name": name, "parent_id": parent_id,
+                  "offset": 0, "total": size, "update_id": None}
+            self.sessions[session] = st
+            if on_session:
+                on_session(session)
+            offset = 0
+
+        chunk = chunk_bytes or 4096
+        pos = offset
+        while pos < size:
+            end = min(pos + chunk, size)
+            if self.fail_uploads_after is not None and end >= \
+                    self.fail_uploads_after:
+                st["offset"] = end      # the server did receive this chunk
+                self.fail_uploads_after = None
+                raise DriveError(
+                    f"PUT session -> 500: injected break after {end} bytes")
+            pos = end
+            st["offset"] = end
+        st["offset"] = size
+        del self.sessions[session]
+        return self._register_file(dest, name, parent_id, data)
+
+    def update_content_resumable(self, file_id, local_path, session=None,
+                                 on_session=None, chunk_bytes=None):
+        """Resumable media update over an existing file id."""
+        self.calls["update_content_resumable"] = \
+            self.calls.get("update_content_resumable", 0) + 1
+        size = os.path.getsize(local_path)
+        dest = self._fs_path(file_id)
+        data = Path(local_path).read_bytes()
+
+        st = None
+        if session and session in self.sessions:
+            st = self.sessions[session]
+            offset = st["offset"]
+            self.calls["session_resumes"] = \
+                self.calls.get("session_resumes", 0) + 1
+        else:
+            session = self._new_id()
+            st = {"dest": dest, "name": self.files[file_id]["name"],
+                  "parent_id": None, "offset": 0, "total": size,
+                  "update_id": file_id}
+            self.sessions[session] = st
+            if on_session:
+                on_session(session)
+            offset = 0
+
+        chunk = chunk_bytes or 4096
+        pos = offset
+        while pos < size:
+            end = min(pos + chunk, size)
+            if self.fail_uploads_after is not None and end >= \
+                    self.fail_uploads_after:
+                st["offset"] = end
+                self.fail_uploads_after = None
+                raise DriveError(
+                    f"PUT session -> 500: injected break after {end} bytes")
+            pos = end
+            st["offset"] = end
+        st["offset"] = size
+        del self.sessions[session]
+        dest.write_bytes(data)
+        self._touch(file_id)
+        self.files[file_id]["md5Checksum"] = hashlib.md5(data).hexdigest()
+        self.files[file_id]["size"] = str(len(data))
+        return dict(self.files[file_id])
+
+    def _register_file(self, dest, name, parent_id, data):
+        """Finish an upload: write bytes, register metadata, log change."""
+        dest.write_bytes(data)
+        fid = self._new_id()
         self.files[fid] = {
             "id": fid, "name": name, "mimeType": "application/octet-stream",
             "parents": [parent_id], "version": "1",
@@ -172,9 +291,38 @@ class MockDrive:
         self._touch(file_id)
         return dict(self.files[file_id])
 
+    def untrash(self, file_id):
+        """Recovery path: take a file out of the fake Drive trash."""
+        self.files[file_id]["trashed"] = False
+        self._touch(file_id)
+        return dict(self.files[file_id])
+
+    def list_trashed(self, limit=100):
+        return [dict(f) for f in self.files.values() if f.get("trashed")][:limit]
+
     def download(self, file_id, dest_path):
-        Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self._fs_path(file_id), dest_path)
+        """Copy to dest via a .part file, resuming from its size — the same
+        .part + Range contract the real client keeps. download_budget
+        injects a mid-stream break after N bytes of THIS call."""
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = Path(f"{dest_path}{PART_SUFFIX}")
+        src = self._fs_path(file_id)
+        data = src.read_bytes()
+        offset = part.stat().st_size if part.exists() else 0
+        chunk = data[offset:]
+        if self.download_budget is not None and len(chunk) > \
+                self.download_budget:
+            with part.open("ab") as fh:
+                fh.write(chunk[:self.download_budget])
+            served = self.download_budget
+            self.download_budget = None
+            raise DriveError(
+                f"GET files/{file_id} -> 500: injected break after "
+                f"{served} bytes")
+        with part.open("ab") as fh:
+            fh.write(chunk)
+        shutil.move(str(part), str(dest))
         return dest_path
 
     def export(self, file_id, export_mime, dest_path):

@@ -415,16 +415,19 @@ def test_drive_row_and_bytes_helpers():
     folder = _drive_row({"id": "f1", "name": "Docs",
                          "mimeType": FOLDER_MIME,
                          "modifiedTime": "2026-11-18T10:00:00Z"})
-    assert folder[:2] == ["Docs", "Folder"] and folder[6] == ""
+    # columns: name, kind, size, modified, owner, id, mime, raw size
+    assert folder[:2] == ["Docs", "Folder"]
+    assert folder[5] == "f1" and folder[6] == FOLDER_MIME and folder[7] == ""
     doc = _drive_row({"id": "d1", "name": "Report",
                       "mimeType": "application/vnd.google-apps.document"})
-    assert doc[1] == "Doc" and doc[2] == ""            # no size for docs
+    assert doc[1] == "Google Doc" and doc[2] == ""     # no size for docs
+    assert doc[7] == ""
     shortcut = _drive_row({"id": "s1", "name": "Team",
                            "mimeType": "application/vnd.google-apps.shortcut",
                            "shortcutDetails": {"targetId": "real",
                             "targetMimeType": FOLDER_MIME}})
-    assert shortcut[1] == "Folder" and shortcut[4] == "real"
+    assert shortcut[1] == "Folder" and shortcut[5] == "real"
     file_row = _drive_row({"id": "x1", "name": "notes.txt",
                            "mimeType": "text/plain", "size": "12",
                            "modifiedTime": "2026-11-18T10:00:00Z"})
-    assert file_row[1] == "File" and file_row[2] == "12 B"
+    assert file_row[1] == "Text file" and file_row[2] == "12 B"

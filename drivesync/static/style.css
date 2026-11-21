@@ -273,3 +273,31 @@ input[type="search"],input[type="text"],input[type="number"],input[type="passwor
 .metric-card small{font-size:12px;color:var(--muted)}
 @media(max-width:760px){.dashboard-metrics{grid-template-columns:1fr 1fr}}
 @media(max-width:460px){.dashboard-metrics{grid-template-columns:1fr}}
+
+/* Phase 2.5 — Drive browser: inline filter labels, clickable breadcrumbs,
+   hoverable folder rows. The controls row wraps on narrow screens. */
+label.inline{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:13.5px}
+label.inline select,label.inline input{font:inherit;padding:10px 12px;border:1px solid var(--line);
+  border-radius:8px;background:var(--card);color:var(--ink);min-width:150px}
+label.inline.grow{flex:1;min-width:220px}
+label.inline.grow input{width:100%}
+.crumbs{display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:8px 0;
+  border-bottom:1px solid var(--line);margin-bottom:8px;min-height:34px}
+.crumbs .crumb{border:0;background:none;font:inherit;font-weight:600;cursor:pointer;
+  color:var(--accent);padding:4px 8px;border-radius:8px;white-space:nowrap}
+.crumbs .crumb:hover{background:var(--bg)}
+.crumbs .crumb.active{color:var(--ink);cursor:default}
+.crumbs .crumb.active:hover{background:none}
+.crumbs .crumb-sep{color:var(--muted);padding:0 2px}
+.drive-row.is-folder{cursor:pointer}
+.drive-row.is-folder:hover td{background:var(--bg)}
+.drive-nav{padding-top:12px}
+
+/* Phase 2.6 — Recovery: protected-outcome cards and the pending-deletion
+   path list. Left border carries the severity, matching the activity log. */
+.rec-block{border:1px solid var(--line);border-left-width:3px;border-radius:8px;
+  padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:13.5px}
+.rec-block.conflict{border-left-color:#b7791f}
+.rec-block.error{border-left-color:var(--danger)}
+.pending-paths{margin:0;padding-left:18px;font-family:ui-monospace,'Inconsolata',monospace;
+  font-size:12.5px;word-break:break-all}

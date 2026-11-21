@@ -9,6 +9,7 @@
                             rehashes files saved with an unchanged mtime)
   drivesync status          show accounts, pairs and recent activity
   drivesync conflicts       list / resolve conflict copies from the terminal
+  drivesync recovery        deletion holds, trash, versions, history
   drivesync config          get / set settings
   drivesync doctor          sanity-check the installation
 """
@@ -164,6 +165,62 @@ def cmd_accounts(args):
     store.close()
 
 
+def cmd_digest(args):
+    """Phase 4.4: the digest content, on demand.
+
+    Headless users get here what desktop users get as a notification:
+    the activity window since the last digest (or the whole log when
+    none has fired yet), plus whether/when the daily digest will fire.
+    """
+    from datetime import datetime
+    store = _open_store()
+    cfg = load_config()
+    since_id = int(store.kv_get("last_digest_id") or 0)
+    s = store.digest_summary(since_id)
+    window = (f"since the last digest (event #{since_id})" if since_id
+              else "the whole activity log (no digest has fired yet)")
+    print(f"window: {window}")
+    print(f"files: {s['files']} ({s['pushed']} pushed, {s['pulled']} pulled, "
+          f"{s['deleted']} deleted)")
+    print(f"conflicts: {s['conflicts']}  errors: {s['errors']}  "
+          f"folders touched: {s['pairs']}")
+    if not cfg.get("digest_enabled", False):
+        print("daily digest: disabled (enable via the dashboard or "
+              "'digest_enabled')")
+        return
+    at = str(cfg.get("digest_time") or "").strip() or "00:00"
+    state = ("already sent today"
+             if str(store.kv_get("last_digest_day") or "") ==
+             datetime.now().date().isoformat()
+             else f"will fire on the first tick at/after {at}")
+    print(f"daily digest: enabled at {at} — {state}")
+
+
+def cmd_network(args):
+    """Phase 4.3: what the worker sees on the metered front.
+
+    Useful headless: shows WHY automatic passes pause or throttle (or
+    why they will not) without opening the dashboard.
+    """
+    from drivesync import netstate
+    metered, source = netstate.is_metered()
+    state = ("metered" if metered else
+             "not metered" if metered is False else "unknown")
+    print(f"network: {state} (source: {source})")
+    cfg = load_config()
+    if not cfg.get("respect_metered", True):
+        print("respect_metered: off — the metered state is ignored")
+        return
+    if cfg.get("metered_action", "pause") == "throttle":
+        cap = int(cfg.get("metered_bandwidth_kb", 0) or 0)
+        cap_txt = f"{cap} KB/s" if cap else "no extra cap"
+        print("respect_metered: on — while metered, automatic passes are "
+              f"throttled to {cap_txt} (all rates capped)")
+    else:
+        print("respect_metered: on — while metered, automatic passes are "
+              "paused (manual syncs still run)")
+
+
 def cmd_pairs(args):
     store = _open_store()
     cfg = load_config()
@@ -186,7 +243,11 @@ def cmd_pairs(args):
                               direction=args.direction,
                               conflict_policy=args.conflict_policy
                               or cfg["conflict_policy"],
-                              include_patterns=args.include)
+                              include_patterns=args.include,
+                              bandwidth_limit_kb=args.bandwidth,
+                              peak_from=args.peak_from,
+                              peak_to=args.peak_to,
+                              bandwidth_limit_kb_peak=args.peak_bandwidth)
         print(f"added pair #{pair['id']}: {local} <-> {args.remote_path or args.remote_id}")
     elif args.action == "list":
         for p in store.pairs():
@@ -207,11 +268,15 @@ def cmd_pairs(args):
             if not k or k not in {"local_path", "remote_id", "remote_path",
                                   "direction", "conflict_policy", "enabled",
                                   "allow_deletes", "include_patterns",
-                                  "symlink_policy", "case_insensitive"}:
+                                  "symlink_policy", "case_insensitive",
+                                  "bandwidth_limit_kb", "peak_from",
+                                  "peak_to", "bandwidth_limit_kb_peak"}:
                 sys.exit(f"error: unknown pair field '{kv}' — valid fields: "
                          "local_path, remote_id, remote_path, direction, "
                          "conflict_policy, enabled, allow_deletes, "
-                         "include_patterns, symlink_policy, case_insensitive")
+                         "include_patterns, symlink_policy, case_insensitive, "
+                         "bandwidth_limit_kb, peak_from, peak_to, "
+                         "bandwidth_limit_kb_peak")
             if k in ("enabled", "allow_deletes", "case_insensitive"):
                 v = 1 if v.lower() in ("1", "true", "yes") else 0
             fields[k] = v
@@ -342,6 +407,182 @@ def cmd_conflicts(args):
         store.close()
 
 
+def cmd_recovery(args):
+    """Terminal access to the recovery layer (deletion holds, trash,
+    versions, history).
+
+    status/allow/keep handle the mass-deletion holds the safety valve
+    writes; trash / drive-trash / versions are read-only listings; the
+    restore-* actions put files back (each one is logged to the recovery
+    history). Drive-backed actions need the pair's account tokens, exactly
+    like 'conflicts resolve'.
+    """
+    from . import recovery
+    store = _open_store()
+    try:
+        action = args.action
+
+        def need_pair(pair_id):
+            pair = store.pair(pair_id)
+            if not pair:
+                sys.exit(f"error: no sync pair #{pair_id} — list them with "
+                         "'drivesync pairs list'")
+            return pair
+
+        def need_drive(pair):
+            account = store.account(pair["account_id"])
+            if not account:
+                sys.exit(f"error: pair #{pair['id']} has no authorized "
+                         "account")
+            from .auth import access_token_persisting, token_from_json
+            from .drive import Drive
+            token = token_from_json(account["token_json"])
+            return Drive(lambda: access_token_persisting(
+                store, account["id"], token))
+
+        if action == "status":
+            holds = recovery.all_pending_deletions(store)
+            if not holds:
+                print("No deletions are held for confirmation.")
+            for hold in holds:
+                print(f"pair #{hold['pair_id']} ({hold.get('pair_name', '?')}): "
+                      f"{hold['count']} deletion(s) held "
+                      f"(delete_safety_limit={hold['limit']})")
+                for rel in hold["paths"][:10]:
+                    print(f"    {rel}")
+                if hold.get("more"):
+                    print(f"    … and {hold['more']} more")
+                print(f"    confirm: 'drivesync recovery allow "
+                      f"{hold['pair_id']}'  or  'drivesync recovery keep "
+                      f"{hold['pair_id']}'")
+            trashed = recovery.list_local_trash(store, limit=1000)
+            print(f"\nLocal trash: {len(trashed)} file(s) recoverable "
+                  "('drivesync recovery trash')")
+            print("Drive trash / versions: 'drivesync recovery drive-trash "
+                  "<pair>'  and  'drivesync recovery versions <pair> "
+                  "--rel <path>'")
+            return
+
+        if action == "allow":
+            pair = need_pair(args.pair)
+            if not recovery.pending_deletions(store, pair["id"]):
+                sys.exit("error: no deletions are held for this pair")
+            recovery.allow_pending_deletions(store, pair["id"])
+            print(f"pair #{pair['id']}: the held deletions are approved for "
+                  "the next pass (one pass only).")
+            return
+
+        if action == "keep":
+            pair = need_pair(args.pair)
+            if not recovery.pending_deletions(store, pair["id"]):
+                sys.exit("error: no deletions are held for this pair")
+            recovery.keep_pending_files(store, pair["id"])
+            print(f"pair #{pair['id']}: every held deletion was kept — "
+                  "deletes are now OFF for this pair (re-enable with "
+                  "'drivesync pairs set').")
+            return
+
+        if action == "trash":
+            items = recovery.list_local_trash(
+                store, pair_id=args.pair, limit=500)
+            if not items:
+                print("The local trash is empty.")
+                return
+            for it in items:
+                print(f"pair #{it['pair_id']}  pass {it['stamp']}  "
+                      f"{it['rel']}  ({it['size']} bytes)")
+            return
+
+        if action == "restore-trash":
+            pair = need_pair(args.pair)
+            if not args.stamp or not args.rel:
+                sys.exit("error: restore-trash needs --stamp <pass-id> and "
+                         "--rel <path> (see 'drivesync recovery trash')")
+            try:
+                result = recovery.restore_from_trash(store, pair["id"],
+                                                     args.stamp, args.rel)
+            except ValueError as exc:
+                sys.exit(f"error: {exc}")
+            note = " (renamed — the original path was occupied)" \
+                if result["renamed"] else ""
+            print(f"pair #{pair['id']}: restored to {result['rel']}{note}")
+            return
+
+        if action == "drive-trash":
+            pair = need_pair(args.pair)
+            from .drive import DriveError
+            try:
+                items = recovery.list_drive_trash(
+                    pair, need_drive(pair), limit=100)
+            except DriveError as exc:
+                sys.exit(f"error: Drive refused the listing: {exc}")
+            if not items:
+                print("The Drive trash is empty.")
+                return
+            for it in items:
+                print(f"{it['id']}  {it.get('name', '?')}  "
+                      f"trashed {it.get('trashedTime') or '?'}")
+            return
+
+        if action == "restore-drive":
+            pair = need_pair(args.pair)
+            if not args.file_id:
+                sys.exit("error: restore-drive needs --file-id (see "
+                         "'drivesync recovery drive-trash <pair>')")
+            from .drive import DriveError
+            try:
+                result = recovery.restore_drive_trash(
+                    store, pair, need_drive(pair), args.file_id)
+            except DriveError as exc:
+                sys.exit(f"error: Drive refused the restore: {exc}")
+            print(f"pair #{pair['id']}: {result['name']} is out of the "
+                  "Drive trash; the next pass reconciles it.")
+            return
+
+        if action == "versions":
+            pair = need_pair(args.pair)
+            if not args.rel:
+                sys.exit("error: versions needs --rel <path>")
+            items = recovery.list_versions(pair["id"], args.rel)
+            if not items:
+                print("No kept previous versions for that path "
+                      "(versions are kept when an overwrite pull happens).")
+                return
+            for it in items:
+                print(f"{it['stamp']}  {it['rel']}  ({it['size']} bytes)")
+            return
+
+        if action == "restore-version":
+            pair = need_pair(args.pair)
+            if not args.rel or not args.stamp:
+                sys.exit("error: restore-version needs --rel <path> and "
+                         "--stamp <version> (see 'drivesync recovery "
+                         "versions')")
+            try:
+                result = recovery.restore_version(store, pair["id"],
+                                                  args.rel, args.stamp)
+            except ValueError as exc:
+                sys.exit(f"error: {exc}")
+            print(f"pair #{pair['id']}: {result['rel']} is back at version "
+                  f"{result['stamp']}; the next pass pushes it to Drive.")
+            return
+
+        # history
+        rows = store.recent_recovery(limit=100)
+        if not rows:
+            print("The recovery history is empty.")
+            return
+        for r in rows:
+            pair_txt = f"pair #{r['pair_id']}" if r["pair_id"] else "-"
+            print(f"{to_local(r['ts'])}  {pair_txt}  {r['action']}  "
+                  f"{r['rel_path']}")
+            if r["detail"]:
+                print(f"    {r['detail']}")
+        return
+    finally:
+        store.close()
+
+
 def cmd_status(args):
     store = _open_store()
     cfg = load_config()
@@ -375,7 +616,8 @@ def cmd_config(args):
             sys.exit("error: unknown setting '{}' — valid settings:\n  {}".format(
                 key, "\n  ".join(sorted(DEFAULT_CONFIG))))
         try:
-            if key in ("sync_interval", "bandwidth_limit_kb"):
+            if key in ("sync_interval", "bandwidth_limit_kb",
+                       "bandwidth_limit_kb_peak"):
                 value = int(value)
             if key == "ignore_patterns":
                 value = [v.strip() for v in value.split(",") if v.strip()]
@@ -511,9 +753,27 @@ def build_parser():
     s.add_argument("--include", default=None,
                    help="selective sync: comma-separated subfolder paths to "
                         "mirror, e.g. docs,photos (default: everything)")
+    s.add_argument("--bandwidth", default=None,
+                   help="per-pair bandwidth cap in KB/s (default: inherit "
+                        "the global limit)")
+    s.add_argument("--peak-bandwidth", default=None,
+                   help="per-pair cap inside the pair's peak window "
+                        "(0 = fall back to the pair/global general cap)")
+    s.add_argument("--peak-from", default=None,
+                   help="pair peak window start, HH:MM (with --peak-to)")
+    s.add_argument("--peak-to", default=None,
+                   help="pair peak window end, HH:MM (may cross midnight)")
     s.add_argument("--pair-id", type=int, help="pair id (for set/remove)")
     s.add_argument("fields", nargs="*", help="key=value fields (for set)")
     s.set_defaults(fn=cmd_pairs)
+
+    s = sub.add_parser("network",
+                       help="show the metered-connection state DriveSync sees")
+    s.set_defaults(fn=cmd_network)
+
+    s = sub.add_parser("digest",
+                       help="print the activity summary the daily digest uses")
+    s.set_defaults(fn=cmd_digest)
 
     s = sub.add_parser("sync", help="run one sync pass and exit")
     s.add_argument("--pair", type=int, default=None)
@@ -532,6 +792,30 @@ def build_parser():
                    help="what wins when resolving (copy = the .conflict-… "
                         "file replaces the original)")
     s.set_defaults(fn=cmd_conflicts)
+
+    s = sub.add_parser("recovery",
+                       help="deletion holds, trash, versions, history")
+    s.add_argument("action",
+                   choices=["status", "allow", "keep", "trash",
+                            "restore-trash", "drive-trash", "restore-drive",
+                            "versions", "restore-version", "history"],
+                   help="status: held deletions + counts; allow: approve the "
+                        "held deletions for one pass; keep: keep every file "
+                        "(deletes off); trash: list locally preserved files; "
+                        "drive-trash: list Google's trash; versions: list "
+                        "kept previous versions; history: decision log")
+    s.add_argument("pair", type=int, nargs="?", default=None,
+                   help="sync pair id (allow/keep/restore-*/drive-trash/"
+                        "versions)")
+    s.add_argument("--rel", default=None,
+                   help="path inside the pair (restore-trash, versions, "
+                        "restore-version)")
+    s.add_argument("--stamp", default=None,
+                   help="trash pass id or version stamp for the restore "
+                        "actions")
+    s.add_argument("--file-id", default=None,
+                   help="Drive file id for restore-drive")
+    s.set_defaults(fn=cmd_recovery)
 
     s = sub.add_parser("status", help="show summary")
     s.set_defaults(fn=cmd_status)

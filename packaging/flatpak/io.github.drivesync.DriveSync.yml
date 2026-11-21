@@ -1,0 +1,65 @@
+# Flatpak manifest for DriveSync.
+#
+# Build (from the repository root):
+#   flatpak-builder --user --install --force-clean \
+#       build-flatpak packaging/flatpak/io.github.drivesync.DriveSync.yml
+#   flatpak run io.github.drivesync.DriveSync
+#
+# The bundled `packaging/build-flatpak.sh` wraps this and produces a
+# distributable .flatpak bundle.
+app-id: io.github.drivesync.DriveSync
+runtime: org.gnome.Platform
+runtime-version: "46"
+sdk: org.gnome.Sdk
+command: drivesync
+
+finish-args:
+  # Google Drive + the local dashboard (bound to 127.0.0.1 only).
+  - --share=network
+  # Sync folders live in the home directory; the app is useless without it.
+  - --filesystem=home
+  # Native window on Wayland, X11 fallback for older Plasma/Xfce sessions.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # Desktop notifications and the tray icon (KDE/GNOME indicators).
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-*
+  # The OAuth consent page opens through the desktop portal automatically.
+  # Keep the dashboard's own state under ~/.var/app/<id>.
+  - --env=PYTHONUNBUFFERED=1
+
+modules:
+  # Flask/requests and their dependencies. The GNOME runtime already ships
+  # PyGObject, GTK 3 and libnotify, so only the pure-Python stack is added.
+  - name: drivesync-python-deps
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-cache-dir --prefix=/app flask requests
+    sources: []
+
+  - name: drivesync
+    buildsystem: simple
+    build-commands:
+      # App code + console entry point (the wheel's console script would
+      # otherwise be the only thing installed).
+      - pip3 install --no-cache-dir --no-deps --prefix=/app .
+      # Menu entry: Flatpak requires the desktop file to be named after the
+      # app ID, and the window's application ID follows it on Wayland.
+      - install -d /app/share/applications /app/share/metainfo
+      - install -d /app/share/icons/hicolor/scalable/apps
+      - |
+        sed -e 's|__BIN__|/app/bin|g' \
+            -e 's|__ICON__|io.github.drivesync.DriveSync|g' \
+            drivesync.desktop > /app/share/applications/io.github.drivesync.DriveSync.desktop
+      - |
+        sed -e 's|<id>drivesync</id>|<id>io.github.drivesync.DriveSync</id>|' \
+            drivesync.metainfo.xml > /app/share/metainfo/io.github.drivesync.DriveSync.metainfo.xml
+      - install -m 644 drivesync/static/mark.svg \
+          /app/share/icons/hicolor/scalable/apps/io.github.drivesync.DriveSync.svg
+      - install -d /app/share/doc/drivesync
+      - install -m 644 README.md LICENSE CHANGELOG.md /app/share/doc/drivesync/
+    sources:
+      - type: dir
+        path: ../..

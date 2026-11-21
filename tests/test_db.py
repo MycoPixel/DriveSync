@@ -218,6 +218,18 @@ def test_activity_rows_are_strings(store):
             assert isinstance(e[k], str), (k, e[k])
 
 
+def test_optimize_and_close_keep_database_usable(tmp_path):
+    s = Store(tmp_path / "state.db")
+    s.log(None, "test", "", "row")
+    s.optimize()
+    assert s.count_events() >= 1
+    s.close()
+    # reopening after a checkpointed close must still work
+    s2 = Store(tmp_path / "state.db")
+    assert s2.count_events() >= 1
+    s2.close()
+
+
 def test_prune_events_drops_old_then_caps(store):
     """Old rows go by age first; the table is then capped at `keep` newest."""
     old = (datetime.now(timezone.utc) - timedelta(days=40)) \

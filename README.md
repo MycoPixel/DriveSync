@@ -33,6 +33,45 @@ tokens and files stay on your machine and talk to Google directly.
   Drive (My Drive + Shared with me) like a virtual drive without the mount:
   browse, then download a file or a whole folder to any destination, on
   your say-so, without creating a sync pair
+- **Full Drive browser** — a dedicated Drive tab in the dashboard (and a
+  richer desktop Drive tab): clickable breadcrumbs with the folder ID on
+  show, Name/Type/Size/Modified/Owner columns, filter by file type, sort
+  by name/date/size, a Drive-wide name search, and one-click "use this
+  folder" to send any folder to the sync-pair form — no more copying IDs
+  out of the Drive web URL
+- **Resumable transfers** — large uploads use Google's resumable-session
+  protocol with the session persisted between passes, downloads keep
+  their progress in a `.drivesync.part` file, and transient failures are
+  retried with backoff — a broken connection costs the missing bytes, not
+  the whole transfer
+- **Daily digest** — once a day at a time you pick, a notification
+  summarizing what synced (pushed, pulled, deleted, conflicts,
+  errors); quiet days can stay quiet
+- **Metered-connection awareness** — on a mobile hotspot or capped
+  plan, automatic syncing pauses (or throttles to a safe rate) until
+  the network is unmetered; manual syncs are always your call
+- **Peak/off-peak bandwidth, globally or per folder** — give sync a
+  slower cap during the hours you need the line for work, unlimited or
+  faster the rest of the day; the bucket swaps at the window boundary
+  without a restart, and any pair can override the global caps with its
+  own window and limits
+- **Consistent desktop and web interfaces** — plan reasons, transfer
+  sizes and status colors render from one shared presentation module, so
+  the GTK app and the web dashboard never drift apart
+- **Explainable sync plans** — the sync pass runs as scanner -> planner ->
+  executor, and the pair's Preview dialog shows every planned operation
+  with the reason it was planned ("local changes since last sync",
+  "deleted on Drive — propagating locally", "conflict — policy 'newer'
+  keeps the Drive version (newer)") and the payload size for transfers,
+  before anything touches disk or Drive
+- **Recovery interface** — a Recovery page in the dashboard (plus a
+  `drivesync recovery` command) that shows what the safety nets caught and
+  how to get files back: held mass-deletions to confirm or keep, conflict
+  copies, the recoverable local trash, Google's own Drive trash, previous
+  versions kept before overwrites, and a decision history. Nothing is ever
+  destroyed outright: local deletions move to a trash folder, remote ones
+  to Drive's trash, overwritten bytes into version history — and a mass
+  deletion is never propagated until you confirm it
 - **Selective sync via ignore patterns** (glob style, per app)
 - **Activity log** with conflicts and errors surfaced in the dashboard —
   auto-pruned (30 days, capped at 5,000 rows) so the state database stays small
@@ -77,6 +116,15 @@ bundles its own CPython, so it runs anywhere the glibc is new enough. It
 opens the dashboard in your browser, and includes the tray and CLI; the GTK
 desktop window needs the distro's PyGObject, so prefer the deb/rpm for the
 full desktop experience.
+
+For a sandboxed install, `packaging/build-flatpak.sh` builds a Flatpak on
+`org.gnome.Platform` (see `packaging/README.md`). It keeps data under
+`~/.var/app/io.github.drivesync.DriveSync` and uses the desktop portal for
+file pickers; enable autostart from the dashboard instead of systemd.
+
+The desktop window remembers its size and last tab. Useful shortcuts:
+`Ctrl+R` sync all, `Ctrl+F` search the current list, `Ctrl+,` open Options,
+`F5` refresh the current view, and `Ctrl+Q` quit.
 
 From source:
 
@@ -153,7 +201,11 @@ unwanted folders (the desktop dialog can also create the pair paused for
 review).
 
 or use **Sync pairs → Add a sync pair → Browse…** in the dashboard, which
-lets you click through your Drive folders.
+lets you click through your Drive folders, or open the dashboard's
+**Drive** tab, navigate (or search) to the destination folder and press
+**"Use this folder for a new sync pair"**. In the desktop app the Drive
+tab's **"Sync this folder…"** button does the same job: the Add-folder
+dialog opens with the account, folder ID and display name already filled.
 
 ### Run it
 
@@ -240,6 +292,19 @@ UTC timestamp, capped at **10 versions per file**, oldest pruned; 0 in
 file copy back — or make that the local side and the next pass pushes it.
 Uploads never need this: Drive keeps its own revision history for every
 file, and deletes already land in DriveSync's recoverable trash.
+
+### Recovery: when deletions are held
+
+A pass that would delete more than `delete_safety_limit` files (default 10)
+is stopped before anything happens: the deletions are listed on the
+dashboard's **Recovery** page (and `drivesync recovery status`), and you
+choose — **Allow these deletions (one pass)** applies them exactly once,
+**Keep my files (deletes off)** switches the pair to deletes-off so files
+are kept on both sides (re-enable from the pair editor). The hold survives
+restarts and releases itself if the risky pass resolves. Everything the app
+keeps for you is restorable from that page: the local trash (with the pass
+stamp), Google Drive's trash, and the previous versions kept before an
+overwrite pull.
 
 ### Per-pair hardening options (pair edit dialog / `drivesync pairs set`)
 

@@ -5,7 +5,263 @@ Older entries below 0.2.1 are summarized from the git history.
 
 ## [Unreleased]
 
+### Added
+- **Desktop window polish (GTK, with KDE in mind).** The window remembers
+  its normal size, maximized state and last tab; tall Options/Overview/Setup
+  pages scroll instead of forcing the window past the screen edge; Options
+  is split into Appearance / Sync / Network / About sub-tabs; `Ctrl+Q`,
+  `Ctrl+R`, `Ctrl+F`, `Ctrl+,` and `F5` work window-wide, controls expose
+  accessible names that follow the language, and the main lists are
+  labelled for screen readers. File pickers use `Gtk.FileChooserNative`, so
+  Plasma shows Dolphin's picker and GNOME shows Nautilus' (and Flatpak uses
+  the portal). The window adopts the Flatpak app ID on Wayland; the desktop
+  entry gains a "Sync all now" action, `StartupNotify`,
+  `SingleMainWindow` and notification hints. Plasma's `kdeglobals` dark
+  choice is now consulted before GNOME's schema. The dashboard refreshes
+  the visible tab (status/activity every 4 s, transfers every 1.5 s) and
+  pauses while the browser window is hidden. `gui-crash.log` is capped at
+  256 KiB, SQLite runs `PRAGMA optimize` after pruning and checkpoints the
+  WAL on close. CI covers Python 3.9–3.14 plus a headless Xvfb GUI smoke
+  test, and a Flatpak manifest/build script join deb/rpm/AppImage.
+- **Phase 4.4 — daily digest notification.** Once a day, a summary of
+  what synced — as a desktop notification and a durable activity-log
+  row, visible on the dashboard:
+  - new `store.digest_summary(since_id)` rolls the window up in one
+    SQL scan (pushed/pulled/deleted by action, conflicts/errors by
+    level, distinct pairs touched); 'pass'/'metered-pause'/'digest'
+    rows are excluded so re-runs never compound.
+  - the window is bookmarked by event **id**, not timestamp: event ts
+    has second precision, so same-second rows would leak into (or out
+    of) a time window; ids are strictly monotonic.
+  - worker: `_maybe_digest()` runs on every loop tick BEFORE the sync
+    gates — a digest is a report about sync activity, not sync
+    activity, so it fires even while the active window or a metered
+    pause holds syncing back. Fires at/after `digest_time` on the
+    first unhandled day (a late boot catches up); one notification
+    per day regardless of pass count.
+  - `notify-send` is best-effort: silently absent headless; the
+    activity-log row (written BEFORE the notify call) is the durable
+    record, and a notifier failure lands in `status['digest']['error']`
+    without killing the loop or re-spamming.
+  - config: `digest_enabled` (default off — notifications are opt-in),
+    `digest_time` (HH:MM or empty = first tick of the day),
+    `digest_skip_empty` (default on: quiet days stay quiet).
+  - messages pluralize correctly ("1 conflict · 2 errors"); zeros for
+    conflicts/errors are shown on quiet-ish days as reassurance.
+  - web: Settings gains three fields; dashboard shows a "Last digest"
+    row once one has fired. GTK: Options gains a "Daily digest"
+    section with its own saver (half-typed HH:MM is skipped, not
+    blocked). CLI: `drivesync digest` prints the current window and
+    the schedule headlessly.
+  - ES translations for every new string.
+  - 16 new tests in `tests/test_digest.py` (aggregation incl. id-window
+    semantics, config validation, once-per-day dedup, window carries
+    only new activity, skip-empty marks the day, skip-off notifies
+    "no file changes", disabled inert, not-yet-due schedules,
+    notifier failure keeps the durable row, message shapes, loop
+    firing before the sync gates, CLI output, HTTP E2E: settings
+    roundtrip + junk time 400 + live adopted digest) — 487 passed,
+    7 skipped.
+- **Phase 4.3 — metered-network awareness.** The worker now defers or
+  throttles automatic sync passes when NetworkManager reports the
+  connection as metered (mobile hotspot, capped plan):
+  - new `drivesync.netstate` module: detection order is the
+    `DRIVE_SYNC_METERED` env override (`yes`/`no`, also the test hook
+    and an escape hatch for VPN/containers), then NetworkManager via
+    `busctl` (plain property read, no python-dbus dependency, guesses
+    honoured), then `nmcli` `GENERAL.METERED`; unknown fails OPEN — a
+    missing/broken NetworkManager never stops syncing. Results cache
+    for 30 s so loop ticks stay cheap.
+  - config: `respect_metered` (default on), `metered_action`
+    (`pause` | `throttle`), `metered_bandwidth_kb` (default 1024; 0 =
+    no extra cap); all validated in `save_config`.
+  - pause: only AUTOMATIC passes defer — dashboard "Sync now", the GUI
+    button and `drivesync sync` are deliberate intent and always run.
+    One `metered-pause` event row per transition (not per deferred
+    pass) and a `metered-resume` row when the network normalizes.
+  - throttle: the metered cap is a hard ceiling on every rate — the
+    global rate (including unlimited), pair overrides included; an
+    explicit pair override can go lower but a hotspot never lifts it.
+  - status: `status["network"]` (`metered`/`source`/`checked_at`)
+    drives a dashboard "Network" row shown only while metered.
+  - web: Settings gains the three fields; GTK: Options gains a Network
+    section wired into the shared schedule saver; CLI: `drivesync
+    network` prints the state and the configured behaviour headlessly.
+  - ES translations for every new string.
+  - housekeeping: removed the dead single-arg `_effective_limit_kb`
+    left behind by the Phase 4.2 refactor (shadowed, never called).
+  - 15 new tests in `tests/test_metered.py` (detection parsing incl.
+    NM guess values and failures, cache TTL, config validation, gate
+    transitions with single log rows, throttle cap matrix incl.
+    unlimited→cap, loop wiring: automatic pass deferred + explicit
+    run honored) — 471 passed, 7 skipped. E2E over the real Flask
+    app: settings round-trip, junk action rejected 400, live bucket
+    caps while metered, fail-open after the network clears.
+- **Phase 4.2 — per-pair QoS overrides.** Each sync pair can carry its
+  own bandwidth caps and peak window, nesting over the global settings:
+  - four nullable columns on `pairs` (`bandwidth_limit_kb`,
+    `peak_from`, `peak_to`, `bandwidth_limit_kb_peak`) added by the
+    existing schema migration; NULL/empty = inherit the global value
+  - resolution ladder in `Worker._effective_limit_kb(pair)`: pair peak
+    cap (inside the pair's own window) > pair general cap > global
+    effective rate (which stays peak-window aware); the fallback uses
+    the global *effective* rate, so a pair with only a window still
+    honours the global peak cap inside it
+  - `_bucket_for_pair()` caches buckets by resolved rate — unchanged
+    rates keep their token state across passes (burst smoothing), a
+    rate change or global-rate change rebuilds; the pass loop assigns
+    `drive.limiter` per pair (safe: Drive reads the attribute at
+    transfer time)
+  - per-pair status rows gain `bandwidth_kb` (the resolved rate)
+  - web: add-pair form + edit modal gain the four fields (empty =
+    inherit); `pair_json` exposes them; PATCH validates the RESOLVED
+    quartet so a partial edit can never leave a half window behind
+  - GTK: shared `_qos_kwargs` parser feeds the add/edit pair dialogs
+  - CLI: `pairs add --bandwidth/--peak-bandwidth/--peak-from/--peak-to`
+    and `pairs set bandwidth_limit_kb=…` (empty value clears to inherit)
+  - ES translations for every new string
+  - found by the new tests and fixed: the validator returned its
+    quartet in a different order than callers unpacked (peak cap
+    landed in peak_from), and the pair-peak-0 fallback used the global
+    base rate instead of the global effective rate
+- **Phase 4.1 — scheduled QoS (peak/off-peak bandwidth).** A separate
+  bandwidth cap now applies inside a configurable peak window:
+  - new config keys `peak_from`/`peak_to` (HH:MM, may cross midnight,
+    empty = no peak hours; must be set together) and
+    `bandwidth_limit_kb_peak` (0 = fall back to the general cap inside
+    the window), validated in save_config
+  - the worker re-evaluates the effective rate every loop tick via
+    `_update_limiter()` and swaps the token bucket at the window
+    boundary without a restart; dashboard saves apply immediately
+  - worker status gains `peak_active` + `bandwidth_now_kb`; the web
+    dashboard shows a "Peak throttle" row while the window is live
+  - web Settings gains the peak window + peak limit fields; GTK gains a
+    full **Options → Sync schedule** section (active window, peak
+    window, both limits) — schedule keys that were web-only until now
+  - `drivesync config set` accepts the new keys
+  - also fixed a latent GUI bug: both GTK settings handlers called
+    `update_config()` with a positional dict, which the keyword-only
+    signature rejects (a live TypeError on first save)
+- **Phase 3.3 — GTK interface parity.** The desktop app catches up with
+  everything the web UI gained in 3.1/3.2:
+  - the sync-plan preview dialog now has **Size** and **Why** columns
+    (per-op explanations from the Phase 3.1 planner), marks destructive
+    ops with a ⚠ prefix, and appends the scan note (file counts, delta
+    vs full) to the summary line
+  - the Transfers tab colors the status cell — red for failed, orange
+    for retrying — via a hidden raw-status column so colors survive a
+    language switch
+  - a new **Options → Transfers** section exposes the Phase 3.2 engine
+    knobs (retry attempts, backoff base, resumable threshold) and
+    persists them with `update_config`; the worker applies them from the
+    next pass
+  - new shared `drivesync/present.py` module (importable without
+    PyGObject) holds the preview-row building, scan note and status
+    colors both front-ends rely on; `"retrying"` gained its ES
+    translation and the new strings are translated too
+  - removed three junk hash-named files that shipped in the baseline zip
+- **Phase 3.2 — resumable transfers.** Large pushes and all downloads can
+  now survive a broken connection without starting over:
+  - **Resumable uploads** — files at or above `resumable_threshold`
+    (default 8 MiB) push through Google's resumable-session protocol:
+    chunked PUTs, each 308 telling the server-side offset. The session URI
+    is persisted per pair/path, so an in-pass retry or a later pass
+    resumes from where it broke; the executor discards a stale session
+    when the file changed since the attempt
+  - **Resumable downloads** — bytes land in `dest.drivesync.part`
+    (invisible to the scanner); a broken transfer leaves its progress on
+    disk and the next attempt continues with a `Range` request; a server
+    that ignores the range restarts cleanly, and a complete part is
+    finalized even if the crash landed before the rename (416 path)
+  - **Executor retry with backoff** — transient failures (5xx/429,
+    throttles, transport breaks) get `transfer_retries` (default 2) more
+    attempts with exponential backoff; auth/permission/4xx and local OS
+    errors are classified fatal and never retried; the Transfers tab
+    shows the new `retrying` state (EN/ES) and ExecReport counts retries
+- **Phase 3.1 — scanner/planner/executor architecture.** The sync pass is
+  now three explicit stages with data flowing between them, and the
+  three-way reconciliation is untouched: the **scanner**
+  (`scan_pair_state`) gathers local/Drive/base state; the **planner**
+  (`build_plan`) runs the pure `decide()` and produces a **Plan** — an
+  ordered list of `PlannedOp`s that each carry a truthful **reason**
+  ("local changes since last sync", "deleted on Drive — propagating
+  locally", "conflict — policy 'newer' keeps the Drive version (newer)",
+  …), the transfer size and the destructive flag — plus the delete-safety
+  gate; the **executor** (`execute_plan`) applies the plan and returns an
+  **ExecReport** with per-op failures (one failed op never aborts the
+  pass). `sync_pair` is thin orchestration, so behavior is identical —
+  the whole pre-existing suite passes unchanged
+- **The preview dialog now explains itself**: every planned op shows why
+  it is planned and (for uploads/downloads) the payload size; destructive
+  ops keep their warning marker, now driven by the plan's destructive
+  flag. The preview payload also exposes `scan` metadata (file counts,
+  delta-vs-full) for future UI
+- **Phase 2.6 — Recovery interface.** A new **Recovery** page in the
+  dashboard brings every protection outcome into one place: deletions held
+  by the safety limit (with **Allow these deletions (one pass)** and
+  **Keep my files (deletes off)** decisions), conflict-copy counts per pair,
+  the recoverable local trash (restore any copy to its original path —
+  occupied paths come back renamed), the account-wide Drive trash
+  (untrash; the next pass re-downloads the file into its pair), previous
+  versions kept before overwrite pulls (restorable, and the restore itself
+  is undoable), recent failures, and a decision log
+- **Mass-deletion protection now asks instead of silently retrying** —
+  when a pass exceeds `delete_safety_limit` the held deletions are stored
+  (`pending_deletes:<pair>`), the recovery history records the incident
+  once, and the Recovery page/CLI offer the decision; approving applies the
+  deletions for exactly one pass and consumes the approval, "keep my
+  files" switches the pair to deletes-off (the tested ack path tombstones
+  everything without deleting), and a later pass back under the limit
+  releases the hold by itself. The hold survives restarts (it lives in the
+  store) and a corrupted hold reads as empty rather than wedging a pair
+- **`drivesync recovery` command** — `status` (held deletions + counts),
+  `allow` / `keep <pair>`, `trash` / `restore-trash`, `drive-trash` /
+  `restore-drive`, `versions` / `restore-version`, `history` — the same
+  operations as the dashboard, for headless machines
+- **Recovery history table** (`recovery` in state.db) — every protection
+  event and user decision: original path, reason, action, detail; conflict
+  resolutions now record rows too; cleaned up when a pair is deleted
+- **Drive trash API plumbing** — `drive.list_trashed()` and
+  `drive.untrash()` (Files v3, Shared-Drives-aware); MockDrive gained the
+  same subset for tests
+- **Phase 2.5 — Improved Google Drive browser.** A new **Drive tab** in the
+  web dashboard browses the whole account (My Drive + Shared with me):
+  clickable breadcrumb navigation with the current folder's ID shown,
+  Name/Type/Size/Modified/Owner columns, a type filter (folders, Google
+  files, PDFs, images, videos, audio, archives, text), sorting (name,
+  modification date, size — folders always first), a live in-folder filter,
+  and a Drive-wide name search (Enter). "Use this folder for a new sync
+  pair" hands the browsed folder straight to the sync-pair form, so a
+  destination folder is chosen by clicking instead of copying IDs. The
+  backend (`/api/drive/<id>/children`, `/folders`, `/search`) now returns
+  a stable `category` token per row, the owner's display name, and the
+  root-first `breadcrumbs` chain
+- **Desktop Drive tab upgrades** — Owner column, the same type filter and
+  sort order combos (client-side, so re-sorting never re-queries Drive),
+  clickable breadcrumbs with a copyable "Folder ID: …" line, an
+  empty-folder status line, and a **"Sync this folder…"** button that opens
+  the Add-sync-folder dialog with the browsed folder, account and display
+  name prefilled
+- **Shared listing plumbing** — `owners(displayName,emailAddress)` is now
+  requested for children and search listings; `drivesync.drive` gains
+  `file_category()` (one classifier shared by both UIs), `owner_name()`,
+  and `breadcrumbs()` with a depth cap that turns crafted parent loops
+  into a short chain and truncates (never fails) when an ancestor is
+  inaccessible
+
 ### Fixed
+- **Dashboard hint paragraphs no longer render as their key names** — in
+  English mode the `data-i18n` path printed raw keys such as
+  "transfer-queue-hint" for every hint stored in the "English|Spanish"
+  format; `t()` now serves the stored English half, so the transfer-queue,
+  first-sync-review, scope, conflict and Drive-browser hints read as
+  sentences again
+- **Browse endpoints survive broken credentials** — an account with a
+  missing/expired refresh token made `/api/drive/<id>/children`, `/folders`
+  and `/search` return a 500 HTML page (the dashboard showed "bad JSON");
+  they now catch `AuthError` like the pair endpoints and answer a clean
+  502 JSON with the re-authorization hint
+
 - **The AppImage launcher now opens the dashboard** — its `.desktop` entry
   ran `serve` without `--open`, so clicking the icon started the worker but
   showed nothing; it now runs `serve --open`. The AppImage also writes the

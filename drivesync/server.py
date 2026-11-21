@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -16,11 +17,13 @@ from flask import Flask, jsonify, request, send_from_directory
 from . import __version__
 from . import conflicts
 from . import engine
+from . import recovery
 from .auth import (AuthError, access_token_persisting, interactive_auth,
                    token_from_json, whoami)
 from .config import db_path, load_config, save_config
 from .db import Store, parse_include_patterns, to_local
-from .drive import Drive, DriveError, FOLDER_MIME, resolve_folder_entry
+from .drive import (Drive, DriveError, FOLDER_MIME, breadcrumbs,
+                    file_category, owner_name, resolve_folder_entry)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -50,6 +53,19 @@ def _public_settings(cfg):
     secret = out.get("client_secret") or ""
     out["client_secret"] = "***" if secret else ""
     out["client_secret_set"] = bool(secret)
+    return out
+
+
+def _browser_rows(items):
+    """Listing rows decorated for the browser UIs: a stable `category`
+    token (the type column and filter both use it) and the owner's display
+    name ('' when Drive does not report one)."""
+    out = []
+    for item in items:
+        row = dict(item)
+        row["category"] = file_category(item)
+        row["owner"] = owner_name(item)
+        out.append(row)
     return out
 
 
@@ -157,56 +173,61 @@ def create_app(store: Store, worker=None):
         store.delete_account(account_id)
         return jsonify({"ok": True})
 
-    # ---- drive browsing (folder picker) -----------------------------
+    # ---- drive browsing (folder picker + Drive browser) --------------
     @app.get("/api/drive/<int:account_id>/folders")
     def drive_folders(account_id):
         """List folders (and root info) for the picker UI.
 
         parent=shared lists 'Shared with me' (folders other accounts shared);
         shortcuts to folders resolve to their real target ids so pairs bind
-        to the folder itself, not the shortcut.
+        to the folder itself, not the shortcut. `breadcrumbs` is the
+        root-first chain of ancestor folders for clickable navigation; the
+        virtual roots (root, shared) never hit the API for it.
         """
         parent = request.args.get("parent", "root")
         try:
             drive = drive_for(account_id)
+            crumbs = breadcrumbs(drive, parent)
             if parent == "shared":
                 folders = drive.list_shared_folders()
-                current = {"id": "shared", "name": "Shared with me"}
             else:
                 children = drive.list_children(parent)
                 folders = [f for f in (resolve_folder_entry(c) for c in children)
                            if f]
-                current = None
-                if parent != "root":
-                    current = drive.get(parent, fields="id,name,parents")
-        except DriveError as exc:
+            current = dict(crumbs[-1]) if crumbs else None
+        except (DriveError, AuthError) as exc:
             return api_error(exc, 502)
         if parent == "root":
+            current = None          # the top of My Drive has no parent row
             folders = [{"id": "shared", "name": "Shared with me"}] + folders
-        return jsonify({"ok": True, "current": current, "folders": folders})
-
+        return jsonify({"ok": True, "current": current, "breadcrumbs": crumbs,
+                        "folders": folders})
     @app.get("/api/drive/<int:account_id>/children")
     def drive_children(account_id):
-        """Full child listing (files AND folders) for on-demand downloads.
+        """Full child listing (files AND folders) for the Drive browser.
 
         parent=root lists My Drive; parent=shared lists 'Shared with me'
         folders. Rows carry the metadata the browser needs (id, name,
-        mimeType, size, modifiedTime); Google-native docs have no size.
+        mimeType, size, modifiedTime) plus a stable `category` token for
+        the type column/filter and the owner's display name; Google-native
+        docs have no size. `breadcrumbs` is the root-first ancestor chain.
         """
         parent = request.args.get("parent", "root")
         try:
             drive = drive_for(account_id)
+            crumbs = breadcrumbs(drive, parent)
             if parent == "shared":
                 items = drive.list_shared_folders()
-                current = {"id": "shared", "name": "Shared with me"}
             else:
                 items = drive.list_children(parent)
-                current = None
-                if parent != "root":
-                    current = drive.get(parent, fields="id,name,parents")
-        except DriveError as exc:
+        except (DriveError, AuthError) as exc:
             return api_error(exc, 502)
-        return jsonify({"ok": True, "current": current, "items": items})
+        # root keeps current=None (historical contract for pickers); the
+        # browser UIs take the folder row from breadcrumbs[-1] instead
+        current = dict(crumbs[-1]) if crumbs and parent != "root" else None
+        return jsonify({"ok": True, "current": current,
+                        "breadcrumbs": crumbs,
+                        "items": _browser_rows(items)})
 
     @app.get("/api/drive/<int:account_id>/search")
     def drive_search(account_id):
@@ -214,7 +235,8 @@ def create_app(store: Store, worker=None):
 
         ?q= the text to find, ?folders_only=1 restricts to folders (the
         pair picker uses that mode). Capped at 50 rows — enough to locate
-        anything by name without rendering a tree.
+        anything by name without rendering a tree. Rows carry the same
+        `category`/`owner` decorations as the folder listings.
         """
         query = (request.args.get("q") or "").strip()
         folders_only = request.args.get("folders_only") in ("1", "true")
@@ -223,9 +245,9 @@ def create_app(store: Store, worker=None):
         try:
             drive = drive_for(account_id)
             items = drive.search(query, folders_only=folders_only)
-        except DriveError as exc:
+        except (DriveError, AuthError) as exc:
             return api_error(exc, 502)
-        return jsonify({"ok": True, "items": items})
+        return jsonify({"ok": True, "items": _browser_rows(items)})
 
     # ---- pairs ------------------------------------------------------
     def pair_json(p):
@@ -241,6 +263,10 @@ def create_app(store: Store, worker=None):
                 "symlink_policy": p["symlink_policy"] or "skip",
                 "case_insensitive": bool(p["case_insensitive"]),
                 "paused_until": p["paused_until"] or None,
+                "bandwidth_limit_kb": p["bandwidth_limit_kb"],
+                "peak_from": p["peak_from"] or None,
+                "peak_to": p["peak_to"] or None,
+                "bandwidth_limit_kb_peak": p["bandwidth_limit_kb_peak"],
                 "include_patterns": parse_include_patterns(
                     p["include_patterns"]),
                 "last_sync": last}
@@ -278,7 +304,11 @@ def create_app(store: Store, worker=None):
                 allow_deletes=data.get("allow_deletes", 1),
                 include_patterns=data.get("include_patterns"),
                 symlink_policy=data.get("symlink_policy", "skip"),
-                case_insensitive=data.get("case_insensitive", 0))
+                case_insensitive=data.get("case_insensitive", 0),
+                bandwidth_limit_kb=data.get("bandwidth_limit_kb"),
+                peak_from=data.get("peak_from"),
+                peak_to=data.get("peak_to"),
+                bandwidth_limit_kb_peak=data.get("bandwidth_limit_kb_peak"))
         except KeyError as exc:
             return api_error(f"missing field: {exc}")
         except ValueError as exc:
@@ -330,6 +360,9 @@ def create_app(store: Store, worker=None):
         except Exception as exc:
             return api_error(str(exc))
         result["ops"] = result["ops"][:500]
+        for key in ("reasons", "sizes", "destructive"):
+            if key in result:
+                result[key] = result[key][:500]
         return jsonify({"ok": True, **result})
 
     # ---- conflict copies (review + resolve) --------------------------
@@ -367,6 +400,184 @@ def create_app(store: Store, worker=None):
         if worker is not None:
             worker.sync_now(pair_id)   # let the next pass settle the base
         return jsonify({"ok": True, "result": result})
+
+    # ---- recovery (Phase 2.6) ----------------------------------------
+    def _pair_or_error(pair_id):
+        pair = store.pair(pair_id)
+        if not pair:
+            return None, api_error("pair not found", 404)
+        return pair, None
+
+    @app.get("/api/recovery/summary")
+    def recovery_summary():
+        """One snapshot for the Recovery page: pending holds, trash and
+        conflict counts per pair, recent failures and the decision log."""
+        pending = recovery.all_pending_deletions(store)
+        trash = recovery.list_local_trash(store, limit=1000)
+        conflict_counts = []
+        for pair in store.pairs():
+            try:
+                n = len(conflicts.list_conflicts(store, pair))
+            except Exception:
+                n = None          # a broken pair must not break the page
+            if n:
+                conflict_counts.append({"pair_id": pair["id"],
+                                        "name": pair["remote_path"]
+                                        or pair["local_path"],
+                                        "count": n})
+        failures = store.recent_events(limit=20, level="error")
+        history = store.recent_recovery(limit=100)
+        return jsonify({"ok": True,
+                        "pending": pending,
+                        "trash": [{"pair_id": t["pair_id"],
+                                   "pair_name": t["pair_name"],
+                                   "stamp": t["stamp"], "rel": t["rel"],
+                                   "size": t["size"], "mtime": t["mtime"],
+                                   "when": to_local(datetime.fromtimestamp(
+                                       t["mtime"], timezone.utc)
+                                       .strftime("%Y-%m-%dT%H:%M:%SZ"))}
+                                  for t in trash[:200]],
+                        "trash_total": len(trash),
+                        "conflicts": conflict_counts,
+                        "failures": [{"id": e["id"],
+                                      "ts": to_local(e["ts"]),
+                                      "pair_id": e["pair_id"],
+                                      "action": e["action"],
+                                      "path": e["rel_path"],
+                                      "message": e["message"]}
+                                     for e in failures],
+                        "history": [{"id": h["id"], "ts": to_local(h["ts"]),
+                                     "pair_id": h["pair_id"],
+                                     "path": h["rel_path"],
+                                     "action": h["action"],
+                                     "reason": h["reason"],
+                                     "detail": h["detail"]}
+                                    for h in history]})
+
+    @app.post("/api/recovery/deletions/allow")
+    def recovery_allow_deletions():
+        """Approve one pass of the held deletions (mass-delete protection)."""
+        data = request.get_json(force=True, silent=True) or {}
+        pair, err = _pair_or_error(int(data.get("pair_id") or 0))
+        if err:
+            return err
+        hold = recovery.pending_deletions(store, pair["id"])
+        if not hold:
+            return api_error("no deletions are held for this pair")
+        recovery.allow_pending_deletions(store, pair["id"])
+        if worker is not None:
+            worker.sync_now(pair["id"])    # apply the approved pass promptly
+        return jsonify({"ok": True, "approved": hold["count"]})
+
+    @app.post("/api/recovery/deletions/keep")
+    def recovery_keep_files():
+        """Resolve the hold by keeping every file: switches deletes off."""
+        data = request.get_json(force=True, silent=True) or {}
+        pair, err = _pair_or_error(int(data.get("pair_id") or 0))
+        if err:
+            return err
+        if not recovery.pending_deletions(store, pair["id"]):
+            return api_error("no deletions are held for this pair")
+        recovery.keep_pending_files(store, pair["id"])
+        return jsonify({"ok": True, "kept": True})
+
+    @app.get("/api/recovery/trash")
+    def recovery_trash():
+        """Files the engine moved to the recoverable local trash."""
+        try:
+            limit = int(request.args.get("limit", 200))
+        except (TypeError, ValueError):
+            limit = 200
+        items = recovery.list_local_trash(store, limit=max(1, min(limit, 500)))
+        return jsonify({"ok": True, "items": items, "total": len(items)})
+
+    @app.post("/api/recovery/trash/restore")
+    def recovery_trash_restore():
+        """Move a trashed file back to its original local path."""
+        data = request.get_json(force=True, silent=True) or {}
+        pair_id = int(data.get("pair_id") or 0)
+        try:
+            result = recovery.restore_from_trash(
+                store, pair_id, data.get("stamp") or "",
+                data.get("rel") or "")
+        except ValueError as exc:
+            return api_error(str(exc))
+        if worker is not None:
+            worker.sync_now(pair_id)       # the restored file joins the pair
+        return jsonify({"ok": True, "result": result})
+
+    @app.get("/api/recovery/drive-trash")
+    def recovery_drive_trash():
+        """The account's Drive trash (Drive-wide, labelled as such)."""
+        pair_id = request.args.get("pair_id", type=int)
+        pair, err = _pair_or_error(pair_id or 0)
+        if err:
+            return err
+        try:
+            items = recovery.list_drive_trash(
+                pair, drive_for(pair["account_id"]))
+        except (DriveError, AuthError) as exc:
+            return api_error(f"Drive error: {exc}", 502)
+        return jsonify({"ok": True, "items": items})
+
+    @app.post("/api/recovery/drive-trash/restore")
+    def recovery_drive_trash_restore():
+        """Untrash a Drive file; the next pass re-syncs it if it belongs
+        to one of the pairs."""
+        data = request.get_json(force=True, silent=True) or {}
+        pair, err = _pair_or_error(int(data.get("pair_id") or 0))
+        if err:
+            return err
+        file_id = data.get("file_id") or ""
+        if not file_id:
+            return api_error("file_id is required")
+        try:
+            result = recovery.restore_drive_trash(
+                store, pair, drive_for(pair["account_id"]), file_id)
+        except (DriveError, AuthError) as exc:
+            return api_error(f"Drive error: {exc}", 502)
+        if worker is not None:
+            worker.sync_now(pair["id"])
+        return jsonify({"ok": True, "result": result})
+
+    @app.get("/api/recovery/versions")
+    def recovery_versions():
+        """Kept previous versions of one path (before overwrite pulls)."""
+        pair_id = request.args.get("pair_id", type=int)
+        rel = (request.args.get("rel") or "").strip()
+        if not rel:
+            return api_error("rel is required")
+        items = recovery.list_versions(pair_id, rel)
+        return jsonify({"ok": True, "items": items})
+
+    @app.post("/api/recovery/versions/restore")
+    def recovery_version_restore():
+        """Put a kept previous version back at its path (current bytes are
+        themselves pushed into the history first)."""
+        data = request.get_json(force=True, silent=True) or {}
+        pair_id = int(data.get("pair_id") or 0)
+        try:
+            result = recovery.restore_version(
+                store, pair_id, data.get("rel") or "",
+                data.get("stamp") or "")
+        except ValueError as exc:
+            return api_error(str(exc))
+        if worker is not None:
+            worker.sync_now(pair_id)
+        return jsonify({"ok": True, "result": result})
+
+    @app.get("/api/recovery/history")
+    def recovery_history():
+        try:
+            limit = int(request.args.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        rows = store.recent_recovery(limit=max(1, min(limit, 500)))
+        return jsonify({"ok": True, "history": [
+            {"id": h["id"], "ts": to_local(h["ts"]),
+             "pair_id": h["pair_id"], "path": h["rel_path"],
+             "action": h["action"], "reason": h["reason"],
+             "detail": h["detail"]} for h in rows]})
 
     @app.post("/api/sync")
     def sync_all():

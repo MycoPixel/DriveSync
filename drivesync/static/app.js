@@ -57,10 +57,14 @@ const ES = {
   "Size": "Tamaño",
   "Updated": "Actualizado",
   "No transfers yet.": "Aún no hay transferencias.",
-  "transfer-queue-hint": "Muestra transferencias activas y los archivos completados o fallidos más recientes. La cola se reinicia al reiniciar DriveSync.",
+  "transfer-queue-hint": "Shows active transfers and the most recent " +
+    "completed or failed files. Queue state resets when DriveSync " +
+    "restarts.|Muestra transferencias activas y los archivos completados o " +
+    "fallidos más recientes. La cola se reinicia al reiniciar DriveSync.",
   "queued": "En cola",
   "uploading": "Subiendo",
   "downloading": "Descargando",
+  "retrying": "Reintentando",
   "completed": "Completado",
   "failed": "Fallido",
   "Settings": "Ajustes",
@@ -136,6 +140,33 @@ const ES = {
     'Ventana de sincronización desde <span class="muted">(HH:MM; vacío = siempre)</span>',
   "set.to": 'Sync window to <span class="muted">(may cross midnight)</span>|' +
     'Ventana de sincronización hasta <span class="muted">(puede cruzar la medianoche)</span>',
+  "set.peakfrom": 'Peak window from <span class="muted">(HH:MM; empty = no peak hours)</span>|' +
+    'Horario punta desde <span class="muted">(HH:MM; vacío = sin horas punta)</span>',
+  "set.peakto": 'Peak window to <span class="muted">(may cross midnight)</span>|' +
+    'Horario punta hasta <span class="muted">(puede cruzar la medianoche)</span>',
+  "set.peakbw": 'Peak bandwidth limit <span class="muted">(KB/s inside the peak window; 0 = same as the general limit)</span>|' +
+    'Límite de ancho de banda en punta <span class="muted">(KB/s dentro del horario punta; 0 = igual que el límite general)</span>',
+  "Peak throttle": 'Peak throttle|Limitación en punta',
+  "Network": 'Network|Red',
+  "metered — throttled": 'metered — throttled|limitada — conexiones de tarifa medida',
+  "metered — automatic sync paused":
+    'metered — automatic sync paused|limitada — sincronización automática en pausa',
+  "Pause automatic sync": 'Pause automatic sync|Pausar la sincronización automática',
+  "Throttle to the cap below": 'Throttle to the cap below|Limitar a la tasa indicada',
+  "set.metered": 'Respect metered connections <span class="muted">(NetworkManager reports the network as metered, e.g. a mobile hotspot; unknown networks count as not metered)</span>|' +
+    'Respetar conexiones de tarifa medida <span class="muted">(NetworkManager informa de que la red es de tarifa medida, p. ej. un punto de acceso móvil; las redes desconocidas cuentan como no medidas)</span>',
+  "set.meteredaction": 'On a metered connection <span class="muted">(pause defers automatic passes; throttle caps transfers at the rate below; manual syncs always run)</span>|' +
+    'En una conexión de tarifa medida <span class="muted">(pausa aplaza los pases automáticos; limitar fija la tasa indicada; las sincronizaciones manuales siempre se ejecutan)</span>',
+  "set.meteredbw": 'Metered throttle cap <span class="muted">(KB/s while the connection is metered and throttling is on; 0 = no cap)</span>|' +
+    'Tasa en conexiones de tarifa medida <span class="muted">(KB/s mientras la conexión sea de tarifa medida y esté activa la limitación; 0 = sin límite)</span>',
+  "Last digest": 'Last digest|Último resumen',
+  "set.digest": 'Daily digest notification <span class="muted">(once a day, a summary of what synced — as a desktop notification and in the activity log)</span>|' +
+    'Notificación de resumen diario <span class="muted">(una vez al día, un resumen de lo sincronizado, como notificación de escritorio y en el registro de actividad)</span>',
+  "set.digesttime": 'Digest time <span class="muted">(HH:MM; fires on the first tick at/after it — a late boot catches up; empty = first tick of the day)</span>|' +
+    'Hora del resumen <span class="muted">(HH:MM; se envía en el primer tick a partir de esa hora — un arranque tardío lo recupera; vacío = primer tick del día)</span>',
+  "set.digestskip": 'Skip the digest on days with no activity <span class="muted">(nothing pushed, pulled or deleted, no conflicts, no errors)</span>|' +
+    'Omitir el resumen en días sin actividad <span class="muted">(nada enviado, descargado o eliminado, sin conflictos ni errores)</span>',
+  "unlimited": 'unlimited|sin límite',
   "set.watch": 'Sync local changes instantly <span class="muted">(needs watchdog)</span>|' +
     'Sincronizar cambios locales al instante <span class="muted">(necesita watchdog)</span>',
   "set.incremental": 'Use the Drive changes feed <span class="muted">(incremental scan; off = full relist every pass)</span>|' +
@@ -164,12 +195,28 @@ const ES = {
     'Permitir borrados <span class="muted">(los archivos van a la papelera, nunca desaparecen)</span>',
   "edit.casefold": 'Case-insensitive paths <span class="muted">(for pairs on FAT/exFAT/NTFS folders)</span>|' +
     'Rutas sin distinguir mayúsculas <span class="muted">(para pares en carpetas FAT/exFAT/NTFS)</span>',
+  "pair.bw": 'Bandwidth cap <span class="muted">(KB/s for this pair; empty = the global limit)</span>|' +
+    'Límite de ancho de banda <span class="muted">(KB/s para este par; vacío = el límite global)</span>',
+  "pair.peakbw": 'Peak bandwidth cap <span class="muted">(KB/s inside this pair\'s peak window; empty = inherit)</span>|' +
+    'Límite de ancho de banda en punta <span class="muted">(KB/s dentro del horario punta de este par; vacío = heredar)</span>',
+  "pair.peakfrom": 'Peak window from <span class="muted">(HH:MM; empty = no pair window)</span>|' +
+    'Horario punta desde <span class="muted">(HH:MM; vacío = sin ventana para el par)</span>',
+  "pair.peakto": 'Peak window to <span class="muted">(may cross midnight)</span>|' +
+    'Horario punta hasta <span class="muted">(puede cruzar la medianoche)</span>',
+  "edit.bw": 'Bandwidth cap <span class="muted">(KB/s for this pair; empty = the global limit)</span>|' +
+    'Límite de ancho de banda <span class="muted">(KB/s para este par; vacío = el límite global)</span>',
+  "edit.peakbw": 'Peak bandwidth cap <span class="muted">(KB/s inside this pair\'s peak window; empty = inherit)</span>|' +
+    'Límite de ancho de banda en punta <span class="muted">(KB/s dentro del horario punta de este par; vacío = heredar)</span>',
+  "edit.peakfrom": 'Peak window from <span class="muted">(HH:MM; empty = no pair window)</span>|' +
+    'Horario punta desde <span class="muted">(HH:MM; vacío = sin ventana para el par)</span>',
+  "edit.peakto": 'Peak window to <span class="muted">(may cross midnight)</span>|' +
+    'Horario punta hasta <span class="muted">(puede cruzar la medianoche)</span>',
   "Conflict copies": "Copias en conflicto",
   "conflicts-hint": 'Files kept as “<i>name.conflict-…</i>” copies by the keep-both policy. Pick which side to keep — the copy wins at the original path, the original stays and the copy is discarded, or leave both.|' +
     'Archivos guardados como copias “<i>name.conflict-…</i>” por la política de conservar ambos. Elige qué lado conservar: la copia gana en la ruta original, el original se queda y la copia se descarta, o deja ambos.',
   "Activity detail": "Detalle de actividad",
-  "Nothing is applied — this only shows what the next pass would do.":
-    "No se aplica nada — esto solo muestra lo que haría el próximo ciclo.",
+  "Nothing is applied — this only shows what the next pass would do, and why.":
+    "No se aplica nada — esto solo muestra lo que haría el próximo ciclo, y por qué.",
   // dynamic strings rendered by app.js
   "syncing": "sincronizando",
   "paused": "en pausa",
@@ -321,6 +368,112 @@ const ES = {
   "Action": "Acción",
   "Path": "Ruta",
   "Detail": "Detalle",
+  // Phase 2.5 — Google Drive browser tab
+  "Drive": "Drive",
+  "Google Drive browser": "Navegador de Google Drive",
+  "drive-hint": "Browse this account's Drive without leaving DriveSync — descend into folders, search everywhere, filter by type, and send any folder straight to the sync-pair form.|" +
+    "Explora el Drive de esta cuenta sin salir de DriveSync — entra en las carpetas, busca en todo Drive, filtra por tipo y envía cualquier carpeta directamente al formulario de pares.",
+  "Type": "Tipo",
+  "All types": "Todos los tipos",
+  "Folders": "Carpetas",
+  "Google files": "Archivos de Google",
+  "PDFs": "PDF",
+  "Images": "Imágenes",
+  "Videos": "Vídeos",
+  "Audio": "Audio",
+  "Archives": "Comprimidos",
+  "Text files": "Texto",
+  "Other": "Otros",
+  "Sort": "Ordenar",
+  "Name (A→Z)": "Nombre (A→Z)",
+  "Name (Z→A)": "Nombre (Z→A)",
+  "Newest first": "Más recientes primero",
+  "Oldest first": "Más antiguos primero",
+  "Largest first": "Más grandes primero",
+  "Smallest first": "Más pequeños primero",
+  "Search": "Buscar",
+  "Search all of Drive… (Enter)": "Buscar en todo Drive… (Enter)",
+  "Modified": "Modificado",
+  "Owner": "Propietario",
+  "Shared with me": "Compartido conmigo",
+  "This folder is empty.": "Esta carpeta está vacía.",
+  "No items match the type filter.": "Ningún elemento coincide con el filtro de tipo.",
+  "No items match the search.": "Ningún elemento coincide con la búsqueda.",
+  "Search results for “{q}” — {n} item(s) in all of Drive":
+    "Resultados de “{q}” — {n} elemento(s) en todo Drive",
+  "Searching all of Drive…": "Buscando en todo Drive…",
+  "Nothing on this Drive matches the search.":
+    "Nada en este Drive coincide con la búsqueda.",
+  "Clear the search box to go back to browsing.":
+    "Vacía el cuadro de búsqueda para volver a explorar.",
+  "Use this folder for a new sync pair":
+    "Usar esta carpeta para un nuevo par",
+  "Folder sent to the sync-pair form.": "Carpeta enviada al formulario de pares.",
+  "“Shared with me” cannot be a sync destination — open a folder inside it first.":
+    "“Compartido conmigo” no puede ser un destino de sincronización — abre antes una carpeta dentro.",
+  "Choose an account to browse its Drive.":
+    "Elige una cuenta para explorar su Drive.",
+  "Open in search results": "Abrir desde los resultados",
+  "double-click opens": "doble clic abre",
+  // Phase 2.6 — Recovery tab
+  "Recovery": "Recuperación",
+  "Deletions awaiting confirmation": "Borrados pendientes de confirmación",
+  "recovery-pending-hint": "A pass wanted to delete more files than the safety limit allows. Nothing was deleted — confirm below or keep every file. Recovery never propagates a deletion until you decide.|" +
+    "Un ciclo quiso borrar más archivos de lo que permite el límite de " +
+    "seguridad. No se borró nada — confirma abajo o conserva todos los " +
+    "archivos. La recuperación nunca propaga un borrado sin que decidas.",
+  "Conflict copies": "Copias en conflicto",
+  "Locally preserved copies (trash)": "Copias conservadas localmente (papelera)",
+  "recovery-trash-hint": "Deleted files are never destroyed — the app moves them here first. Restore any copy to its original path; if the path is taken, it comes back renamed.|" +
+    "Los archivos borrados nunca se destruyen — la app los mueve primero " +
+    "aquí. Restaura cualquier copia a su ruta original; si la ruta está " +
+    "ocupada, vuelve con otro nombre.",
+  "The local trash is empty.": "La papelera local está vacía.",
+  "Drive trash (whole account)": "Papelera de Drive (toda la cuenta)",
+  "recovery-drive-trash-hint": "Google Drive's own trash is account-wide. Restoring a file here puts it back where it was on Drive; the next pass re-downloads it if it belongs to one of your pairs.|" +
+    "La papelera de Google Drive abarca toda la cuenta. Restaurar un " +
+    "archivo aquí lo devuelve a su sitio en Drive; el próximo ciclo lo " +
+    "descarga de nuevo si pertenece a uno de tus pares.",
+  "List Drive trash": "Listar papelera de Drive",
+  "Trashed": "En la papelera",
+  "recovery-drive-trash-empty": "Choose a pair and press “List Drive trash”.|" +
+    "Elige un par y pulsa “Listar papelera de Drive”.",
+  "Previous versions": "Versiones anteriores",
+  "recovery-versions-hint": "Before an overwrite pull, the app keeps the previous bytes. Restore any version; the current file is itself kept, so a restore is undoable.|" +
+    "Antes de una descarga que sobrescribe, la app guarda los bytes " +
+    "anteriores. Restaura cualquier versión; el archivo actual también se " +
+    "conserva, así que restaurar es reversible.",
+  "File path": "Ruta del archivo",
+  "List versions": "Listar versiones",
+  "Version": "Versión",
+  "recovery-versions-empty": "List the versions of a path to restore one.|" +
+    "Lista las versiones de una ruta para restaurar una.",
+  "Recent failures": "Fallos recientes",
+  "Recovery history": "Historial de recuperación",
+  "recovery-history-empty": "Nothing to show yet.|" + "Nada que mostrar todavía.",
+  "When": "Cuándo",
+  "Deleted": "Borrado",
+  "Allow these deletions (one pass)": "Permitir estos borrados (un ciclo)",
+  "Keep my files (deletes off)": "Conservar mis archivos (sin borrados)",
+  "Restore": "Restaurar",
+  "Restore version": "Restaurar versión",
+  "No deletions are awaiting confirmation.": "No hay borrados pendientes de confirmación.",
+  "{count} deletion(s) held for pair #{pair_id} ({name}):":
+    "{count} borrado(s) retenidos para el par #{pair_id} ({name}):",
+  "Deletion types: {kinds}": "Tipos de borrado: {kinds}",
+  "restore.ack": "The deletions were approved for one pass. The next sync applies them.|Los borrados quedaron aprobados por un ciclo. La próxima sincronización los aplica.",
+  "restore.keep": "Every file was kept — deletes are now off for this pair (re-enable from the pair editor).|Se conservaron todos los archivos — los borrados quedaron desactivados para este par (reactívalos desde el editor del par).",
+  "No conflict copies — everything is resolved.": "Sin copias en conflicto — todo está resuelto.",
+  "{n} conflict copy(ies) across your pairs — resolve them from each pair's “Conflicts” button on the Sync pairs tab.":
+    "{n} copia(s) en conflicto entre tus pares — resuélvelas desde el botón “Conflictos” de cada par en la pestaña Pares.",
+  "No recent failures.": "Sin fallos recientes.",
+  "Drive trash listed.": "Papelera de Drive listada.",
+  "The Drive trash is empty.": "La papelera de Drive está vacía.",
+  "File restored to its original path.": "Archivo restaurado a su ruta original.",
+  "File restored under a new name (the original path was occupied).": "Archivo restaurado con otro nombre (la ruta original estaba ocupada).",
+  "File taken out of the Drive trash.": "Archivo sacado de la papelera de Drive.",
+  "Version restored; the current copy was kept too.": "Versión restaurada; la copia actual también se conservó.",
+  "Enter a file path first.": "Escribe antes una ruta de archivo.",
 };
 
 const LANG_NAMES = { en: "English", es: "Español" };
@@ -328,8 +481,13 @@ let _lang = (localStorage.getItem("ds_lang")
   || ((navigator.language || "en").toLowerCase().startsWith("es") ? "es" : "en"));
 
 function t(s) {
-  if (_lang === "en") return s;
   const v = ES[s];
+  if (_lang === "en") {
+    // hint keys are stored "English|Spanish"; the key itself is NOT the
+    // English text for those, so serve the stored English half instead of
+    // the raw key (fixes hints rendering as their key names in English)
+    return v !== undefined && v.includes("|") ? v.split("|")[0] : s;
+  }
   return (v !== undefined && v.includes("|") ? v.split("|")[1] : v) || s;
 }
 /* tiny template: T("ok {ago} — {detail}", {ago: "5s", detail: "…"}) */
@@ -486,16 +644,20 @@ function loadTab(name) {
   if (name === "dashboard") loadDashboard();
   if (name === "pairs") loadPairs();
   if (name === "accounts") loadAccounts();
-  if (name === "activity") loadEvents();
+  if (name === "drive") loadDrive();
   if (name === "transfers") loadTransfers();
+  if (name === "recovery") loadRecovery();
+  if (name === "activity") loadEvents();
   if (name === "settings") loadSettings();
 }
 
 /* ---------- state ---------- */
-let state = { accounts: [], pairs: [], events: [], newScope: [], editId: null,
+let state = { accounts: [], pairs: [], events: [], newScope: [],
   conflictPair: null, tab: "dashboard",
   picker: { stack: [], current: { id: "root", name: "My Drive" } },
-  scope: { accountId: null, remoteId: null, selected: [], target: "new" } };
+  scope: { accountId: null, remoteId: null, selected: [], target: "new" },
+  drive: { stack: [{ id: "root", name: "My Drive" }], crumbs: [],
+    items: [], search: null, loading: false } };
 
 /* ---------- dashboard ---------- */
 async function loadDashboard() {
@@ -518,6 +680,20 @@ async function loadDashboard() {
        <b>${esc(t("Last run"))}</b><span>${last}</span>
        <b>${esc(t("Next run"))}</b><span>${next}</span>
        <b>${esc(t("Last result"))}</b><span>${esc(ls)}</span>` +
+      (w.peak_active
+        ? `<b>${esc(t("Peak throttle"))}</b><span>${
+            w.bandwidth_now_kb ? esc(w.bandwidth_now_kb + " KB/s")
+                               : esc(t("unlimited"))}</span>`
+        : "") +
+      (w.network && w.network.metered
+        ? `<b>${esc(t("Network"))}</b><span class="msg err">${esc(
+            w.network.action === "throttle"
+              ? t("metered — throttled")
+              : t("metered — automatic sync paused"))}</span>`
+        : "") +
+      (w.digest && w.digest.last_message
+        ? `<b>${esc(t("Last digest"))}</b><span>${esc(w.digest.last_message)}</span>`
+        : "") +
       (w.last_error ? `<b>${esc(t("Last error"))}</b><span class="msg err">${esc(w.last_error)}</span>` : "");
   } catch (e) { $("#workerStatus").textContent = T("status unavailable: {err}", { err: e.message }); }
 
@@ -599,6 +775,10 @@ async function loadAccounts() {
     sel.innerHTML = accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`).join("");
     // keep the user's choice across refreshes instead of snapping to #1
     if (prev && accounts.some((a) => String(a.id) === prev)) sel.value = prev;
+    const dsel = $("#driveAccount");
+    const dprev = dsel.value;
+    dsel.innerHTML = accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`).join("");
+    if (dprev && accounts.some((a) => String(a.id) === dprev)) dsel.value = dprev;
   } catch (e) { /* ignore */ }
 }
 
@@ -775,12 +955,21 @@ async function openPreview(pairId) {
         : t("Nothing to sync — both sides already match.");
     }
     $("#previewSummary").textContent = summary;
+    // Phase 3.1: the planner explains every op (reasons[]) and knows the
+    // transfer payload sizes (sizes[]); both arrays align with ops[].
+    const reasons = res.reasons || [];
+    const sizes = res.sizes || [];
+    const destructive = res.destructive || [];
     $("#previewList").innerHTML = (res.ops || []).length
-      ? res.ops.map((op) => `<div class="picker-item">
-          <span>${op[0] in OP_LABELS && (op[0].includes("delete") || op[0].includes("rmdir"))
-            ? "⚠ " : ""}<b>${esc(t(OP_LABELS[op[0]] || op[0]))}</b>
-            <span class="muted small"> ${esc(op[1] || "")}</span></span>
-          <span class="muted small">${esc(op[2] || "")}</span></div>`).join("")
+      ? res.ops.map((op, i) => {
+        const rename = op[0].startsWith("rename") && op[2] ? ` → ${op[2]}` : "";
+        const sizeTxt = sizes[i] != null && (op[0] === "upload" || op[0] === "download")
+          ? ` · ${humanBytes(+sizes[i])}` : "";
+        return `<div class="picker-item">
+          <span>${destructive[i] ? "⚠ " : ""}<b>${esc(t(OP_LABELS[op[0]] || op[0]))}</b>
+            <span class="muted small"> ${esc(op[1] || "")}${esc(rename)}</span></span>
+          <span class="muted small" title="${esc(reasons[i] || "")}">${esc(reasons[i] || "")}${sizeTxt}</span></div>`;
+      }).join("")
       : `<p class="muted">${esc(t("Nothing to sync — both sides already match."))}</p>`;
   } catch (e) {
     $("#previewSummary").textContent = T("Could not scan — {err}", { err: e.message });
@@ -803,6 +992,10 @@ function openEdit(pairId) {
   $("#editDeletes").checked = !!pair.allow_deletes;
   $("#editSymlinks").value = pair.symlink_policy || "skip";
   $("#editCaseFold").checked = !!pair.case_insensitive;
+  $("#editBw").value = pair.bandwidth_limit_kb ?? "";
+  $("#editPeakBw").value = pair.bandwidth_limit_kb_peak ?? "";
+  $("#editPeakFrom").value = pair.peak_from || "";
+  $("#editPeakTo").value = pair.peak_to || "";
   setMsg("#editMsg", "", "");
   $("#editBackdrop").classList.remove("hidden");
 }
@@ -821,6 +1014,11 @@ $("#editForm").addEventListener("submit", async (e) => {
         allow_deletes: $("#editDeletes").checked ? 1 : 0,
         symlink_policy: $("#editSymlinks").value,
         case_insensitive: $("#editCaseFold").checked ? 1 : 0,
+        bandwidth_limit_kb: $("#editBw").value === "" ? null : +$("#editBw").value,
+        bandwidth_limit_kb_peak:
+          $("#editPeakBw").value === "" ? null : +$("#editPeakBw").value,
+        peak_from: $("#editPeakFrom").value || null,
+        peak_to: $("#editPeakTo").value || null,
       },
     });
     toast(T("Pair #{pid} updated", { pid: state.editId }));
@@ -908,6 +1106,11 @@ $("#pairForm").addEventListener("submit", async (e) => {
         conflict_policy: $("#pairPolicy").value,
         include_patterns: state.newScope,
         enabled: startPaused ? 0 : 1,
+        bandwidth_limit_kb: $("#pairBw").value === "" ? null : +$("#pairBw").value,
+        bandwidth_limit_kb_peak:
+          $("#pairPeakBw").value === "" ? null : +$("#pairPeakBw").value,
+        peak_from: $("#pairPeakFrom").value || null,
+        peak_to: $("#pairPeakTo").value || null,
       },
     });
     const scopeMsg = state.newScope.length
@@ -1093,6 +1296,488 @@ async function renderPickerSearch(query) {
   }
 }
 
+/* ---------- Google Drive browser (Phase 2.5) ---------- */
+/* Every listing row carries a stable `category` token from the API; the
+   label and icon maps stay UI-side so translations never touch the engine. */
+const CATEGORY_LABELS = {
+  folder: "Folder", shortcut: "Shortcut",
+  document: "Google Doc", spreadsheet: "Google Sheets",
+  presentation: "Google Slides", drawing: "Google Drawing",
+  form: "Google Form", map: "Google My Map", site: "Google Site",
+  doc: "Google file", pdf: "PDF", image: "Image", video: "Video",
+  audio: "Audio", archive: "Archive", text: "Text file", other: "File",
+};
+const CATEGORY_ICONS = { folder: "📁", shortcut: "🔗", document: "📝",
+  spreadsheet: "📊", presentation: "📽", drawing: "🖌", form: "📃",
+  pdf: "📄", image: "🖼", video: "🎬", audio: "🎵", archive: "🗜" };
+/* type-filter dropdown option -> category tokens it shows */
+const CATEGORY_GROUPS = {
+  folders: ["folder"],
+  google: ["document", "spreadsheet", "presentation", "drawing", "form",
+    "map", "site", "doc"],
+  pdf: ["pdf"], image: ["image"], video: ["video"], audio: ["audio"],
+  archive: ["archive"], text: ["text"], other: ["other", "shortcut"],
+};
+
+function driveAccountId() {
+  return $("#driveAccount").value || (state.accounts[0] && state.accounts[0].id) || "";
+}
+
+function driveCurrent() {
+  const st = state.drive;
+  return st.stack[st.stack.length - 1] || { id: "root", name: "My Drive" };
+}
+
+function driveParseSize(item) {
+  const n = parseFloat(item.size);
+  return isNaN(n) ? -1 : n;       // unknown sizes (Google docs) sink quietly
+}
+
+function driveCompare(a, b, key, desc) {
+  let d = 0;
+  if (key === "size") d = driveParseSize(a) - driveParseSize(b);
+  else if (key === "modified")
+    d = (Date.parse(a.modifiedTime) || 0) - (Date.parse(b.modifiedTime) || 0);
+  else
+    d = String(a.name || "").localeCompare(String(b.name || ""),
+                                           undefined, { sensitivity: "base" });
+  return desc ? -d : d;
+}
+
+function driveDescend(id, name) {
+  if (state.drive.loading) return;
+  state.drive.stack.push({ id, name });
+  clearDriveSearch(true);
+  loadDriveFolder();
+}
+
+async function loadDrive() {
+  await loadAccounts();          // fills #driveAccount (and the pair form's)
+  loadDriveFolder();
+}
+
+async function loadDriveFolder() {
+  const st = state.drive;
+  const cur = driveCurrent();
+  st.loading = true;
+  $("#driveUp").disabled = st.search || st.stack.length <= 1;
+  $("#driveUseFolder").disabled = true;
+  $("#driveCrumbs").innerHTML = "";
+  $("#drivePath").textContent = "";
+  const tbody = $("#driveTable tbody");
+  const acct = driveAccountId();
+  if (!acct) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${esc(t("Choose an account to browse its Drive."))}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = `<tr><td colspan="5" class="muted">${esc(t("loading…"))}</td></tr>`;
+  try {
+    const res = await api(`/api/drive/${acct}/children?parent=${encodeURIComponent(cur.id)}`);
+    st.items = res.items || [];
+    st.crumbs = res.breadcrumbs || [];
+    st.loading = false;
+    renderDrive();
+  } catch (e) {
+    st.loading = false;
+    tbody.innerHTML = `<tr><td colspan="5" class="msg err">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderDriveCrumbs() {
+  const nav = $("#driveCrumbs");
+  nav.innerHTML = "";
+  const st = state.drive;
+  const chain = st.search ? [] : st.crumbs;
+  if (!chain.length) {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = driveCurrent().name;
+    nav.appendChild(span);
+    return;
+  }
+  chain.forEach((crumb, i) => {
+    if (i) {
+      const sep = document.createElement("span");
+      sep.className = "crumb-sep";
+      sep.textContent = "/";
+      nav.appendChild(sep);
+    }
+    const last = i === chain.length - 1;
+    const btn = document.createElement("button");
+    btn.className = "crumb" + (last ? " active" : "");
+    btn.textContent = crumb.name || crumb.id;
+    btn.addEventListener("click", () => {
+      if (state.drive.loading || last) return;
+      state.drive.stack = state.drive.crumbs.slice(0, i + 1);
+      clearDriveSearch(true);
+      loadDriveFolder();
+    });
+    nav.appendChild(btn);
+  });
+}
+
+function renderDrive() {
+  const st = state.drive;
+  const cur = driveCurrent();
+  const group = $("#driveType").value;
+  const [key, dir] = $("#driveSort").value.split("-");
+  const needle = ($("#driveSearch").value || "").trim().toLowerCase();
+  let items = st.items;
+  if (!st.search && needle)
+    items = items.filter((it) =>
+      String(it.name || "").toLowerCase().includes(needle));
+  items = items.filter((it) =>
+    group === "all" || (CATEGORY_GROUPS[group] || []).includes(it.category));
+  // folders always surface first; the chosen key orders within each group
+  items = items.slice().sort((a, b) => {
+    const fa = a.category === "folder" ? 0 : 1;
+    const fb = b.category === "folder" ? 0 : 1;
+    return fa !== fb ? fa - fb : driveCompare(a, b, key, dir === "desc");
+  });
+
+  renderDriveCrumbs();
+  $("#driveUp").disabled = !!st.search || st.stack.length <= 1;
+  $("#driveUseFolder").disabled = !!st.search || cur.id === "shared";
+  $("#drivePath").textContent = st.search
+    ? T("Search results for “{q}” — {n} item(s) in all of Drive",
+        { q: st.search, n: st.items.length })
+    : `${cur.name} — ID: ${cur.id}`;
+
+  const tbody = $("#driveTable tbody");
+  if (!items.length) {
+    let why;
+    if (st.search)
+      why = st.items.length
+        ? t("No items match the type filter.")
+        : t("Nothing on this Drive matches the search.");
+    else
+      why = st.items.length
+        ? (needle || group !== "all" ? t("No items match the type filter.")
+                                     : t("This folder is empty."))
+        : t("This folder is empty.");
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${esc(why)}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = items.map((it) => {
+    const isFolder = it.category === "folder";
+    const icon = CATEGORY_ICONS[it.category] || "📄";
+    const label = t(CATEGORY_LABELS[it.category] || it.category);
+    const size = it.size == null ? "—" : humanBytes(+it.size);
+    const mod = it.modifiedTime ? new Date(it.modifiedTime).toLocaleString() : "—";
+    const owner = it.owner || "—";
+    const hint = `${it.mimeType || label} · ID: ${it.id}`;
+    return `<tr class="drive-row${isFolder ? " is-folder" : ""}"
+      data-id="${esc(it.id)}" data-name="${esc(it.name)}" title="${esc(hint)}">
+      <td>${icon} ${esc(it.name || "?")}</td>
+      <td>${esc(label)}</td><td>${esc(size)}</td><td>${esc(mod)}</td>
+      <td class="muted small">${esc(owner)}</td></tr>`;
+  }).join("");
+  tbody.querySelectorAll(".drive-row.is-folder").forEach((row) =>
+    row.addEventListener("click", () =>
+      driveDescend(row.dataset.id, row.dataset.name)));
+}
+
+async function driveRunSearch(query) {
+  const acct = driveAccountId();
+  state.drive.search = query;
+  $("#driveTable tbody").innerHTML =
+    `<tr><td colspan="5" class="muted">${esc(t("Searching all of Drive…"))}</td></tr>`;
+  try {
+    const res = await api(`/api/drive/${acct}/search?q=${encodeURIComponent(query)}`);
+    state.drive.items = res.items || [];
+    state.drive.crumbs = [];
+    renderDrive();
+  } catch (e) {
+    $("#driveTable tbody").innerHTML =
+      `<tr><td colspan="5" class="msg err">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function clearDriveSearch(keepText = false) {
+  state.drive.search = null;
+  if (!keepText) {
+    $("#driveSearch").value = "";
+    state.drive.crumbs = [];
+  }
+}
+
+$("#driveSearch").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const q = $("#driveSearch").value.trim();
+  if (!q) {
+    clearDriveSearch();
+    loadDriveFolder();
+    return;
+  }
+  driveRunSearch(q);
+});
+$("#driveSearch").addEventListener("input", () => {
+  clearTimeout($("#driveSearch")._timer);
+  $("#driveSearch")._timer = setTimeout(() => {
+    if (state.drive.search) {
+      if (!$("#driveSearch").value.trim()) {   // box emptied: back to browsing
+        clearDriveSearch();
+        loadDriveFolder();
+      }
+      return;
+    }
+    renderDrive();          // live in-folder filter while browsing
+  }, 200);
+});
+$("#driveUp").addEventListener("click", () => {
+  const st = state.drive;
+  if (st.loading) return;
+  if (st.search) { clearDriveSearch(); loadDriveFolder(); return; }
+  if (st.stack.length > 1) { st.stack.pop(); loadDriveFolder(); }
+});
+$("#driveRefresh").addEventListener("click", () => {
+  clearDriveSearch();
+  loadDriveFolder();
+});
+$("#driveAccount").addEventListener("change", () => {
+  state.drive.stack = [{ id: "root", name: "My Drive" }];
+  clearDriveSearch();
+  loadDriveFolder();
+});
+$("#driveType").addEventListener("change", renderDrive);
+$("#driveSort").addEventListener("change", renderDrive);
+$("#driveUseFolder").addEventListener("click", () => {
+  const cur = driveCurrent();
+  if (!cur || cur.id === "shared") {
+    toast(t("“Shared with me” cannot be a sync destination — open a folder inside it first."));
+    return;
+  }
+  setPairRemote(cur.id, cur.name);
+  document.querySelector('#tabs button[data-tab="pairs"]').click();
+  toast(t("Folder sent to the sync-pair form."));
+});
+
+/* ---------- Recovery (Phase 2.6) ---------- */
+/* Everything here reads the same backend the CLI uses: pending-deletion
+   holds from the safety valve, the recoverable local trash, the Drive
+   trash, kept previous versions and the decision history. No destructive
+   action happens without an explicit button press. */
+const RECOVERY_ACTIONS = {
+  safety_stop: "Deletion safety limit tripped — files held",
+  deletions_allowed: "Held deletions approved (one pass)",
+  deletions_kept: "Held files kept — deletes switched off",
+  pending_cleared: "Hold released — the risky pass resolved itself",
+  trash_restored: "File restored from the local trash",
+  drive_trash_restored: "File restored from the Drive trash",
+  version_restored: "Previous version restored",
+  conflict_resolved: "Conflict copy resolved",
+};
+
+async function loadRecovery() {
+  await loadAccounts();          // fills the pair selects
+  fillPairSelect("#recoveryDrivePair");
+  fillPairSelect("#versionPair");
+  await loadRecoverySummary();
+  loadRecoveryTrash();
+}
+
+function fillPairSelect(sel) {
+  const el = $(sel);
+  const prev = el.value;
+  el.innerHTML = state.accounts.length
+    ? state.pairs.map((p) =>
+        `<option value="${esc(p.id)}">#${esc(p.id)} ${esc(p.remote_path || p.local_path)}</option>`).join("")
+    : "";
+  if (prev && state.pairs.some((p) => String(p.id) === prev)) el.value = prev;
+}
+
+async function loadRecoverySummary() {
+  const el = $("#recoveryPending");
+  const conflictsEl = $("#recoveryConflicts");
+  const note = $("#recoveryConflictsNote");
+  const failuresEl = $("#recoveryFailures");
+  try {
+    const data = await api("/api/recovery/summary");
+    // pending deletions
+    if (!data.pending.length) {
+      el.innerHTML = `<span class="muted small">${esc(t("No deletions are awaiting confirmation."))}</span>`;
+    } else {
+      el.innerHTML = data.pending.map((hold) => {
+        const kinds = Object.entries(hold.kinds || {})
+          .map(([k, n]) => `${k}×${n}`).join(", ");
+        return `<div class="rec-block conflict">
+          <div><b>${esc(T("{count} deletion(s) held for pair #{pair_id} ({name}):",
+            { count: hold.count, pair_id: hold.pair_id, name: hold.pair_name }))}</b></div>
+          <div class="muted small">${esc(T("Deletion types: {kinds}", { kinds }))}</div>
+          <ul class="pending-paths">${(hold.paths || []).slice(0, 12)
+            .map((p) => `<li>${esc(p)}</li>`).join("")}
+            ${hold.more ? `<li class="muted">… +${esc(hold.more)}</li>` : ""}</ul>
+          <div class="row">
+            <button class="btn primary small" data-allow="${esc(hold.pair_id)}">${esc(t("Allow these deletions (one pass)"))}</button>
+            <button class="btn ghost small" data-keep="${esc(hold.pair_id)}">${esc(t("Keep my files (deletes off)"))}</button>
+          </div></div>`;
+      }).join("");
+      el.querySelectorAll("[data-allow]").forEach((btn) =>
+        btn.addEventListener("click", () => recoveryDecide(btn.dataset.allow, "allow")));
+      el.querySelectorAll("[data-keep]").forEach((btn) =>
+        btn.addEventListener("click", () => recoveryDecide(btn.dataset.keep, "keep")));
+    }
+    // conflict copies
+    if (!data.conflicts.length) {
+      conflictsEl.innerHTML = `<span class="muted small">${esc(t("No conflict copies — everything is resolved."))}</span>`;
+      note.textContent = "";
+    } else {
+      conflictsEl.innerHTML = data.conflicts.map((c) =>
+        `<div class="rec-block conflict"><b>pair #${esc(c.pair_id)}</b> (${esc(c.name)}) — ${esc(c.count)} copy(ies)</div>`).join("");
+      note.textContent = t("{n} conflict copy(ies) across your pairs — resolve them from each pair's “Conflicts” button on the Sync pairs tab.")
+        .replace("{n}", data.conflicts.reduce((s, c) => s + c.count, 0));
+    }
+    // recent failures
+    failuresEl.innerHTML = data.failures.length
+      ? data.failures.map((f) =>
+          `<div class="rec-block error"><b>${esc(f.action)}</b> ${esc(f.path || "")} <span class="muted small">${esc(f.ts)}</span><div>${esc(f.message)}</div></div>`).join("")
+      : `<span class="muted small">${esc(t("No recent failures."))}</span>`;
+    // decision history
+    const tbody = $("#recoveryHistoryTable tbody");
+    if (!data.history.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${esc(t("recovery-history-empty"))}</td></tr>`;
+    } else {
+      tbody.innerHTML = data.history.map((h) =>
+        `<tr><td>${esc(h.ts)}</td><td>${h.pair_id == null ? "—" : "#" + esc(h.pair_id)}</td>
+         <td>${esc(t(RECOVERY_ACTIONS[h.action] || h.action))}</td>
+         <td>${esc(h.path || "—")}</td>
+         <td class="muted small">${esc(h.detail || h.reason || "")}</td></tr>`).join("");
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="rec-block error">${esc(e.message)}</div>`;
+  }
+}
+
+async function recoveryDecide(pairId, choice) {
+  const path = choice === "allow" ? "deletions/allow" : "deletions/keep";
+  try {
+    await api(`/api/recovery/${path}`, { method: "POST", body: { pair_id: +pairId } });
+    toast(t(choice === "allow" ? "restore.ack" : "restore.keep"));
+  } catch (e) {
+    toast(e.message);
+  }
+  loadRecoverySummary();
+}
+
+async function loadRecoveryTrash() {
+  const tbody = $("#recoveryTrashTable tbody");
+  try {
+    const data = await api("/api/recovery/trash?limit=200");
+    if (!data.items.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${esc(t("The local trash is empty."))}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = data.items.map((it) =>
+      `<tr><td>#${esc(it.pair_id)} ${esc(it.pair_name)}</td>
+       <td title="${esc(it.stamp)} / ${esc(it.rel)}">${esc(it.rel)}</td>
+       <td>${esc(humanBytes(it.size))}</td>
+       <td class="muted small">${esc(it.when || "")}</td>
+       <td><button class="btn ghost small" data-restore="${esc(it.pair_id)}|${esc(it.stamp)}|${esc(it.rel)}">${esc(t("Restore"))}</button></td></tr>`).join("");
+    tbody.querySelectorAll("[data-restore]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const [pairId, stamp, rel] = btn.dataset.restore.split("|");
+        recoveryRestoreTrash(pairId, stamp, rel);
+      }));
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="msg err">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function recoveryRestoreTrash(pairId, stamp, rel) {
+  try {
+    const res = await api("/api/recovery/trash/restore",
+      { method: "POST", body: { pair_id: +pairId, stamp, rel } });
+    toast(t(res.result.renamed
+      ? "File restored under a new name (the original path was occupied)."
+      : "File restored to its original path."));
+  } catch (e) {
+    toast(e.message);
+  }
+  loadRecoveryTrash();
+}
+
+async function loadDriveTrash() {
+  const pairId = $("#recoveryDrivePair").value;
+  const tbody = $("#driveTrashTable tbody");
+  if (!pairId) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${esc(t("recovery-drive-trash-empty"))}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = `<tr><td colspan="4" class="muted">${esc(t("loading…"))}</td></tr>`;
+  try {
+    const data = await api(`/api/recovery/drive-trash?pair_id=${encodeURIComponent(pairId)}`);
+    if (!data.items.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="muted">${esc(t("The Drive trash is empty."))}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = data.items.map((it) =>
+      `<tr><td>${esc(it.name || it.id)}</td>
+       <td>${it.size == null ? "—" : esc(humanBytes(+it.size))}</td>
+       <td class="muted small">${esc(it.trashedTime || "")}${it.trashed_ago_days != null ? ` (${esc(it.trashed_ago_days)}d)` : ""}</td>
+       <td><button class="btn ghost small" data-untrash="${esc(it.id)}">${esc(t("Restore"))}</button></td></tr>`).join("");
+    tbody.querySelectorAll("[data-untrash]").forEach((btn) =>
+      btn.addEventListener("click", () => recoveryRestoreDrive(pairId, btn.dataset.untrash)));
+    toast(t("Drive trash listed."));
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="msg err">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function recoveryRestoreDrive(pairId, fileId) {
+  try {
+    await api("/api/recovery/drive-trash/restore",
+      { method: "POST", body: { pair_id: +pairId, file_id: fileId } });
+    toast(t("File taken out of the Drive trash."));
+  } catch (e) {
+    toast(e.message);
+  }
+  loadDriveTrash();
+}
+
+async function loadVersions() {
+  const pairId = $("#versionPair").value;
+  const rel = $("#versionRel").value.trim();
+  const tbody = $("#versionsTable tbody");
+  if (!pairId || !rel) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${esc(t("Enter a file path first."))}</td></tr>`;
+    return;
+  }
+  try {
+    const data = await api(`/api/recovery/versions?pair_id=${encodeURIComponent(pairId)}&rel=${encodeURIComponent(rel)}`);
+    if (!data.items.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="muted">${esc(t("recovery-versions-empty"))}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = data.items.map((it) =>
+      `<tr><td title="${esc(it.stamp)}">${esc(it.stamp)}</td>
+       <td>${esc(it.rel)}</td><td>${esc(humanBytes(it.size))}</td>
+       <td><button class="btn ghost small" data-version="${esc(it.stamp)}">${esc(t("Restore version"))}</button></td></tr>`).join("");
+    tbody.querySelectorAll("[data-version]").forEach((btn) =>
+      btn.addEventListener("click", () => recoveryRestoreVersion(pairId, rel, btn.dataset.version)));
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="msg err">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function recoveryRestoreVersion(pairId, rel, stamp) {
+  try {
+    await api("/api/recovery/versions/restore",
+      { method: "POST", body: { pair_id: +pairId, rel, stamp } });
+    toast(t("Version restored; the current copy was kept too."));
+    loadVersions();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+$("#refreshRecovery").addEventListener("click", () => {
+  loadRecoverySummary();
+  loadRecoveryTrash();
+});
+$("#loadDriveTrash").addEventListener("click", loadDriveTrash);
+$("#loadVersions").addEventListener("click", loadVersions);
+
 /* ---------- transfer queue ---------- */
 async function loadTransfers() {
   const body = $("#transfersTable tbody");
@@ -1173,8 +1858,17 @@ async function loadSettings() {
     $("#setConcurrency").value = settings.transfer_concurrency;
     $("#setHistory").value = settings.history_versions ?? 10;
     $("#setBandwidth").value = settings.bandwidth_limit_kb;
+    $("#setPeakBandwidth").value = settings.bandwidth_limit_kb_peak ?? 0;
     $("#setActiveFrom").value = settings.active_from || "";
     $("#setActiveTo").value = settings.active_to || "";
+    $("#setPeakFrom").value = settings.peak_from || "";
+    $("#setPeakTo").value = settings.peak_to || "";
+    $("#setRespectMetered").checked = settings.respect_metered !== false;
+    $("#setMeteredAction").value = settings.metered_action || "pause";
+    $("#setMeteredBw").value = settings.metered_bandwidth_kb ?? 1024;
+    $("#setDigest").checked = settings.digest_enabled === true;
+    $("#setDigestTime").value = settings.digest_time || "";
+    $("#setDigestSkip").checked = settings.digest_skip_empty !== false;
     $("#setWatch").checked = settings.watch_enabled !== false;
     $("#setIncremental").checked = settings.incremental_scan !== false;
     $("#setConvertDocs").checked = settings.convert_google_docs !== false;
@@ -1197,8 +1891,17 @@ $("#settingsForm").addEventListener("submit", async (e) => {
         transfer_concurrency: +$("#setConcurrency").value,
         history_versions: +$("#setHistory").value,
         bandwidth_limit_kb: +$("#setBandwidth").value,
+        bandwidth_limit_kb_peak: +$("#setPeakBandwidth").value,
         active_from: $("#setActiveFrom").value,
         active_to: $("#setActiveTo").value,
+        peak_from: $("#setPeakFrom").value,
+        peak_to: $("#setPeakTo").value,
+        respect_metered: $("#setRespectMetered").checked,
+        metered_action: $("#setMeteredAction").value,
+        metered_bandwidth_kb: +$("#setMeteredBw").value,
+        digest_enabled: $("#setDigest").checked,
+        digest_time: $("#setDigestTime").value,
+        digest_skip_empty: $("#setDigestSkip").checked,
         watch_enabled: $("#setWatch").checked,
         incremental_scan: $("#setIncremental").checked,
         convert_google_docs: $("#setConvertDocs").checked,
@@ -1230,6 +1933,22 @@ function humanBytes(n) {
 applyTheme();
 applyLang();
 loadDashboard();
+
+/* Keep the visible tab current. Transfers change fastest (1.5 s); status,
+   recent activity and the activity log refresh on a calmer 4 s cadence.
+   Hidden tabs and a hidden browser window do no work at all. */
+function refreshCurrentTab() {
+  if (document.hidden) return;
+  const el = document.activeElement;
+  // do not re-render a list while the user is typing in its search box
+  if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+  if (state.tab === "dashboard") loadDashboard();
+  else if (state.tab === "activity") loadEvents();
+}
 setInterval(() => {
-  if (state.tab === "transfers") loadTransfers();
+  if (!document.hidden && state.tab === "transfers") loadTransfers();
 }, 1500);
+setInterval(refreshCurrentTab, 4000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshCurrentTab();
+});

@@ -1,6 +1,6 @@
 # Packaging DriveSync
 
-Three ways to install the app without touching the terminal, and the
+Four ways to install the app without touching the terminal, and the
 scripts/specs that build them:
 
 | Format | File | Best for | Build with |
@@ -8,12 +8,14 @@ scripts/specs that build them:
 | **deb** | `drivesync_<ver>-1_all.deb` | Debian, Ubuntu, Mint, Pop!\_OS | `./build-deb.sh` (needs `dpkg-deb`) |
 | **rpm** | `drivesync-<ver>-1.noarch.rpm` | Fedora, RHEL, openSUSE | `./build-rpm.sh` (needs `rpmbuild`) |
 | AppImage | `DriveSync-<ver>-x86_64.AppImage` | any other distro, zero install | `./build-appimage.sh` (needs `python3`, `curl`) |
+| Flatpak | `DriveSync-<ver>-x86_64.flatpak` | sandboxed install, atomic updates | `./build-flatpak.sh` (needs `flatpak-builder`) |
 
 **Recommendation: publish deb + rpm as the primary artifacts** and attach
 them to GitHub Releases (the included `.github/workflows/release.yml` builds
-all three on every tag). Packages integrate with the software center, put
-`drivesync` on PATH, install the menu launcher and the systemd user unit —
-the AppImage is the fallback for distros without either package manager.
+the native packages and the AppImage on every tag). Packages integrate with
+the software center, put `drivesync` on PATH, install the menu launcher and
+the systemd user unit — the AppImage and Flatpak are the fallbacks for
+distros without either package manager.
 
 All three install modes keep user data (config, tokens, state DB) in
 `~/.local/share/drivesync/`, exactly like the source install.
@@ -38,6 +40,21 @@ runs on machines with a compatible glibc and the same python 3.x minor
 family. Build on an older, widely-shared distro (e.g. Ubuntu 22.04) for the
 best reach. It does not register a systemd autostart unit — run it once and
 enable autostart from the dashboard instead.
+
+## Notes on the Flatpak
+
+The manifest (`flatpak/io.github.drivesync.DriveSync.yml`) builds on
+`org.gnome.Platform//46`, which already ships GTK 3, PyGObject and
+libnotify; only Flask, requests and the app itself are added. It requests
+home-directory access because sync folders live there, plus Wayland/X11,
+notifications and the tray (StatusNotifier) interfaces.
+
+Inside the sandbox the app keeps its data in
+`~/.var/app/io.github.drivesync.DriveSync` instead of `~/.local/share`, and
+the systemd user unit is not used — enable autostart from the dashboard.
+The desktop file and AppStream metadata are installed under the Flatpak app
+ID, and the window adopts that ID on Wayland so the launcher and running
+window are associated correctly.
 
 ## One-time release checklist
 

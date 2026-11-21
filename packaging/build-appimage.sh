@@ -110,6 +110,16 @@ Terminal=false
 Categories=Network;FileTransfer;
 Keywords=drive;sync;google;backup;
 StartupWMClass=DriveSync
+StartupNotify=true
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true
+Actions=SyncNow;
+EOF
+cat >> "$APPDIR/DriveSync.desktop" <<'EOF'
+
+[Desktop Action SyncNow]
+Name=Sync all now
+Exec=DriveSync sync
 EOF
 cp "$ROOT/drivesync/static/mark.svg" "$APPDIR/drivesync.svg"
 
