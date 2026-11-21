@@ -63,8 +63,6 @@ const ES = {
   "downloading": "Descargando",
   "completed": "Completado",
   "failed": "Fallido",
-  "Upload": "Subida",
-  "Download": "Descarga",
   "Settings": "Ajustes",
   "Sync now": "Sincronizar ahora",
   "Background worker": "Trabajo en segundo plano",
