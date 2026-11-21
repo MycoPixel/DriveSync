@@ -86,8 +86,9 @@ class Worker:
         self.status = {"running": False, "paused": False, "last_run": None,
                        "last_error": None, "last_stats": None,
                        "waiting_until": None, "next_run": None,
-                       "pairs": {}}
+                       "pairs": {}, "transfers": []}
         self._lock = threading.Lock()
+        self._transfer_lock = threading.Lock()
         self._lockfh = None
         self._limit_kb = int(config.get("bandwidth_limit_kb", 0) or 0)
         self.limiter = TokenBucket(self._limit_kb * 1024) \
@@ -276,7 +277,8 @@ class Worker:
                         stats, ok = engine.sync_pair(
                             self.store, self.config, pair, drive,
                             force_full=force_full,
-                            changes=None if stale else feed)
+                            changes=None if stale else feed,
+                            transfer_callback=self._on_transfer)
                     except Exception as exc:  # keep the worker alive no matter what
                         self.status["last_error"] = str(exc)
                         self.store.log(pair["id"], "worker-error", "",
@@ -371,6 +373,23 @@ class Worker:
                 self.store.kv_set("last_db_backup", str(time.time()))
         except Exception:
             pass        # a failed backup must never fail the pass
+
+    def _on_transfer(self, item):
+        """Publish a bounded, thread-safe list of queued and recent transfers.
+
+        The engine reports lifecycle changes from its transfer threads. Keep
+        the newest 50 records so the GTK and web queues can render the same
+        state without a second queue or database write path.
+        """
+        with self._transfer_lock:
+            rows = list(self.status.get("transfers") or [])
+            for index, current in enumerate(rows):
+                if current.get("id") == item.get("id"):
+                    rows[index] = {**current, **item}
+                    break
+            else:
+                rows.append(dict(item))
+            self.status["transfers"] = rows[-50:]
 
     def _note_pair(self, pair_id, ok, stats, error):
         """Record one pair's last-pass outcome for the UI status columns.
