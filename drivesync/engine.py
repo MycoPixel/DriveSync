@@ -1018,13 +1018,20 @@ def sync_pair(store, cfg, pair, drive, force_full=False, changes=None,
         if is_transfer:
             transfer_event(op, "uploading" if op[0] == "upload"
                            else "downloading")
+        errors_before = int(stats.errors)
         try:
             # one commit per op (base row + marker/activity rows) instead of
             # one per write: a first sync writes thousands of small rows
             with store.batch():
                 ctx.apply(op)
             if is_transfer:
-                transfer_event(op, "completed")
+                if int(stats.errors) > errors_before:
+                    rows = store.recent_events(limit=1, level="error",
+                                               pair_id=pair["id"])
+                    detail = rows[0]["message"] if rows else "transfer failed"
+                    transfer_event(op, "failed", detail)
+                else:
+                    transfer_event(op, "completed")
         except Exception as exc:
             if is_transfer:
                 transfer_event(op, "failed", exc)
