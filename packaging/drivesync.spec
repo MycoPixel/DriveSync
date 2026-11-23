@@ -6,7 +6,7 @@
 # The package mirrors the .deb layout: python code under the site-packages
 # dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.5.1
+Version:        0.6.0
 # No distro release suffix: this is a noarch, pure-python package and a
 # host-specific tag made the artifact name differ per build machine for no
 # benefit. Keep release/name stable everywhere.
@@ -34,6 +34,8 @@ Recommends:     libayatana-appindicator-gtk3
 Recommends:     python3-pillow
 # instant local-change sync (watch.py degrades to polling without it)
 Recommends:     python3-watchdog
+# optional read-only FUSE mount ('drivesync mount')
+Recommends:     python3-fusepy
 # desktop notifications for conflicts/errors while the window is hidden
 Recommends:     libnotify
 
@@ -80,6 +82,7 @@ mkdir -p %{buildroot}%{appdir} \
          %{buildroot}%{_datadir}/applications \
          %{buildroot}%{_datadir}/metainfo \
          %{buildroot}%{_datadir}/icons/hicolor/scalable/apps \
+         %{buildroot}%{_datadir}/kio/servicemenus \
          %{buildroot}%{_userunitdir} \
          %{buildroot}%{_docdir}/%{name}
 cp -r drivesync/* %{buildroot}%{appdir}/
@@ -103,6 +106,10 @@ cp drivesync/static/mark.svg \
 # AppStream metadata: what Discover / GNOME Software show about the app
 cp drivesync.metainfo.xml \
    %{buildroot}%{_datadir}/metainfo/drivesync.metainfo.xml
+
+# Dolphin/KDE right-click menu (sync a folder / add it as a pair)
+install -m 644 packaging/kde/drivesync-servicemenu.desktop \
+   %{buildroot}%{_datadir}/kio/servicemenus/drivesync-servicemenu.desktop
 
 cat > %{buildroot}%{_userunitdir}/drivesync.service <<'EOF'
 [Unit]
@@ -138,9 +145,23 @@ EOF
 %{_datadir}/applications/drivesync.desktop
 %{_datadir}/metainfo/drivesync.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/drivesync.svg
+%{_datadir}/kio/servicemenus/drivesync-servicemenu.desktop
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.6.0-1
+- Shared Drives: browse organizational drives as folder roots in the
+  dashboard, GTK app and pair picker (list_drives + supportsAllDrives on
+  every Files call, including mutations)
+- Portable settings: 'drivesync config export/import' moves preferences
+  and pair definitions between machines, never OAuth tokens or secrets
+- Security: 'drivesync audit [--fix]', traversal-safe path joins for
+  recovery/conflicts, private SQLite WAL/SHM modes, SECURITY.md
+- Release pipeline builds and publishes deb, rpm, AppImage and Flatpak
+  with SHA-256 checksums
+- Optional read-only FUSE mount: 'drivesync mount <dir>'
+- Dolphin/KDE context menu: sync a folder now or add it as a pair
+
 * %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.5.1-1
 - Drive-tab downloads show live progress: spinner + per-file strip in the
   tab, headerbar mirror, and a persistent result summary; folder downloads

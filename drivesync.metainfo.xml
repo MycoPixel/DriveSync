@@ -48,6 +48,20 @@
   <icon type="theme">drivesync</icon>
   <icon type="stock">drivesync</icon>
   <releases>
+    <release version="0.6.0" date="2026-11-23">
+      <description>
+        <p>
+          Shared Drives are now first-class folder roots in the dashboard,
+          the desktop app and the sync-pair picker. Settings can be exported
+          and imported between machines without ever carrying OAuth tokens
+          or the client secret, and a new 'drivesync audit' command checks
+          credential and file permissions (with --fix). The release pipeline
+          now publishes deb, rpm, AppImage and Flatpak artifacts with
+          checksums. An optional read-only FUSE mount ('drivesync mount')
+          and a Dolphin/KDE context menu round out the desktop integration.
+        </p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-11-18">
       <description>
         <p>

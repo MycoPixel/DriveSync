@@ -306,6 +306,7 @@ const ES = {
   "Only {n} subfolder(s) will sync": "Solo se sincronizarán {n} subcarpeta(s)",
   "Scope reset — everything syncs": "Alcance restablecido — se sincroniza todo",
   "No folders shared with this account yet.": "Aún no hay carpetas compartidas con esta cuenta.",
+  "No shared drives in this account.": "No hay unidades compartidas en esta cuenta.",
   "No subfolders.": "No hay subcarpetas.",
   "open ›": "abrir ›",
   "select": "elegir",
@@ -396,6 +397,7 @@ const ES = {
   "Modified": "Modificado",
   "Owner": "Propietario",
   "Shared with me": "Compartido conmigo",
+  "Shared drives": "Unidades compartidas",
   "This folder is empty.": "Esta carpeta está vacía.",
   "No items match the type filter.": "Ningún elemento coincide con el filtro de tipo.",
   "No items match the search.": "Ningún elemento coincide con la búsqueda.",
@@ -411,6 +413,8 @@ const ES = {
   "Folder sent to the sync-pair form.": "Carpeta enviada al formulario de pares.",
   "“Shared with me” cannot be a sync destination — open a folder inside it first.":
     "“Compartido conmigo” no puede ser un destino de sincronización — abre antes una carpeta dentro.",
+  "“Shared drives” is a list of drives — open one first.":
+    "“Unidades compartidas” es una lista de unidades — abre una primero.",
   "Choose an account to browse its Drive.":
     "Elige una cuenta para explorar su Drive.",
   "Open in search results": "Abrir desde los resultados",
@@ -1249,8 +1253,10 @@ async function renderPicker() {
       ? folders.map((f) => `<div class="picker-item" data-id="${esc(f.id)}" data-name="${esc(f.name)}">
           <span>📁 ${esc(f.name)}</span><span class="muted small">${esc(t("open ›"))}</span></div>`).join("")
       : `<p class="muted">${esc(cur.id === "shared"
-          ? t("No folders shared with this account yet.") : t("No subfolders."))}</p>`;
-    const useRow = cur.id === "shared" ? "" :
+          ? t("No folders shared with this account yet.")
+          : cur.id === "drives" ? t("No shared drives in this account.")
+          : t("No subfolders."))}</p>`;
+    const useRow = (cur.id === "shared" || cur.id === "drives") ? "" :
       `<div class="picker-item" data-id="${esc(cur.id)}" data-name="${esc(cur.name)}" data-choose="1">
         <span>${esc(T("✅ Use “{name}”", { name: cur.name }))}${folders.length ? "" : " " + esc(t("(no subfolders)"))}</span>
         <span class="muted small">${esc(t("select"))}</span></div>`;
@@ -1437,7 +1443,8 @@ function renderDrive() {
 
   renderDriveCrumbs();
   $("#driveUp").disabled = !!st.search || st.stack.length <= 1;
-  $("#driveUseFolder").disabled = !!st.search || cur.id === "shared";
+  $("#driveUseFolder").disabled = !!st.search ||
+    cur.id === "shared" || cur.id === "drives";
   $("#drivePath").textContent = st.search
     ? T("Search results for “{q}” — {n} item(s) in all of Drive",
         { q: st.search, n: st.items.length })
@@ -1450,6 +1457,10 @@ function renderDrive() {
       why = st.items.length
         ? t("No items match the type filter.")
         : t("Nothing on this Drive matches the search.");
+    else if (cur.id === "shared")
+      why = t("No folders shared with this account yet.");
+    else if (cur.id === "drives")
+      why = t("No shared drives in this account.");
     else
       why = st.items.length
         ? (needle || group !== "all" ? t("No items match the type filter.")
@@ -1546,6 +1557,10 @@ $("#driveUseFolder").addEventListener("click", () => {
   const cur = driveCurrent();
   if (!cur || cur.id === "shared") {
     toast(t("“Shared with me” cannot be a sync destination — open a folder inside it first."));
+    return;
+  }
+  if (cur.id === "drives") {
+    toast(t("“Shared drives” is a list of drives — open one first."));
     return;
   }
   setPairRemote(cur.id, cur.name);

@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Service
+MimeType=inode/directory;
+Actions=SyncNow;AddPair;
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+X-KDE-Priority=TopLevel
+Icon=drivesync
+
+[Desktop Action SyncNow]
+Name=Sync this folder now
+Name[es]=Sincronizar esta carpeta ahora
+Icon=drivesync
+Exec=drivesync sync --path %f
+
+[Desktop Action AddPair]
+Name=Add this folder to DriveSync…
+Name[es]=Agregar esta carpeta a DriveSync…
+Icon=drivesync
+Exec=drivesync gui --add-pair %f

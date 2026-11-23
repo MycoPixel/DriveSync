@@ -190,6 +190,10 @@ def create_app(store: Store, worker=None):
             crumbs = breadcrumbs(drive, parent)
             if parent == "shared":
                 folders = drive.list_shared_folders()
+            elif parent == "drives":
+                folders = [{"id": d["id"], "name": d["name"],
+                            "mimeType": FOLDER_MIME}
+                           for d in drive.list_drives()]
             else:
                 children = drive.list_children(parent)
                 folders = [f for f in (resolve_folder_entry(c) for c in children)
@@ -199,7 +203,8 @@ def create_app(store: Store, worker=None):
             return api_error(exc, 502)
         if parent == "root":
             current = None          # the top of My Drive has no parent row
-            folders = [{"id": "shared", "name": "Shared with me"}] + folders
+            folders = [{"id": "shared", "name": "Shared with me"},
+                       {"id": "drives", "name": "Shared drives"}] + folders
         return jsonify({"ok": True, "current": current, "breadcrumbs": crumbs,
                         "folders": folders})
     @app.get("/api/drive/<int:account_id>/children")
@@ -218,8 +223,18 @@ def create_app(store: Store, worker=None):
             crumbs = breadcrumbs(drive, parent)
             if parent == "shared":
                 items = drive.list_shared_folders()
+            elif parent == "drives":
+                items = [{"id": d["id"], "name": d["name"],
+                          "mimeType": FOLDER_MIME, "driveId": d["id"]}
+                         for d in drive.list_drives()]
             else:
                 items = drive.list_children(parent)
+                if parent == "root":
+                    # virtual browser levels, not real Drive folders
+                    items = [{"id": "shared", "name": "Shared with me",
+                              "mimeType": FOLDER_MIME},
+                             {"id": "drives", "name": "Shared drives",
+                              "mimeType": FOLDER_MIME}] + items
         except (DriveError, AuthError) as exc:
             return api_error(exc, 502)
         # root keeps current=None (historical contract for pickers); the
@@ -547,7 +562,12 @@ def create_app(store: Store, worker=None):
         rel = (request.args.get("rel") or "").strip()
         if not rel:
             return api_error("rel is required")
-        items = recovery.list_versions(pair_id, rel)
+        if pair_id is None:
+            return api_error("pair_id is required")
+        try:
+            items = recovery.list_versions(pair_id, rel)
+        except ValueError as exc:
+            return api_error(str(exc))
         return jsonify({"ok": True, "items": items})
 
     @app.post("/api/recovery/versions/restore")

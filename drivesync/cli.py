@@ -10,7 +10,9 @@
   drivesync status          show accounts, pairs and recent activity
   drivesync conflicts       list / resolve conflict copies from the terminal
   drivesync recovery        deletion holds, trash, versions, history
-  drivesync config          get / set settings
+  drivesync config          get / set / export / import settings
+  drivesync mount           read-only FUSE mount (optional extra)
+  drivesync audit           credential/file-permission check
   drivesync doctor          sanity-check the installation
 """
 
@@ -20,7 +22,8 @@ import sys
 import threading
 
 from . import __version__
-from .config import DEFAULT_CONFIG, app_dir, load_config, update_config
+from .config import (DEFAULT_CONFIG, app_dir, db_path, load_config,
+                     update_config)
 from .db import Store, parse_include_patterns, to_local
 
 
@@ -234,6 +237,11 @@ def cmd_pairs(args):
         if not args.remote_id:
             sys.exit("error: --remote-id is required (a Drive folder ID; "
                      "find it in the folder's URL: .../folders/<ID>)")
+        from .drive import is_virtual_root
+        if is_virtual_root(args.remote_id):
+            sys.exit("error: '{}' is a browser view, not a folder — open a "
+                     "folder (or a Shared Drive) inside it and use that "
+                     "ID".format(args.remote_id))
         if not store.account(args.account):
             sys.exit(f"error: no account #{args.account} — connect one with "
                      "'drivesync auth' first (see what is connected with "
@@ -294,6 +302,23 @@ def cmd_pairs(args):
     store.close()
 
 
+def _pair_for_path(pairs, folder):
+    """Most-specific enabled pair whose local root contains `folder`."""
+    target = os.path.realpath(os.path.expanduser(folder))
+    matches = []
+    for pair in pairs:
+        root = os.path.realpath(os.path.expanduser(str(pair["local_path"])))
+        try:
+            inside = os.path.commonpath([root, target]) == root
+        except ValueError:          # different drives on Windows
+            inside = False
+        if inside:
+            matches.append((len(root), pair))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item[0])[1]
+
+
 def cmd_sync(args):
     from .worker import Worker
     store = _open_store()
@@ -301,6 +326,16 @@ def cmd_sync(args):
         store.close()
         sys.exit(f"error: no sync pair #{args.pair} — list them with "
                  "'drivesync pairs list'")
+    if args.path:
+        pairs = store.pairs(enabled_only=True)
+        match = _pair_for_path(pairs, args.path)
+        if not match:
+            store.close()
+            sys.exit(f"error: no enabled sync pair contains {args.path!r} — "
+                     "add one with 'drivesync pairs add'")
+        args.pair = match["id"]
+        print(f"{args.path} belongs to pair #{match['id']} "
+              f"({match['local_path']})")
     if not store.pairs(enabled_only=True):
         print("No enabled sync pairs yet — nothing to sync.")
         print("Add one in the dashboard, or:")
@@ -610,6 +645,44 @@ def cmd_status(args):
 
 
 def cmd_config(args):
+    if args.action in ("export", "import"):
+        from .portable import export_settings, import_settings
+        if args.action == "import" and not args.key_value:
+            sys.exit("error: usage: drivesync config import <file> [--dry-run]")
+        path = args.key_value or "drivesync-config.json"
+        store = Store(db_path())
+        try:
+            if args.action == "export":
+                try:
+                    export_settings(store, path)
+                except OSError as exc:
+                    sys.exit(f"error: cannot write {path}: {exc}")
+                print(f"exported settings and {len(store.pairs())} pair(s) "
+                      f"to {path}")
+                print("  credentials are never exported — run "
+                      "'drivesync auth' on the other machine")
+                return
+            try:
+                report = import_settings(store, path, dry_run=args.dry_run)
+            except ValueError as exc:
+                sys.exit(f"error: {exc}")
+        finally:
+            store.close()
+        prefix = "would import" if report["dry_run"] else "imported"
+        print(f"{prefix} {len(report['config_keys'])} setting(s): "
+              f"{', '.join(report['config_keys']) or 'none'}")
+        print(f"{prefix} {len(report['added'])} pair(s)")
+        for item in report["added"]:
+            print(f"  + {item}")
+        if report["skipped"]:
+            print(f"skipped {len(report['skipped'])} pair(s):")
+            for item in report["skipped"]:
+                print(f"  - {item}")
+        for warning in report["warnings"]:
+            print(f"warning: {warning}")
+        if report["dry_run"]:
+            print("dry run: nothing was written")
+        return
     if args.action == "set":
         key, _, value = args.key_value.partition("=")
         if key not in DEFAULT_CONFIG:
@@ -631,6 +704,28 @@ def cmd_config(args):
     else:
         for k, v in load_config().items():
             print(f"{k} = {v}")
+
+
+def cmd_audit(args):
+    from .security import apply_fixes, audit
+    store = Store(db_path())
+    try:
+        report = audit(store)
+    finally:
+        store.close()
+    print(f"DriveSync {__version__} security audit")
+    for check in report["checks"]:
+        mark = "OK  " if check["ok"] else "FAIL"
+        print(f"  [{mark}] {check['name']}: {check['detail']}")
+    if report["ok"]:
+        print("all checks passed")
+        return
+    if args.fix:
+        fixed = apply_fixes(report)
+        print(f"applied {fixed} permission fix(es); re-run to confirm")
+        return
+    print("run 'drivesync audit --fix' to repair file permissions")
+    sys.exit(1)
 
 
 def cmd_doctor(args):
@@ -700,6 +795,45 @@ def cmd_doctor(args):
     sys.exit(0 if ok else 1)
 
 
+def cmd_mount(args):
+    """Mount one Drive folder read-only via FUSE (optional extra).
+
+    This blocks while the mount is active; run it in a terminal, from a
+    systemd user unit, or with ``&``. The GUI Drive browser is the no-FUSE
+    alternative.
+    """
+    from .auth import access_token_persisting, token_from_json
+    from .drive import Drive, resolve_export_formats
+    from .fuse import FuseUnavailable, mount
+
+    store = _open_store()
+    try:
+        accounts = store.accounts()
+        if not accounts:
+            sys.exit("error: no account authorized — run 'drivesync auth' first")
+        account = accounts[0]
+        if args.account is not None:
+            account = store.account(args.account)
+            if not account:
+                sys.exit(f"error: no account #{args.account}")
+        token = token_from_json(account["token_json"])
+        drive = Drive(lambda: access_token_persisting(store, account["id"],
+                                                      token))
+        try:
+            mount(drive, args.mountpoint, root_id=args.remote_id,
+                  export_formats=resolve_export_formats(load_config()),
+                  allow_other=args.allow_other, debug=args.debug)
+        except FuseUnavailable as exc:
+            sys.exit(f"error: {exc}")
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
+        except KeyboardInterrupt:
+            pass
+        print(f"unmounted {args.mountpoint}")
+    finally:
+        store.close()
+
+
 def cmd_gui(args):
     try:
         from .gui import run
@@ -711,7 +845,7 @@ def cmd_gui(args):
               "  Debian/Ubuntu:      sudo apt install python3-gi\n"
               "Headless alternative: 'drivesync serve' + the web dashboard.")
         sys.exit(f"detail: {exc}")
-    run()
+    run(add_pair_path=getattr(args, "add_pair", None))
 
 
 def build_parser():
@@ -722,7 +856,23 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=False)
 
     s = sub.add_parser("gui", help="open the desktop app (GTK window)")
+    s.add_argument("--add-pair", metavar="FOLDER", default=None,
+                   help="open the add-sync-folder dialog for this local "
+                        "folder (used by the Dolphin context menu)")
     s.set_defaults(fn=cmd_gui)
+
+    s = sub.add_parser("mount",
+                       help="mount a Drive folder read-only (needs fusepy)")
+    s.add_argument("mountpoint", help="empty local directory to mount on")
+    s.add_argument("--account", type=int, default=None,
+                   help="account id (default: the first authorized account)")
+    s.add_argument("--remote-id", default="root",
+                   help="Drive folder / Shared Drive id (default: My Drive)")
+    s.add_argument("--allow-other", action="store_true",
+                   help="let other local users read the mount")
+    s.add_argument("--debug", action="store_true",
+                   help="verbose FUSE request logging")
+    s.set_defaults(fn=cmd_mount)
 
     s = sub.add_parser("serve", help="run dashboard + background worker")
     s.add_argument("--host", default="127.0.0.1")
@@ -777,6 +927,9 @@ def build_parser():
 
     s = sub.add_parser("sync", help="run one sync pass and exit")
     s.add_argument("--pair", type=int, default=None)
+    s.add_argument("--path", default=None,
+                   help="sync the pair whose local folder contains this path "
+                        "(used by the Dolphin context menu)")
     s.add_argument("--full", action="store_true",
                    help="re-list Drive and rehash local files — the recovery "
                         "for editors that save with an unchanged mtime")
@@ -820,10 +973,19 @@ def build_parser():
     s = sub.add_parser("status", help="show summary")
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("config", help="get/set settings")
-    s.add_argument("action", choices=["get", "set"])
-    s.add_argument("key_value", nargs="?", help="key=value (for set)")
+    s = sub.add_parser("config", help="get/set/export/import settings")
+    s.add_argument("action", choices=["get", "set", "export", "import"])
+    s.add_argument("key_value", nargs="?",
+                   help="key=value (set) or file path (export/import)")
+    s.add_argument("--dry-run", action="store_true",
+                   help="show what 'config import' would change")
     s.set_defaults(fn=cmd_config)
+
+    s = sub.add_parser("audit",
+                       help="check permissions and credential handling")
+    s.add_argument("--fix", action="store_true",
+                   help="repair insecure file permissions")
+    s.set_defaults(fn=cmd_audit)
 
     s = sub.add_parser("doctor", help="sanity-check installation")
     s.set_defaults(fn=cmd_doctor)

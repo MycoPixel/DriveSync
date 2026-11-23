@@ -31,7 +31,8 @@ find "$TOP" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$TOP/.pytest_cache" "$TOP/dist"
 chmod 644 "$TOP/README.md" "$TOP/LICENSE" "$TOP/drivesync.desktop" \
           "$TOP/drivesync.metainfo.xml" "$TOP/CHANGELOG.md" \
-          "$TOP/packaging/drivesync.spec" "$TOP/packaging/README.md"
+          "$TOP/packaging/drivesync.spec" "$TOP/packaging/README.md" \
+          "$TOP/packaging/kde/drivesync-servicemenu.desktop"
 find "$TOP" -name '*.py' -exec chmod 644 {} +
 find "$TOP" -name '*.sh' -exec chmod 755 {} +
 tar -czf "$SOURCES/drivesync-${VERSION}.tar.gz" -C "$SOURCES" "drivesync-${VERSION}"

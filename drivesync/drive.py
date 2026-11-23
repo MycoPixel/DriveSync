@@ -140,7 +140,17 @@ def file_category(item):
 VIRTUAL_ROOTS = {
     "root": "My Drive",
     "shared": "Shared with me",
+    "drives": "Shared drives",
 }
+
+
+def is_virtual_root(folder_id):
+    """True for browser-only levels that are not real Drive folders.
+
+    'root' is deliberately excluded: it *is* a valid sync target (My Drive
+    itself). 'shared' and 'drives' are lists, not folders.
+    """
+    return folder_id in VIRTUAL_ROOTS and folder_id != "root"
 
 # Breadcrumb walks stop well before the API would: a parent chain longer
 # than this is a corrupted tree or a crafted loop, never a real hierarchy.
@@ -161,14 +171,17 @@ def breadcrumbs(drive, folder_id):
     if label:
         return [{"id": folder_id, "name": label}]
     chain, seen, current = [], set(), folder_id
+    in_shared_drive = False
     while current and current not in seen and len(chain) < MAX_BREADCRUMB_DEPTH:
         seen.add(current)
         try:
-            meta = drive.get(current, fields="id,name,parents")
+            meta = drive.get(current, fields="id,name,parents,driveId")
         except DriveError:
             if chain:
                 break              # an ancestor is gone: show what we have
             raise                  # the requested folder itself is broken
+        if meta.get("driveId"):
+            in_shared_drive = True
         chain.append({"id": meta.get("id", current),
                       "name": meta.get("name") or current})
         parents = [p for p in (meta.get("parents") or [])
@@ -177,6 +190,10 @@ def breadcrumbs(drive, folder_id):
             break                          # reached the actual My Drive root
         current = parents[0]
     chain.reverse()
+    if in_shared_drive:
+        # keep the virtual 'Shared drives' level in the chain so the
+        # breadcrumb can walk back to the drive list
+        chain.insert(0, {"id": "drives", "name": VIRTUAL_ROOTS["drives"]})
     return chain
 
 
@@ -189,6 +206,9 @@ def folders_for_parent(drive, parent):
     """
     if parent == "shared":
         return drive.list_shared_folders()
+    if parent == "drives":
+        return [{"id": d["id"], "name": d["name"], "mimeType": FOLDER_MIME}
+                for d in drive.list_drives()]
     children = drive.list_children(parent)
     return [f for f in (resolve_folder_entry(c) for c in children) if f]
 
@@ -379,8 +399,12 @@ class Drive:
         extra = dict(kw.pop("headers", None) or {})
         extra.pop("Authorization", None)
         params = kw.get("params")
-        if isinstance(params, dict) and "/files" in url:
-            # Shared Drives are invisible unless every call opts in.
+        if "/files" in url:
+            # Shared Drives are invisible unless every call opts in — even
+            # mutations (create/trash) that pass no query parameters.
+            if not isinstance(params, dict):
+                params = {}
+                kw["params"] = params
             params.setdefault("supportsAllDrives", "true")
             if method == "GET" and params.get("q"):
                 params.setdefault("includeItemsFromAllDrives", "true")
@@ -419,7 +443,7 @@ class Drive:
         return resp.json()
 
     def get(self, file_id, fields="id,name,mimeType,version,md5Checksum,size,"
-                                   "modifiedTime,parents,trashed"):
+                                   "modifiedTime,parents,trashed,driveId"):
         resp = self._request("GET", f"{API}/files/{file_id}",
                              params={"fields": fields})
         return resp.json()
@@ -435,8 +459,8 @@ class Drive:
             params = {
                 "q": f"'{folder_id}' in parents and trashed=false",
                 "fields": "nextPageToken, files(id,name,mimeType,md5Checksum,"
-                          "version,size,modifiedTime,parents,shortcutDetails,"
-                          "owners(displayName,emailAddress))",
+                          "version,size,modifiedTime,parents,driveId,"
+                          "shortcutDetails,owners(displayName,emailAddress))",
                 "pageSize": self.page_size,
                 "orderBy": "name_natural",
             }
@@ -448,6 +472,26 @@ class Drive:
             if not page_token:
                 return out
 
+    def list_drives(self, limit=100):
+        """Shared drives (formerly Team Drives) this account belongs to.
+
+        Each drive is itself a folder root: its id can be used as a parent
+        for listing, pair creation and uploads, exactly like 'root'.
+        """
+        out, page_token = [], None
+        while True:
+            params = {
+                "pageSize": min(100, limit - len(out)),
+                "fields": "nextPageToken,drives(id,name)",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            data = self._request("GET", f"{API}/drives", params=params).json()
+            out.extend(data.get("drives", []))
+            page_token = data.get("nextPageToken")
+            if not page_token or len(out) >= limit:
+                return out[:limit]
+
     def list_shared_folders(self):
         """Folders in 'Shared with me' — shared by other accounts, paged."""
         out, page_token = [], None
@@ -455,7 +499,7 @@ class Drive:
             params = {
                 "q": f"sharedWithMe=true and mimeType='{FOLDER_MIME}' "
                      "and trashed=false",
-                "fields": "nextPageToken, files(id,name)",
+                "fields": "nextPageToken, files(id,name,driveId)",
                 "pageSize": self.page_size,
                 "orderBy": "name_natural",
             }
@@ -486,8 +530,8 @@ class Drive:
             params = {
                 "q": q,
                 "fields": "nextPageToken, files(id,name,mimeType,md5Checksum,"
-                          "version,size,modifiedTime,shortcutDetails,"
-                          "owners(displayName,emailAddress))",
+                          "version,size,modifiedTime,driveId,"
+                          "shortcutDetails,owners(displayName,emailAddress))",
                 "pageSize": min(self.page_size, limit - len(out)),
                 "orderBy": "name_natural",
             }

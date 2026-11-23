@@ -160,11 +160,13 @@ def test_execute_plan_records_per_op_failures(env):
         def __getattr__(self, name):
             attr = getattr(self._real, name)
             if name == "upload":
-                def flaky(*a, **k):
+                # Fail by file name, not call order: uploads run in a
+                # thread pool, so "the first call" is not deterministic.
+                def flaky(local_path, remote_name, *a, **k):
                     self.calls += 1
-                    if self.calls == 1:
+                    if remote_name == "bad.txt":
                         raise DriveError("507: simulated storage failure")
-                    return attr(*a, **k)
+                    return attr(local_path, remote_name, *a, **k)
                 return flaky
             return attr
 

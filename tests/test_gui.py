@@ -166,7 +166,7 @@ def test_desktop_window_builds_under_a_display(tmp_path):
                 pass
 
         class FakeListener:
-            def __init__(self, callback):
+            def __init__(self, callback, on_add_pair=None):
                 pass
 
             def start(self):

@@ -343,7 +343,9 @@ def test_children_endpoint_lists_files_and_folders(client, monkeypatch):
     body = c.get("/api/drive/1/children").get_json()
     assert body["ok"] is True and body["current"] is None
     kinds = {i["id"]: i["mimeType"] for i in body["items"]}
-    assert kinds == {"f1": FOLDER_MIME, "x1": "text/plain"}
+    # the root listing prepends the two virtual browser levels
+    assert kinds == {"shared": FOLDER_MIME, "drives": FOLDER_MIME,
+                     "f1": FOLDER_MIME, "x1": "text/plain"}
     sub = c.get("/api/drive/1/children?parent=abc").get_json()
     assert sub["current"]["name"] == "Sub"
 

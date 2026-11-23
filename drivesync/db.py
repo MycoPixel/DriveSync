@@ -232,10 +232,23 @@ class Store:
             self._conn.executescript(_SCHEMA)
             self._migrate()
             self._conn.commit()
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        self._harden_files()
+
+    def _harden_files(self):
+        """Keep the DB and its sidecars private.
+
+        SQLite creates ``-wal``/``-shm`` files with the process umask, which
+        can be 0644 even when the database itself was chmodded 0600 — and
+        the WAL can contain freshly written refresh tokens. Re-apply the
+        mode after opening (and after a checkpoint recreates them).
+        """
+        for suffix in ("", "-wal", "-shm", ".bak"):
+            path = self.path + suffix
+            try:
+                if os.path.exists(path):
+                    os.chmod(path, 0o600)
+            except OSError:
+                pass
 
     # ---- state.db backup + recovery --------------------------------
     def _connect_recovering(self):
@@ -349,6 +362,7 @@ class Store:
             except sqlite3.DatabaseError:
                 pass
             self._conn.close()
+            self._harden_files()
 
     def optimize(self):
         """Refresh SQLite planner statistics (cheap; safe to call often)."""

@@ -50,6 +50,7 @@ from .config import app_dir
 from .db import parse_include_patterns
 from .drive import (FOLDER_MIME, PART_SUFFIX,
                     resolve_export_formats, safe_name)
+from .security import safe_join
 
 GDOC_PREFIX = "application/vnd.google-apps."
 CONFLICT_TAG = "%Y%m%d-%H%M%S"
@@ -1512,7 +1513,8 @@ class _ApplyCtx:
 
     def lpath(self, rel):
         """Local path for rel — folded native docs resolve to their rel+ext."""
-        return os.path.join(self.root, self.fold.get(rel, rel))
+        return safe_join(self.root, self.fold.get(rel, rel),
+                         allow_symlink_escape=True)
 
     def parent(self, rel):
         return rel.rsplit("/", 1)[0] if "/" in rel else ""
@@ -1723,7 +1725,7 @@ class _ApplyCtx:
         else:
             dest_rel = rel
             note = ""
-        dest = os.path.join(self.root, dest_rel)
+        dest = safe_join(self.root, dest_rel, allow_symlink_escape=True)
         if r.get("kind") == "gdoc" and r.get("export"):
             # never clobber a local file that is not our own export; the
             # base row (kind file + no remote_md5) is that proof
@@ -1764,7 +1766,7 @@ class _ApplyCtx:
         root = os.path.join(str(app_dir()), "trash", str(self.pid),
                             self.trash_stamp)
         os.makedirs(root, exist_ok=True)
-        target = os.path.join(root, rel.replace("\\", "/"))
+        target = safe_join(root, rel)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         return target
 

@@ -12,13 +12,15 @@ scripts/specs that build them:
 
 **Recommendation: publish deb + rpm as the primary artifacts** and attach
 them to GitHub Releases (the included `.github/workflows/release.yml` builds
-the native packages and the AppImage on every tag). Packages integrate with
-the software center, put `drivesync` on PATH, install the menu launcher and
-the systemd user unit — the AppImage and Flatpak are the fallbacks for
-distros without either package manager.
+deb, rpm, AppImage and Flatpak on every `v*` tag and publishes them with a
+`SHA256SUMS` file). Packages integrate with the software center, put
+`drivesync` on PATH, install the menu launcher and the systemd user unit —
+the AppImage and Flatpak are the fallbacks for distros without either
+package manager.
 
-All three install modes keep user data (config, tokens, state DB) in
-`~/.local/share/drivesync/`, exactly like the source install.
+All install modes keep user data (config, tokens, state DB) in
+`~/.local/share/drivesync/` (or `~/.var/app/…` under Flatpak), exactly like
+the source install.
 
 ## What the packages do
 
@@ -27,6 +29,8 @@ All three install modes keep user data (config, tokens, state DB) in
   packages via `Depends`/`Requires`, so security updates flow through apt/dnf
 - `/usr/bin/drivesync` launcher (same CLI as the source install)
 - Menu launcher + hicolor SVG icon
+- Dolphin/KDE service menu (`packaging/kde/drivesync-servicemenu.desktop`)
+  for "Sync this folder now" and "Add this folder to DriveSync…"
 - systemd **user** unit → enable autostart with
   `systemctl --user enable --now drivesync`
 - The tray icon needs GObject bindings, declared as
@@ -58,8 +62,10 @@ window are associated correctly.
 
 ## One-time release checklist
 
-1. `git tag v0.2.0 && git push --tags` — Actions builds the artifacts.
-2. Attach `dist/*` to the GitHub Release.
+1. Bump `drivesync/__init__.py`, `packaging/drivesync.spec` (Version and
+   `%changelog`), `drivesync.metainfo.xml` and `CHANGELOG.md` together.
+2. `git tag v0.6.0 && git push --tags` — Actions builds all four artifacts,
+   runs the test matrix and publishes the release with `SHA256SUMS`.
 3. Users install with `sudo apt install ./drivesync_…deb` or
    `sudo dnf install ./drivesync-…rpm` — or double-click in most desktop
    software centers.

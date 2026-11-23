@@ -312,7 +312,37 @@ def test_drive_folders_endpoint(client, monkeypatch):
     root = c.get("/api/drive/1/folders").get_json()  # default parent=root
     assert root["ok"] and root["current"] is None
     assert root["folders"][0] == {"id": "shared", "name": "Shared with me"}
-    assert [f["id"] for f in root["folders"][1:]] == ["f1", "real1"]
+    assert root["folders"][1] == {"id": "drives", "name": "Shared drives"}
+    assert [f["id"] for f in root["folders"][2:]] == ["f1", "real1"]
+
+
+def test_drive_folders_shared_drives_view(client, monkeypatch):
+    """parent=drives lists the account's Shared Drives as folder roots."""
+    from drivesync.drive import FOLDER_MIME
+
+    c, store = client
+    store.add_account("me@example.com", {
+        "access_token": "tok", "refresh_token": "r", "expires_at": 9e12})
+
+    class FakeDrive:
+        def __init__(self, provider):
+            pass
+
+        def list_drives(self):
+            return [{"id": "d1", "name": "Engineering"},
+                    {"id": "d2", "name": "Marketing"}]
+
+        def get(self, file_id, fields=None):
+            return {"id": file_id, "name": file_id, "parents": [],
+                    "driveId": file_id}
+
+    monkeypatch.setattr("drivesync.server.Drive", FakeDrive)
+
+    body = c.get("/api/drive/1/folders?parent=drives").get_json()
+    assert body["ok"] is True
+    assert body["current"] == {"id": "drives", "name": "Shared drives"}
+    assert [f["id"] for f in body["folders"]] == ["d1", "d2"]
+    assert all(f["mimeType"] == FOLDER_MIME for f in body["folders"])
 
 
 def test_drive_folders_shared_view(client, monkeypatch):

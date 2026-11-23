@@ -6,9 +6,11 @@ launcher (KDE Plasma does this once the window is hidden), the second
 process must ask the resident instance to show its window instead of just
 reporting "already running" and exiting.
 
-A per-user Unix socket carries that one request. The data directory is
+A per-user Unix socket carries those requests. The data directory is
 already private to the user (0700), and the socket itself is created 0600,
-so no other account can activate the window.
+so no other account can activate the window. The same channel also carries
+the Dolphin action's ``add-pair:<path>`` request, which opens the add-pair
+dialog pre-filled in the running instance.
 """
 
 import os
@@ -24,13 +26,8 @@ def socket_path():
     return app_dir() / SOCKET_NAME
 
 
-def request_show(timeout=0.75):
-    """Ask the resident GUI to present its window.
-
-    Returns True when the request was delivered and acknowledged. False
-    means no GUI instance is listening (headless serve, stale socket, or
-    the app is still starting up).
-    """
+def _send(payload, timeout):
+    """Deliver one command to the resident GUI; True when acknowledged."""
     path = str(socket_path())
     if not os.path.exists(path):
         return False
@@ -38,7 +35,7 @@ def request_show(timeout=0.75):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
             sock.connect(path)
-            sock.sendall(b"show\n")
+            sock.sendall(payload)
             try:
                 return sock.recv(16).startswith(b"ok")
             except OSError:
@@ -49,6 +46,29 @@ def request_show(timeout=0.75):
         return False
 
 
+def request_show(timeout=0.75):
+    """Ask the resident GUI to present its window.
+
+    Returns True when the request was delivered and acknowledged. False
+    means no GUI instance is listening (headless serve, stale socket, or
+    the app is still starting up).
+    """
+    return _send(b"show\n", timeout)
+
+
+def request_add_pair(local_path, timeout=0.75):
+    """Ask the resident GUI to open the add-pair dialog for `local_path`.
+
+    Used by the Dolphin context-menu action. Returns False when no GUI is
+    listening, so the caller can start one instead.
+    """
+    text = str(local_path or "").replace("\n", " ").strip()
+    if not text:
+        return False
+    return _send(b"add-pair:" + text.encode("utf-8", "replace") + b"\n",
+                 timeout)
+
+
 class ShowListener:
     """Accept 'show' requests and run ``on_show`` for each one.
 
@@ -56,8 +76,9 @@ class ShowListener:
     function that marshals onto the main loop (``GLib.idle_add``).
     """
 
-    def __init__(self, on_show):
+    def __init__(self, on_show, on_add_pair=None):
         self._on_show = on_show
+        self._on_add_pair = on_add_pair
         self._server = None
         self._thread = None
         self._stop = threading.Event()
@@ -101,9 +122,14 @@ class ShowListener:
             with conn:
                 try:
                     conn.settimeout(0.5)
-                    command = conn.recv(64).strip().lower()
-                    if command in (b"show", b"activate"):
+                    raw = conn.recv(4096).strip()
+                    verb, _, argument = raw.partition(b":")
+                    verb = verb.strip().lower()
+                    if verb in (b"show", b"activate"):
                         self._on_show()
+                    elif verb == b"add-pair" and self._on_add_pair:
+                        self._on_add_pair(
+                            argument.decode("utf-8", "replace"))
                     conn.sendall(b"ok\n")
                 except OSError:
                     pass

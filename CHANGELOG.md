@@ -3,9 +3,36 @@
 All notable changes to DriveSync, newest first. Dates are release dates.
 Older entries below 0.2.1 are summarized from the git history.
 
-## [Unreleased]
+## [0.6.0] - 2026-11-23
 
 ### Added
+- **Shared Drives.** Organizational drives are now first-class folder
+  roots: `Drive.list_drives()` (paged `GET /drives`) backs a new virtual
+  "Shared drives" level in the dashboard browser, the GTK Drive tab and
+  the sync-pair picker. Every Files call opts into Shared Drives, including
+  mutations, and breadcrumbs keep the virtual level so navigation can walk
+  back to the drive list. A drive itself can be a pair target; the list
+  view cannot.
+- **Portable settings.** `drivesync config export [file]` writes the
+  non-secret preferences and pair definitions; `drivesync config import
+  [file] [--dry-run]` merges them on another machine, matching accounts by
+  e-mail and skipping duplicates/overlaps. Credentials and machine-specific
+  window state never travel.
+- **Optional read-only FUSE mount.** `drivesync mount <dir>` exposes My
+  Drive, a Shared Drive or any folder as a read-only filesystem (needs the
+  optional `fusepy` + libfuse). Listings are cached briefly, Google-native
+  docs are exported on first open, duplicate sibling names are de-duplicated
+  and every write returns `EROFS`.
+- **Dolphin/KDE context menu.** Right-clicking a folder offers "Sync this
+  folder now" (`drivesync sync --path`) and "Add this folder to DriveSync…"
+  (opens the add-pair dialog, reusing a running instance over the activation
+  socket). Installed by `install.sh`, the deb, the rpm and the Flatpak
+  packaging where applicable.
+- **Security audit.** `drivesync audit [--fix]` checks the data directory
+  and credential file modes, token presence and world-writable files without
+  ever printing secret values. `SECURITY.md` documents the threat model.
+- **Release pipeline.** Tagged builds publish deb, rpm, AppImage and
+  Flatpak artifacts together with a `SHA256SUMS` file.
 - **Desktop window polish (GTK, with KDE in mind).** The window remembers
   its normal size, maximized state and last tab; tall Options/Overview/Setup
   pages scroll instead of forcing the window past the screen edge; Options
@@ -248,6 +275,19 @@ Older entries below 0.2.1 are summarized from the git history.
   and `breadcrumbs()` with a depth cap that turns crafted parent loops
   into a short chain and truncates (never fails) when an ancestor is
   inaccessible
+
+### Security
+- **Traversal-safe path joins.** Every relative path that arrives from the
+  API (recovery restore, conflict resolution, engine downloads) now goes
+  through `security.safe_join`, which rejects absolute paths, NUL bytes,
+  `..` components and symlink escapes. The engine's explicit
+  `symlink_policy=follow` mode keeps lexical containment only.
+- **Private SQLite sidecars.** `state.db-wal`, `state.db-shm` and the
+  backup are re-chmodded `0600`, closing a window where SQLite's umask
+  could leave freshly written refresh tokens world-readable.
+- **`drivesync audit [--fix]`** checks the data directory, credential file
+  modes, token presence and world-writable files without printing secret
+  values; `SECURITY.md` records the threat model and reporting process.
 
 ### Fixed
 - **Dashboard hint paragraphs no longer render as their key names** — in

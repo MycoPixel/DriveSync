@@ -116,6 +116,23 @@ def test_breadcrumbs_virtual_roots_never_hit_the_api():
         [{"id": "root", "name": "My Drive"}]
     assert breadcrumbs(Boom(), "shared") == \
         [{"id": "shared", "name": "Shared with me"}]
+    assert breadcrumbs(Boom(), "drives") == \
+        [{"id": "drives", "name": "Shared drives"}]
+
+
+def test_breadcrumbs_shared_drive_keeps_virtual_root():
+    """A folder inside a Shared Drive is prefixed with the 'Shared drives'
+    virtual root so the UI can walk back to the drive list."""
+    drive = ChainDrive({
+        "drive1": {"id": "drive1", "name": "Engineering",
+                   "parents": [], "driveId": "drive1"},
+        "folder": {"id": "folder", "name": "Specs",
+                   "parents": ["drive1"], "driveId": "drive1"},
+    })
+    chain = breadcrumbs(drive, "folder")
+    assert [(c["id"], c["name"]) for c in chain] == [
+        ("drives", "Shared drives"), ("drive1", "Engineering"),
+        ("folder", "Specs")]
 
 
 def test_breadcrumbs_invalid_folder_raises():
@@ -279,6 +296,9 @@ def test_children_endpoint_navigation_metadata_and_shortcuts(
     body = c.get("/api/drive/1/children").get_json()
     assert body["ok"] is True and body["current"] is None
     assert [b["id"] for b in body["breadcrumbs"]] == ["root"]
+    # the root listing offers the two virtual levels first
+    assert [i["id"] for i in body["items"][:2]] == ["shared", "drives"]
+    assert all(i["category"] == "folder" for i in body["items"][:2])
     rows = {i["id"]: i for i in body["items"]}
     assert rows["f2"]["category"] == "pdf"
     assert rows["f2"]["owner"] == "Ada"

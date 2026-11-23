@@ -51,6 +51,8 @@ client_secret*.json
 
 # --- package build output ---
 dist/
+build-flatpak/
+.flatpak-builder/
 
 # --- Editors / IDEs ---
 .idea/

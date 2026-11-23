@@ -206,6 +206,27 @@ def test_restore_from_trash_rejects_unknown_items(env, tmp_path, monkeypatch):
                                     "20260101-000000", "ghost.txt")
 
 
+@pytest.mark.parametrize("stamp", ["..", "../..", "../../etc", "a/b", ""])
+def test_restore_from_trash_rejects_traversal_stamps(
+        env, tmp_path, monkeypatch, stamp):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path / "apphome"))
+    with pytest.raises(ValueError, match="invalid trash entry"):
+        recovery.restore_from_trash(env.store, env.pair["id"], stamp, "x.txt")
+
+
+def test_restore_from_trash_rejects_traversal_rels(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path / "apphome"))
+    with pytest.raises(ValueError):
+        recovery.restore_from_trash(env.store, env.pair["id"],
+                                    "20260101-000000", "../../etc/passwd")
+
+
+def test_list_versions_rejects_traversal(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path / "apphome"))
+    with pytest.raises(ValueError):
+        recovery.list_versions(env.pair["id"], "../../etc")
+
+
 # ---- Drive trash --------------------------------------------------------
 
 def test_drive_trash_round_trip(env):

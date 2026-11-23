@@ -76,6 +76,19 @@ if [ -d "${HOME}/.local/share/applications" ] || mkdir -p "${HOME}/.local/share/
         drivesync.desktop > "${HOME}/.local/share/applications/drivesync.desktop" 2>/dev/null || true
 fi
 
+# 4b. Dolphin context menu (KDE Plasma). KIO scans ~/.local/share/kio/
+# servicemenus; older Plasma reads ~/.local/share/kservices5/ServiceMenus.
+if [ -f packaging/kde/drivesync-servicemenu.desktop ]; then
+    for SERVICE_DIR in \
+        "${HOME}/.local/share/kio/servicemenus" \
+        "${HOME}/.local/share/kservices5/ServiceMenus"; do
+        mkdir -p "${SERVICE_DIR}"
+        sed "s|Exec=drivesync |Exec=${BIN_DIR}/drivesync |g" \
+            packaging/kde/drivesync-servicemenu.desktop \
+            > "${SERVICE_DIR}/drivesync-servicemenu.desktop"
+    done
+fi
+
 # 5. systemd user unit (optional, autostart on login)
 if command -v systemctl >/dev/null 2>&1; then
     UNIT_DIR="${HOME}/.config/systemd/user"

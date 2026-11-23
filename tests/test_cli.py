@@ -106,6 +106,60 @@ def test_sync_unknown_pair(home):
     assert "no sync pair #42" in str(exc.value.code)
 
 
+def test_pair_for_path_picks_the_most_specific_root(tmp_path):
+    from drivesync.cli import _pair_for_path
+
+    broad = {"id": 1, "local_path": str(tmp_path)}
+    nested = {"id": 2, "local_path": str(tmp_path / "docs")}
+    assert _pair_for_path([broad, nested], str(tmp_path / "docs" / "a.txt"))[
+        "id"] == 2
+    assert _pair_for_path([broad, nested], str(tmp_path / "photos"))["id"] == 1
+    assert _pair_for_path([broad], str(tmp_path.parent / "elsewhere")) is None
+
+
+def test_sync_path_selects_the_owning_pair(home, monkeypatch, capsys):
+    from drivesync import engine
+    import drivesync.worker as worker_mod
+
+    _pair(home)
+    seen = {}
+
+    class FakeWorker:
+        def __init__(self, store, cfg, config_source=None):
+            pass
+
+        def run_pass(self, pair_id=None, force_full=False):
+            seen["pair"] = pair_id
+            return engine.SyncStats(), True
+
+    monkeypatch.setattr(worker_mod, "Worker", FakeWorker)
+    with pytest.raises(SystemExit) as exc:
+        main(["sync", "--path", str(home.parent / "docs" / "sub")])
+    assert exc.value.code == 0
+    assert seen["pair"] == 1
+    out = capsys.readouterr().out
+    assert "belongs to pair #1" in out
+
+
+def test_pairs_add_rejects_a_virtual_browser_view(home):
+    from drivesync.db import Store
+
+    s = Store(home / "state.db")
+    s.add_account("a@example.com", {})
+    s.close()
+    for view in ("shared", "drives"):
+        with pytest.raises(SystemExit) as exc:
+            main(["pairs", "add", str(home.parent), "--remote-id", view])
+        assert "browser view, not a folder" in str(exc.value.code)
+
+
+def test_sync_path_outside_every_pair_is_an_error(home, monkeypatch):
+    _pair(home)
+    with pytest.raises(SystemExit) as exc:
+        main(["sync", "--path", str(home.parent / "unrelated")])
+    assert "no enabled sync pair contains" in str(exc.value.code)
+
+
 def test_sync_reports_aggregate_totals(home, monkeypatch, capsys):
     from drivesync import engine
     import drivesync.worker as worker_mod

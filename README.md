@@ -30,9 +30,21 @@ tokens and files stay on your machine and talk to Google directly.
   stays on Drive and on disk untouched, and can be fetched any time from the
   Drive tab (nothing is deleted by narrowing a scope)
 - **On-demand downloads** — the desktop app's Drive tab lists your whole
-  Drive (My Drive + Shared with me) like a virtual drive without the mount:
-  browse, then download a file or a whole folder to any destination, on
-  your say-so, without creating a sync pair
+  Drive (My Drive, Shared with me and Shared drives) like a virtual drive
+  without the mount: browse, then download a file or a whole folder to any
+  destination, on your say-so, without creating a sync pair
+- **Shared Drives** — organizational drives appear as folder roots in the
+  dashboard, the desktop Drive tab and the pair picker; a drive itself can
+  be a sync target, and every Files call opts into Shared Drives
+- **Portable settings** — `drivesync config export` / `import` moves your
+  preferences and pair definitions to another machine; OAuth tokens and the
+  client secret are never included, and the receiving machine authorizes
+  its own account
+- **Optional read-only FUSE mount** — `drivesync mount ~/Drive` exposes a
+  Drive folder as a normal filesystem for apps that cannot use the browser
+  (needs the optional `fusepy` + libfuse; writes return `EROFS`)
+- **Dolphin/KDE context menu** — right-click a folder to sync it now or
+  open the add-pair dialog pre-filled with it
 - **Full Drive browser** — a dedicated Drive tab in the dashboard (and a
   richer desktop Drive tab): clickable breadcrumbs with the folder ID on
   show, Name/Type/Size/Modified/Owner columns, filter by file type, sort
@@ -101,8 +113,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.5.1-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.5.1-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.6.0-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.6.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -274,13 +286,36 @@ drivesync auth                        authorize a Google account
 drivesync accounts list|remove
 drivesync pairs add|list|set|remove   manage sync pairs
                                       (--include docs,photos = selective sync)
-drivesync sync [--pair N] [--full]    run one sync pass now and exit
+drivesync sync [--pair N|--path DIR] [--full]
+                                      run one sync pass now and exit
 drivesync status                      accounts, pairs, recent activity
 drivesync conflicts list|resolve      review/resolve .conflict-… copies
                                       (resolve <path> --keep copy|original|both)
 drivesync config get|set              interval, conflict policy, ignores
+drivesync config export|import FILE   move settings + pairs between machines
+                                      (--dry-run shows the import first)
+drivesync recovery status|trash|…     deletion holds, trash, versions, history
+drivesync mount DIR [--remote-id ID]  read-only FUSE mount (needs fusepy)
+drivesync audit [--fix]               credential/file-permission check
 drivesync doctor                      sanity-check the installation
 ```
+
+### Read-only FUSE mount (optional)
+
+`drivesync mount ~/Drive` exposes My Drive (or `--remote-id` a folder or a
+Shared Drive) as a normal read-only filesystem, for apps that only know
+about files. It needs `fusepy` and libfuse; neither is required by the rest
+of the app:
+
+```bash
+sudo apt install fuse libfuse2        # Fedora: sudo dnf install fuse fuse-libs
+pip install 'drivesync[fuse]'         # from a source checkout: pip install '.[fuse]'
+drivesync mount ~/Drive --remote-id <folder-id>
+```
+
+The command blocks while the mount is active (Ctrl-C unmounts). Writes fail
+with `EROFS`, Google-native documents are exported on first open, and
+listings are cached for a few seconds so `ls`/`find` do not hammer the API.
 
 ### Version history (before a pull overwrites a file)
 
@@ -443,6 +478,21 @@ the venv.
 **Desktop app won't open** — `drivesync gui` needs GTK 3 bindings:
 `sudo dnf install python3-gobject` (Fedora) or `sudo apt install python3-gi`
 (Debian). On a headless machine, use `drivesync serve` and the dashboard.
+
+## Security
+
+OAuth tokens live in `state.db` (`0600`, data directory `0700`) and the
+dashboard is loopback-only with a custom-header CSRF check. Check an
+installation with:
+
+```bash
+drivesync audit          # file modes, tokens, world-writable files
+drivesync audit --fix    # repair insecure permissions
+```
+
+The full threat model, controls and private reporting process are in
+[SECURITY.md](SECURITY.md). `drivesync config export` never writes tokens
+or the client secret, and the FUSE mount is read-only by construction.
 
 ## Current limitations (honest list)
 

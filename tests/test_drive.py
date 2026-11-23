@@ -351,6 +351,29 @@ def test_file_calls_opt_in_to_shared_drives():
     assert "supportsAllDrives" not in d._session.calls[0]["params"]
 
 
+def test_list_drives_pages_and_omits_files_params():
+    class DrivesSession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, *a, **kw):
+            self.calls.append(kw)
+            if "pageToken" not in kw.get("params", {}):
+                return FakeResp(200, '{"drives": [{"id": "d1", '
+                                     '"name": "Engineering"}], '
+                                     '"nextPageToken": "p2"}')
+            return FakeResp(200, '{"drives": [{"id": "d2", '
+                                 '"name": "Marketing"}]}')
+
+    d = Drive(lambda: "tok")
+    d._session = DrivesSession()
+    assert d.list_drives() == [{"id": "d1", "name": "Engineering"},
+                               {"id": "d2", "name": "Marketing"}]
+    assert d._session.calls[1]["params"]["pageToken"] == "p2"
+    # /drives is not a /files endpoint: supportsAllDrives is meaningless here
+    assert "supportsAllDrives" not in d._session.calls[0]["params"]
+
+
 def test_list_tree_lists_nested_folders():
     listings = {
         "root": [{"id": "a", "name": "A", "mimeType": FOLDER_MIME},
@@ -424,3 +447,15 @@ def test_folders_for_parent_root_and_shared():
     assert folders_for_parent(drive, "shared") == \
         [{"id": "sh1", "name": "SharedFolder"}]
     assert folders_for_parent(drive, "empty") == []
+
+
+def test_folders_for_parent_shared_drives_root():
+    class DriveWithDrives(_FakeListing):
+        def list_drives(self):
+            return [{"id": "d1", "name": "Engineering"},
+                    {"id": "d2", "name": "Marketing"}]
+
+    drive = DriveWithDrives()
+    assert folders_for_parent(drive, "drives") == [
+        {"id": "d1", "name": "Engineering", "mimeType": FOLDER_MIME},
+        {"id": "d2", "name": "Marketing", "mimeType": FOLDER_MIME}]

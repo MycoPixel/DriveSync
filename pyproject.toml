@@ -17,7 +17,8 @@ dependencies = ["flask>=2.2", "requests>=2.28"]
 watch = ["watchdog>=4.0"]
 tray = ["pystray", "pillow"]
 gui = ["PyGObject"]
-all = ["watchdog>=4.0", "pystray", "pillow", "PyGObject"]
+fuse = ["fusepy>=3.0"]
+all = ["watchdog>=4.0", "pystray", "pillow", "PyGObject", "fusepy>=3.0"]
 
 [project.scripts]
 drivesync = "drivesync.cli:main"

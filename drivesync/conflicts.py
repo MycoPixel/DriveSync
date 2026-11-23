@@ -17,6 +17,7 @@ import re
 import shutil
 
 from .recovery import A_CONFLICT_RESOLVED
+from .security import safe_join
 
 # Mirrors engine.Engine.conflict_name(): the first dot separates the stem
 # from the extension, and hidden files (".foo") produce ".conflict-<ts>.foo".
@@ -40,7 +41,7 @@ def parse_conflict_name(rel):
 
 
 def _local(root, rel):
-    return os.path.join(root, *rel.split("/"))
+    return safe_join(root, rel)
 
 
 def _md5(path):

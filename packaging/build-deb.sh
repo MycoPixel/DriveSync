@@ -32,6 +32,7 @@ mkdir -p "$D" \
          "$PKG/usr/share/applications" \
          "$PKG/usr/share/metainfo" \
          "$PKG/usr/share/icons/hicolor/scalable/apps" \
+         "$PKG/usr/share/kio/servicemenus" \
          "$PKG/usr/lib/systemd/user" \
          "$PKG/usr/share/doc/drivesync"
 
@@ -61,6 +62,11 @@ cp "$ROOT/drivesync/static/mark.svg" \
 # AppStream metadata: what Discover / GNOME Software show about the app
 cp "$ROOT/drivesync.metainfo.xml" \
    "$PKG/usr/share/metainfo/drivesync.metainfo.xml"
+
+# Dolphin/KDE right-click menu (sync a folder / add it as a pair)
+cp "$ROOT/packaging/kde/drivesync-servicemenu.desktop" \
+   "$PKG/usr/share/kio/servicemenus/drivesync-servicemenu.desktop"
+chmod 644 "$PKG/usr/share/kio/servicemenus/drivesync-servicemenu.desktop"
 
 # systemd *user* unit (users enable it themselves: systemctl --user enable)
 cat > "$PKG/usr/lib/systemd/user/drivesync.service" <<'EOF'
@@ -92,7 +98,7 @@ Priority: optional
 Architecture: all
 Installed-Size: ${SIZE_KB}
 Depends: python3 (>= 3.9), python3-flask (>= 2.2), python3-requests (>= 2.28), python3-gi, gir1.2-gtk-3.0
-Recommends: python3-pystray, gir1.2-ayatanaappindicator3-0.1, python3-pil, python3-watchdog, gir1.2-notify-0.7
+Recommends: python3-pystray, gir1.2-ayatanaappindicator3-0.1, python3-pil, python3-watchdog, gir1.2-notify-0.7, python3-fusepy
 Suggests: systemd
 Maintainer: DriveSync contributors <drivesync@localhost>
 Description: Google Drive sync client for Linux desktops

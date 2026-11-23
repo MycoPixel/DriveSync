@@ -19,6 +19,7 @@ import shutil
 from datetime import datetime, timezone
 
 from .config import app_dir
+from .security import safe_join
 
 # Actions recorded in the recovery table (kept here so callers and tests
 # share one vocabulary; db.recovery_log takes them as plain strings).
@@ -142,6 +143,20 @@ def list_local_trash(store, pair_id=None, limit=500):
     return out
 
 
+def _safe_stamp(stamp):
+    """Reject a trash stamp that is not a single directory name.
+
+    The stamp comes from an API request; allowing ``..`` or a slash here
+    would let a caller point the trash root at an arbitrary directory.
+    """
+    text = str(stamp or "")
+    if not text or text in (".", ".."):
+        raise ValueError("invalid trash entry")
+    if "/" in text or "\\" in text or "\x00" in text:
+        raise ValueError("invalid trash entry")
+    return text
+
+
 def restore_from_trash(store, pair_id, stamp, rel):
     """Move one file from the local trash back to its original path.
 
@@ -150,8 +165,8 @@ def restore_from_trash(store, pair_id, stamp, rel):
     anything. Empty stamp directories are cleaned up afterwards. Returns a
     short result dict.
     """
-    src = os.path.join(local_trash_root(pair_id), stamp,
-                       *rel.replace("\\", "/").split("/"))
+    stamp = _safe_stamp(stamp)
+    src = safe_join(os.path.join(local_trash_root(pair_id), stamp), rel)
     if not os.path.isfile(src):
         raise ValueError("that file is no longer in the local trash")
     pair = store.pair(pair_id)
@@ -159,13 +174,13 @@ def restore_from_trash(store, pair_id, stamp, rel):
         raise ValueError("the sync pair for this trash item no longer exists")
     dest_rel = rel.replace("\\", "/")
     root = str(pair["local_path"])
-    dest = os.path.join(root, *dest_rel.split("/"))
+    dest = safe_join(root, dest_rel)
     if os.path.lexists(dest):
         parent, name = os.path.split(dest_rel)
         stem, dot, ext = name.partition(".") if "." in name else (name, "", "")
         dest_rel = (f"{parent}/{stem}.restored-{stamp}{dot}{ext}"
                     if parent else f"{stem}.restored-{stamp}{dot}{ext}")
-        dest = os.path.join(root, *dest_rel.split("/"))
+        dest = safe_join(root, dest_rel)
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     shutil.move(src, dest)
     _prune_empty_stamp(local_trash_root(pair_id), stamp)
@@ -182,6 +197,10 @@ def restore_from_trash(store, pair_id, stamp, rel):
 
 def _prune_empty_stamp(pair_trash_root, stamp):
     """Remove the stamp dir when the restore emptied it, then the pair dir."""
+    try:
+        stamp = _safe_stamp(stamp)
+    except ValueError:
+        return
     stamp_dir = os.path.join(pair_trash_root, stamp)
     try:
         if os.path.isdir(stamp_dir) and not os.listdir(stamp_dir):
@@ -249,8 +268,10 @@ def list_versions(pair_id, rel, limit=100):
     Layout mirrors engine.keep_old_version(): history/<pair>/<rel>/
     <UTC stamp>-<name>. Returns [] when the pair never overwrote the file.
     """
-    hist_dir = os.path.join(_history_root(pair_id),
-                            *rel.replace("\\", "/").split("/"))
+    rel = str(rel or "").replace("\\", "/")
+    if not rel:
+        return []
+    hist_dir = safe_join(_history_root(pair_id), rel)
     if not os.path.isdir(hist_dir):
         return []
     name = rel.rsplit("/", 1)[-1]
@@ -287,8 +308,7 @@ def restore_version(store, pair_id, rel, stamp):
     pair = store.pair(pair_id)
     if not pair:
         raise ValueError("this sync pair no longer exists")
-    dest = os.path.join(str(pair["local_path"]),
-                        *rel.replace("\\", "/").split("/"))
+    dest = safe_join(str(pair["local_path"]), rel)
     if os.path.isfile(dest):
         keep_stamp = datetime.now(timezone.utc).strftime(
             "%Y%m%d-%H%M%S-%f")

@@ -310,6 +310,11 @@ _STRINGS = {
     "Drive listing failed \u2014 {err}":
         "No se pudo listar Drive — {err}",
     "Shared with me": "Compartido conmigo",
+    "Shared drives": "Unidades compartidas",
+    "choose a concrete folder, not the \u201cShared with me\u201d / "
+    "\u201cShared drives\u201d list":
+        "elige una carpeta concreta, no la lista \u201cCompartido conmigo\u201d "
+        "/ \u201cUnidades compartidas\u201d",
 
     # ---- scope dialog --------------------------------------------------
     "Sync everything in the Drive folder":
@@ -458,6 +463,14 @@ _STRINGS = {
     "virtual view itself cannot be a sync destination.":
         "Abre antes una carpeta dentro de \u201cCompartido conmigo\u201d — "
         "la vista virtual en sí no puede ser un destino de sincronización.",
+    "Open one of the \u201cShared drives\u201d first \u2014 the list "
+    "itself cannot be a sync destination.":
+        "Abre antes una de las \u201cUnidades compartidas\u201d — la lista "
+        "en sí no puede ser un destino de sincronización.",
+    "Open a concrete shared drive first (double-click one in "
+    "\u201cShared drives\u201d).":
+        "Abre antes una unidad compartida concreta (doble clic en una de "
+        "\u201cUnidades compartidas\u201d).",
     "{folders} folder(s) in the selection were skipped — use \u201cDownload "
     "this folder\u2026\u201d for those.":
         "{folders} carpeta(s) de la selección se omitieron — usa "

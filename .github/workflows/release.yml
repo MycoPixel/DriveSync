@@ -45,12 +45,30 @@ jobs:
           name: appimage
           path: dist/*.AppImage
 
+  flatpak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder
+      - name: Build .flatpak bundle
+        # The script adds the Flathub remote and installs the GNOME 46
+        # runtime/sdk on first run.
+        run: ./packaging/build-flatpak.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: dist/*.flatpak
+
   tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.14"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -81,7 +99,7 @@ jobs:
         run: xvfb-run -a python3 -m pytest tests/test_gui.py -q
 
   publish:
-    needs: [deb, rpm, appimage, tests]
+    needs: [deb, rpm, appimage, flatpak, tests]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -91,6 +109,13 @@ jobs:
         with:
           merge-multiple: true
           path: dist
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist
+          sha256sum *.deb *.rpm *.AppImage *.flatpak > SHA256SUMS
+          cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/*
+          fail_on_unmatched_files: true

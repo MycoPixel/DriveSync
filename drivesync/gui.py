@@ -358,7 +358,9 @@ class DesktopApp:
         # A second launch (KDE's pinned icon while the window is hidden)
         # asks this process to show the window instead of exiting silently.
         self._listener = instance.ShowListener(
-            lambda: GLib.idle_add(self._tray_open))
+            lambda: GLib.idle_add(self._tray_open),
+            lambda path: GLib.idle_add(self._on_add_pair, None,
+                                       {"local_path": path}))
         if not self._listener.start():
             self._listener = None
         self._notify_gate = notify.Gate(lambda: self.win.get_visible())
@@ -1602,6 +1604,8 @@ class DesktopApp:
         local_row = Gtk.Box(spacing=6)
         ent_local = Gtk.Entry(hexpand=True)
         ent_local.set_placeholder_text(i18n.t("Pick a folder"))
+        if prefill and prefill.get("local_path"):
+            ent_local.set_text(str(prefill["local_path"]))
         self._reg_accessible(ent_local, "Local folder:")
         btn_local = self._tr_button("Choose\u2026")
         btn_local.connect("clicked", lambda _b: ent_local.set_text(
@@ -1760,6 +1764,10 @@ class DesktopApp:
                     raise ValueError(i18n.t("the Drive folder ID is required "
                                             "(\u2026/folders/<ID> in its "
                                             "web URL)"))
+                if remote_id in ("shared", "drives"):
+                    raise ValueError(i18n.t(
+                        "choose a concrete folder, not the \u201cShared with "
+                        "me\u201d / \u201cShared drives\u201d list"))
                 acc_ids = [a["id"] for a in accounts]
                 paused = chk_paused.get_active()
                 pair = self.store.add_pair(
@@ -1863,7 +1871,8 @@ class DesktopApp:
                     self._error(i18n.T("Drive listing failed \u2014 {err}",
                                        err=res.get('error', '?')))
                     return
-                rows = ([{"id": "shared", "name": i18n.t("Shared with me")}]
+                rows = ([{"id": "shared", "name": i18n.t("Shared with me")},
+                         {"id": "drives", "name": i18n.t("Shared drives")}]
                         if st[0] == "root" else [])
                 rows.extend(res)
                 for f in rows:
@@ -1876,9 +1885,10 @@ class DesktopApp:
                 return
             name, fid = sel_store[treepath][0], sel_store[treepath][1]
             st = state["stack"][-1]
-            if fid == "shared":
-                state["stack"].append(("shared", i18n.t("Shared with me"),
-                                       i18n.t("Shared with me")))
+            if fid in ("shared", "drives"):
+                label = i18n.t("Shared with me" if fid == "shared"
+                               else "Shared drives")
+                state["stack"].append((fid, label, label))
             else:
                 state["stack"].append((fid, name, f"{st[2]}/{name}"))
             load()
@@ -2941,6 +2951,12 @@ class DesktopApp:
                     chain = [{"id": "shared",
                               "name": i18n.t("Shared with me")}]
                     return drive.list_shared_folders(), chain
+                if fid == "drives":
+                    chain = [{"id": "drives",
+                              "name": i18n.t("Shared drives")}]
+                    return ([{"id": d["id"], "name": d["name"],
+                              "mimeType": FOLDER_MIME}
+                             for d in drive.list_drives()], chain)
                 chain = []
                 try:
                     chain = breadcrumbs(drive, fid)
@@ -2965,6 +2981,8 @@ class DesktopApp:
                 return
             rows, chain = res
             shown = ([{"id": "shared", "name": i18n.t("Shared with me"),
+                       "mimeType": FOLDER_MIME, "_category": "folder"},
+                      {"id": "drives", "name": i18n.t("Shared drives"),
                        "mimeType": FOLDER_MIME, "_category": "folder"}]
                      if fid == "root" else [])
             for it in rows:
@@ -2989,9 +3007,10 @@ class DesktopApp:
         name, kind = row[0], row[1]
         fid, mime, size = row[5], row[6], row[7]
         if kind == i18n.t("Folder"):
-            if fid == "shared":
-                st["stack"].append(("shared", i18n.t("Shared with me"),
-                                    i18n.t("Shared with me")))
+            if fid in ("shared", "drives"):
+                label = i18n.t("Shared with me" if fid == "shared"
+                               else "Shared drives")
+                st["stack"].append((fid, label, label))
             else:
                 st["stack"].append((fid, name,
                                     f"{st['stack'][-1][2]}/{name}"))
@@ -3016,6 +3035,11 @@ class DesktopApp:
             self._info(i18n.t(
                 "Open a folder inside \u201cShared with me\u201d first — "
                 "the virtual view itself cannot be a sync destination."))
+            return
+        if fid == "drives":
+            self._info(i18n.t(
+                "Open one of the \u201cShared drives\u201d first — the list "
+                "itself cannot be a sync destination."))
             return
         if not self.store.accounts():
             self._error(i18n.t("No account yet — authorize one on the "
@@ -3142,6 +3166,11 @@ class DesktopApp:
         if fid == "shared":
             self._info(i18n.t("Open a concrete folder first (double-click "
                               "one in \u201cShared with me\u201d)."))
+            return
+        if fid == "drives":
+            self._info(i18n.t("Open a concrete shared drive first "
+                              "(double-click one in \u201cShared "
+                              "drives\u201d)."))
             return
         if not self.store.accounts():
             self._error(i18n.t("No account yet — authorize one on the "
@@ -3749,7 +3778,7 @@ def _launch_failure():
         pass
 
 
-def run():
+def run(add_pair_path=None):
     try:
         lock = _instance_lock()
     except Exception:
@@ -3760,7 +3789,10 @@ def run():
     _apply_css(cfg.get("theme", "system"), cfg.get("accent", "blue"))
     if lock is None:
         # Another GUI instance owns the lock. If it is resident in the tray,
-        # show its window; otherwise explain why this launch did nothing.
+        # show its window (and, for the Dolphin action, open the add-pair
+        # dialog); otherwise explain why this launch did nothing.
+        if add_pair_path and instance.request_add_pair(add_pair_path):
+            return
         if instance.request_show():
             return
         _already_running_notice()
@@ -3771,4 +3803,6 @@ def run():
         _launch_failure()
         return
     app.show()
+    if add_pair_path:
+        GLib.idle_add(app._on_add_pair, None, {"local_path": add_pair_path})
     Gtk.main()
