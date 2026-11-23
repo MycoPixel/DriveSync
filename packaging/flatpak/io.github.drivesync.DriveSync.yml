@@ -13,6 +13,12 @@ runtime-version: "46"
 sdk: org.gnome.Sdk
 command: drivesync
 
+# flatpak-builder builds in a network-less sandbox; the modules below install
+# their Python dependencies from PyPI, so share the host network with them.
+build-options:
+  build-args:
+    - --share=network
+
 finish-args:
   # Google Drive + the local dashboard (bound to 127.0.0.1 only).
   - --share=network

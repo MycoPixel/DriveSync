@@ -38,10 +38,10 @@ flatpak install --user -y flathub \
     "org.gnome.Platform//46" "org.gnome.Sdk//46"
 
 mkdir -p "$ROOT/dist"
-# The build sandbox has no network by default; the manifest's pip installs
-# need PyPI. The runtime/sdk download above happens outside the sandbox.
-flatpak-builder --share=network --user --force-clean --repo="$REPO" \
-    "$BUILD" "$MANIFEST"
+# The manifest's build-options share the network with the build sandbox so
+# the modules' pip installs can reach PyPI (the runtime download above runs
+# on the host).
+flatpak-builder --user --force-clean --repo="$REPO" "$BUILD" "$MANIFEST"
 
 OUT="$ROOT/dist/DriveSync-${VERSION}-${ARCH}.flatpak"
 flatpak build-bundle "$REPO" "$OUT" io.github.drivesync.DriveSync
