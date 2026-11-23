@@ -6,16 +6,18 @@ model, the controls in place, and how to report a problem.
 
 ## Reporting a vulnerability
 
-Please **do not open a public issue** for a security problem. Contact the
-maintainers privately (the repository's security advisory form, or the
-e-mail address in `pyproject.toml`) with:
+Please **do not open a public issue** for a security problem. Use the
+repository's **Security → Advisories → Report a vulnerability** form
+(GitHub private vulnerability reporting) with:
 
 - affected version and platform,
 - a description and, if possible, a minimal reproduction,
 - impact (credential exposure, file loss, remote code execution, …).
 
-We aim to acknowledge within a few days and will credit reporters unless
-they prefer otherwise.
+If the private form is unavailable, open a minimal issue asking for a
+private channel — without technical details — and a maintainer will follow
+up. We aim to acknowledge within a few days and will credit reporters
+unless they prefer otherwise.
 
 ## Threat model
 
@@ -75,9 +77,10 @@ directory, a compromised Google account, and a compromised OS/browser.
 
 ### Dependencies and releases
 
-- CI runs `pip-audit` on every test matrix entry.
-- Releases are built from tagged commits by GitHub Actions; artifacts are
-  smoke-tested before publication.
+- CI runs `pip-audit` against the application requirements on the release
+  interpreter.
+- Releases are built from tagged commits by GitHub Actions; the test matrix
+  must pass before the draft release is published.
 - The Flatpak manifest uses the GNOME runtime and only adds Flask,
   requests and the app itself.
 
