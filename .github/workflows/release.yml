@@ -124,8 +124,10 @@ jobs:
       - name: Upgrade build tools
         run: python -m pip install --upgrade pip setuptools wheel
       - name: Audit the app's dependencies
-        # Audit what we ship, not the CI toolchain: the runner image carries
-        # unrelated packages (and older Pythons cannot install their fixes).
+        # Audit once on the newest interpreter: on legacy Pythons (3.9) the
+        # resolver can only pick older requests/urllib3 versions whose fixes
+        # require a newer Python. Audit what we ship, not the CI toolchain.
+        if: matrix.python-version == '3.14'
         run: python -m pip_audit -r requirements.txt
       - name: Lint (fatal errors only)
         run: python -m ruff check --select E9,F63,F7,F82 drivesync tests
