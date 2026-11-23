@@ -15,9 +15,12 @@ command: drivesync
 
 # flatpak-builder builds in a network-less sandbox; the modules below install
 # their Python dependencies from PyPI, so share the host network with them.
+# The app is pure Python, so there is no debuginfo worth extracting (and no
+# host eu-strip/elfutils dependency).
 build-options:
   build-args:
     - --share=network
+  no-debuginfo: true
 
 finish-args:
   # Google Drive + the local dashboard (bound to 127.0.0.1 only).
@@ -29,9 +32,11 @@ finish-args:
   - --socket=fallback-x11
   - --share=ipc
   # Desktop notifications and the tray icon (KDE/GNOME indicators).
+  # StatusNotifierItem items register with the watcher over their unique
+  # bus name, so talking to the watcher is enough; owning a wildcard
+  # org.kde.StatusNotifierItem-* name is not a valid D-Bus name.
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.kde.StatusNotifierWatcher
-  - --own-name=org.kde.StatusNotifierItem-*
   # The OAuth consent page opens through the desktop portal automatically.
   # Keep the dashboard's own state under ~/.var/app/<id>.
   - --env=PYTHONUNBUFFERED=1
@@ -55,15 +60,19 @@ modules:
       # app ID, and the window's application ID follows it on Wayland.
       - install -d /app/share/applications /app/share/metainfo
       - install -d /app/share/icons/hicolor/scalable/apps
+      - install -d /app/share/icons/hicolor/256x256/apps
       - |
         sed -e 's|__BIN__|/app/bin|g' \
             -e 's|__ICON__|io.github.drivesync.DriveSync|g' \
             drivesync.desktop > /app/share/applications/io.github.drivesync.DriveSync.desktop
       - |
         sed -e 's|<id>drivesync</id>|<id>io.github.drivesync.DriveSync</id>|' \
+            -e 's|<launchable type="desktop-id">drivesync.desktop</launchable>|<launchable type="desktop-id">io.github.drivesync.DriveSync.desktop</launchable>|' \
+            -e 's|<icon type="theme">drivesync</icon>|<icon type="theme">io.github.drivesync.DriveSync</icon>|' \
+            -e 's|<icon type="stock">drivesync</icon>|<icon type="stock">io.github.drivesync.DriveSync</icon>|' \
             drivesync.metainfo.xml > /app/share/metainfo/io.github.drivesync.DriveSync.metainfo.xml
-      - install -m 644 drivesync/static/mark.svg \
-          /app/share/icons/hicolor/scalable/apps/io.github.drivesync.DriveSync.svg
+      - install -m 644 drivesync/static/mark.svg /app/share/icons/hicolor/scalable/apps/io.github.drivesync.DriveSync.svg
+      - install -m 644 drivesync/static/mark.png /app/share/icons/hicolor/256x256/apps/io.github.drivesync.DriveSync.png
       - install -d /app/share/doc/drivesync
       - install -m 644 README.md LICENSE CHANGELOG.md /app/share/doc/drivesync/
     sources:

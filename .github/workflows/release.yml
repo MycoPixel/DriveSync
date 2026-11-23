@@ -97,7 +97,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder
+            flatpak flatpak-builder elfutils
       - name: Build .flatpak bundle
         # The script adds the Flathub remote and installs the GNOME 46
         # runtime/sdk on first run.
