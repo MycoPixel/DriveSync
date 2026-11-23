@@ -122,6 +122,11 @@ Name=Sync all now
 Exec=DriveSync sync
 EOF
 cp "$ROOT/drivesync/static/mark.svg" "$APPDIR/drivesync.svg"
+# appimagetool builds .DirIcon from <Icon>.png (SVG alone is not accepted)
+cp "$ROOT/drivesync/static/mark.png" "$APPDIR/drivesync.png"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+cp "$ROOT/drivesync/static/mark.png" \
+   "$APPDIR/usr/share/icons/hicolor/256x256/apps/drivesync.png"
 
 # ---- appimagetool ------------------------------------------------------
 TOOL_DIR="$HOME/.local/bin"

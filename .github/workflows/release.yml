@@ -5,48 +5,92 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# A re-pushed tag (release fix) supersedes the previous attempt.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  deb:
+  prepare-release:
+    # One draft release per tag. Build jobs attach their package straight to
+    # it (release assets, not Actions artifacts, so no storage quota), and
+    # `publish` flips it public only after every package landed. On
+    # workflow_dispatch this job is a no-op and the builds just produce files
+    # in their own runners.
+    needs: [tests]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --draft \
+              --title "DriveSync $GITHUB_REF_NAME" --generate-notes
+
+  deb:
+    needs: [prepare-release, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Build .deb
         run: ./packaging/build-deb.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: deb
-          path: dist/*.deb
+      - name: Attach .deb to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.deb --clobber
 
   rpm:
+    needs: [prepare-release, tests]
     runs-on: ubuntu-latest
     container: fedora:latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
-        run: dnf install -y rpm-build python3 git
+        run: dnf install -y rpm-build python3 git gh
       - name: Build .rpm
         run: ./packaging/build-rpm.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rpm
-          path: dist/*.rpm
+      - name: Attach .rpm to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.rpm --clobber
 
   appimage:
+    needs: [prepare-release, tests]
     runs-on: ubuntu-22.04   # older base -> wider glibc compatibility
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Build AppImage
         run: ./packaging/build-appimage.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: appimage
-          path: dist/*.AppImage
+      - name: Attach AppImage to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
 
   flatpak:
+    needs: [prepare-release, tests]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Install flatpak-builder
@@ -58,13 +102,15 @@ jobs:
         # The script adds the Flathub remote and installs the GNOME 46
         # runtime/sdk on first run.
         run: ./packaging/build-flatpak.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: flatpak
-          path: dist/*.flatpak
+      - name: Attach .flatpak to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.flatpak --clobber
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (matrix.python-version == '3.9' || matrix.python-version == '3.10') && 'ubuntu-22.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,8 +123,10 @@ jobs:
       - run: pip install flask requests pytest watchdog ruff pip-audit
       - name: Upgrade build tools
         run: python -m pip install --upgrade pip setuptools wheel
-      - name: Audit dependencies
-        run: python -m pip_audit
+      - name: Audit the app's dependencies
+        # Audit what we ship, not the CI toolchain: the runner image carries
+        # unrelated packages (and older Pythons cannot install their fixes).
+        run: python -m pip_audit -r requirements.txt
       - name: Lint (fatal errors only)
         run: python -m ruff check --select E9,F63,F7,F82 drivesync tests
       - run: python -m pytest tests/ -q
@@ -99,23 +147,26 @@ jobs:
         run: xvfb-run -a python3 -m pytest tests/test_gui.py -q
 
   publish:
-    needs: [deb, rpm, appimage, flatpak, tests]
+    needs: [deb, rpm, appimage, flatpak]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-          path: dist
+      - name: Download the release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "$GITHUB_REF_NAME" --dir dist --clobber
       - name: Generate SHA-256 checksums
         run: |
           cd dist
           sha256sum *.deb *.rpm *.AppImage *.flatpak > SHA256SUMS
           cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*
-          fail_on_unmatched_files: true
+      - name: Upload checksums and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

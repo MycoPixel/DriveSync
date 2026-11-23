@@ -32,6 +32,7 @@ mkdir -p "$D" \
          "$PKG/usr/share/applications" \
          "$PKG/usr/share/metainfo" \
          "$PKG/usr/share/icons/hicolor/scalable/apps" \
+         "$PKG/usr/share/icons/hicolor/256x256/apps" \
          "$PKG/usr/share/kio/servicemenus" \
          "$PKG/usr/lib/systemd/user" \
          "$PKG/usr/share/doc/drivesync"
@@ -58,6 +59,8 @@ sed "s|__BIN__|/usr/bin|g; s|__ICON__|drivesync|g" "$ROOT/drivesync.desktop" \
     > "$PKG/usr/share/applications/drivesync.desktop"
 cp "$ROOT/drivesync/static/mark.svg" \
    "$PKG/usr/share/icons/hicolor/scalable/apps/drivesync.svg"
+cp "$ROOT/drivesync/static/mark.png" \
+   "$PKG/usr/share/icons/hicolor/256x256/apps/drivesync.png"
 
 # AppStream metadata: what Discover / GNOME Software show about the app
 cp "$ROOT/drivesync.metainfo.xml" \

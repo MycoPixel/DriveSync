@@ -64,8 +64,10 @@ window are associated correctly.
 
 1. Bump `drivesync/__init__.py`, `packaging/drivesync.spec` (Version and
    `%changelog`), `drivesync.metainfo.xml` and `CHANGELOG.md` together.
-2. `git tag v0.6.0 && git push --tags` — Actions builds all four artifacts,
-   runs the test matrix and publishes the release with `SHA256SUMS`.
+2. `git tag v0.6.0 && git push --tags` — Actions runs the test matrix,
+   builds all four packages, attaches them to a **draft** release and
+   publishes it with `SHA256SUMS`. If any build fails the release stays a
+   draft: fix it, move the tag (`git tag -f …`), force-push it and re-run.
 3. Users install with `sudo apt install ./drivesync_…deb` or
    `sudo dnf install ./drivesync-…rpm` — or double-click in most desktop
    software centers.

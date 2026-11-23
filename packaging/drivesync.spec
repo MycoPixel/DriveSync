@@ -82,6 +82,7 @@ mkdir -p %{buildroot}%{appdir} \
          %{buildroot}%{_datadir}/applications \
          %{buildroot}%{_datadir}/metainfo \
          %{buildroot}%{_datadir}/icons/hicolor/scalable/apps \
+         %{buildroot}%{_datadir}/icons/hicolor/256x256/apps \
          %{buildroot}%{_datadir}/kio/servicemenus \
          %{buildroot}%{_userunitdir} \
          %{buildroot}%{_docdir}/%{name}
@@ -102,6 +103,8 @@ sed "s|__BIN__|/usr/bin|g; s|__ICON__|drivesync|g" drivesync.desktop \
     > %{buildroot}%{_datadir}/applications/drivesync.desktop
 cp drivesync/static/mark.svg \
    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/drivesync.svg
+cp drivesync/static/mark.png \
+   %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/drivesync.png
 
 # AppStream metadata: what Discover / GNOME Software show about the app
 cp drivesync.metainfo.xml \
@@ -145,6 +148,7 @@ EOF
 %{_datadir}/applications/drivesync.desktop
 %{_datadir}/metainfo/drivesync.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/drivesync.svg
+%{_datadir}/icons/hicolor/256x256/apps/drivesync.png
 %{_datadir}/kio/servicemenus/drivesync-servicemenu.desktop
 %{_userunitdir}/drivesync.service
 

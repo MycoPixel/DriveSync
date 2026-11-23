@@ -31,8 +31,9 @@ Older entries below 0.2.1 are summarized from the git history.
 - **Security audit.** `drivesync audit [--fix]` checks the data directory
   and credential file modes, token presence and world-writable files without
   ever printing secret values. `SECURITY.md` documents the threat model.
-- **Release pipeline.** Tagged builds publish deb, rpm, AppImage and
-  Flatpak artifacts together with a `SHA256SUMS` file.
+- **Release pipeline.** Tagged builds attach deb, rpm, AppImage and Flatpak
+  packages to a draft GitHub Release and publish it with a `SHA256SUMS`
+  file once every package landed.
 - **Desktop window polish (GTK, with KDE in mind).** The window remembers
   its normal size, maximized state and last tab; tall Options/Overview/Setup
   pages scroll instead of forcing the window past the screen edge; Options
