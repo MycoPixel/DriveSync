@@ -48,6 +48,19 @@
   <icon type="theme">drivesync</icon>
   <icon type="stock">drivesync</icon>
   <releases>
+    <release version="0.6.1" date="2026-11-24">
+      <description>
+        <p>
+          The published RPM now starts on hosts whose Python is older than
+          the CI build image's: the app lives in a version-independent
+          vendor directory instead of a versioned site-packages path. The
+          AppImage payload layout was fixed (it could not find its own
+          package), it can open the native GTK window when the desktop
+          provides PyGObject/GTK 3, and its menu entry now launches that
+          window instead of the browser dashboard.
+        </p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-23">
       <description>
         <p>

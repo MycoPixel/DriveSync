@@ -3,6 +3,30 @@
 All notable changes to DriveSync, newest first. Dates are release dates.
 Older entries below 0.2.1 are summarized from the git history.
 
+## [0.6.1] - 2026-11-24
+
+### Fixed
+- **The published RPM could not start the app on older Pythons.** The
+  spec installed the code into `%{python3_sitelib}`, which embeds the
+  *build host's* Python minor version. CI builds in `fedora:latest`
+  (Python 3.15), so the 0.6.0 asset landed in
+  `/usr/lib/python3.15/site-packages` while a Fedora/Ultramarine host on
+  Python 3.14 never searches that path — `/usr/bin/drivesync` died with
+  `ModuleNotFoundError: No module named 'drivesync'`. The RPM now uses a
+  version-independent `/usr/lib/drivesync` vendor dir that the launcher
+  adds to `sys.path`, so one noarch package works across Python versions.
+- **The AppImage now starts at all.** Its payload was copied one level too
+  high, so `usr/app` contained `cli.py` instead of a `drivesync/` package
+  and every command died with `No module named drivesync`. The package now
+  lives where `PYTHONPATH` expects it.
+- **The AppImage can open the native GTK window.** PyGObject is a C
+  extension tied to one Python ABI, so the bundled interpreter cannot
+  import the distro's `gi`. `DriveSync gui` now probes the host's
+  `python3` for GTK 3 + PyGObject (+ requests) and runs the window with
+  it, printing the exact install command when none is found. The AppImage
+  desktop entry launches `gui` instead of `serve --open`; the CLI and
+  dashboard still use the bundled Python.
+
 ## [0.6.0] - 2026-11-23
 
 ### Added

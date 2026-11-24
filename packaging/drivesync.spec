@@ -3,10 +3,10 @@
 # Build on any RPM-based machine (Fedora, RHEL, openSUSE):
 #   ./packaging/build-rpm.sh          -> ~/rpmbuild/RPMS/noarch/drivesync-<ver>-1.noarch.rpm
 #
-# The package mirrors the .deb layout: python code under the site-packages
-# dir, launcher in /usr/bin, menu launcher, icon and a systemd user unit.
+# The package mirrors the .deb layout: python code in a private directory,
+# launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.6.0
+Version:        0.6.1
 # No distro release suffix: this is a noarch, pure-python package and a
 # host-specific tag made the artifact name differ per build machine for no
 # benefit. Keep release/name stable everywhere.
@@ -39,15 +39,18 @@ Recommends:     python3-fusepy
 # desktop notifications for conflicts/errors while the window is hidden
 Recommends:     libnotify
 
-# python site-packages dir, computed on the build machine at spec-parse time
-# — avoids a hard dependency on python-rpm-macros (which ships
-# %{python3_sitelib} but is not installed on every rpm distro).
-# /usr/bin/python3 pins the *system* interpreter even if a venv is active.
-# Explicit base/platbase keep the path under /usr/lib even when the build
-# host's python was configured with a /usr/local prefix (otherwise the
-# package would install to /usr/local/lib and the launcher could not see it).
-%global py_purelib %(/usr/bin/python3 -c "import sysconfig; print(sysconfig.get_path('purelib', vars={'base': '/usr', 'platbase': '/usr'}))")
-%global appdir %{py_purelib}/drivesync
+# Application code goes under /usr/lib/drivesync, NOT the build host's
+# site-packages. A noarch RPM would bake the build machine's Python minor
+# version into a site-packages path: CI builds in fedora:latest (Python
+# 3.15), so the published asset installed the code under
+# /usr/lib/python3.15/site-packages — a path a Fedora/Ultramarine host
+# running Python 3.14 never searches. 'import drivesync' then failed and
+# the launcher died with ModuleNotFoundError ("the app does not start").
+# This is a Python-version independent vendor dir (the code is pure
+# Python): the package lives in %{appdir}/drivesync and the /usr/bin
+# launcher below puts %{appdir} (the PARENT) on sys.path. Keep in sync.
+%global appdir %{_prefix}/lib/drivesync
+%global pkgdir %{appdir}/drivesync
 # some minimal build environments lack systemd-rpm-macros too
 %{!?_userunitdir:%global _userunitdir /usr/lib/systemd/user}
 
@@ -77,7 +80,7 @@ on the machine and talk to Google directly.
 # pure-python app: nothing to compile
 
 %install
-mkdir -p %{buildroot}%{appdir} \
+mkdir -p %{buildroot}%{pkgdir} \
          %{buildroot}%{_bindir} \
          %{buildroot}%{_datadir}/applications \
          %{buildroot}%{_datadir}/metainfo \
@@ -86,12 +89,13 @@ mkdir -p %{buildroot}%{appdir} \
          %{buildroot}%{_datadir}/kio/servicemenus \
          %{buildroot}%{_userunitdir} \
          %{buildroot}%{_docdir}/%{name}
-cp -r drivesync/* %{buildroot}%{appdir}/
-find %{buildroot}%{appdir} -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+cp -r drivesync/* %{buildroot}%{pkgdir}/
+find %{buildroot}%{pkgdir} -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
-cat > %{buildroot}%{_bindir}/drivesync <<'EOF'
+cat > %{buildroot}%{_bindir}/drivesync <<EOF
 #!/usr/bin/python3
 import sys
+sys.path.insert(0, "%{appdir}")
 from drivesync.cli import main
 
 if __name__ == "__main__":
@@ -153,6 +157,17 @@ EOF
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.6.1-1
+- RPM: install the app into a Python-version independent /usr/lib/drivesync
+  vendor dir. A noarch package built in CI (fedora:latest, Python 3.15) put
+  the code under /usr/lib/python3.15/site-packages, which a host on Python
+  3.14 never searches — /usr/bin/drivesync died with ModuleNotFoundError
+  and the app "did not start"
+- AppImage: fix the payload layout that made every command fail with
+  "No module named drivesync"; 'gui' now runs on the host's PyGObject/
+  GTK 3 when available, and the desktop entry opens the native window
+  instead of the dashboard
+
 * %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.6.0-1
 - Shared Drives: browse organizational drives as folder roots in the
   dashboard, GTK app and pair picker (list_drives + supportsAllDrives on

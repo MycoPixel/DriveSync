@@ -25,8 +25,13 @@ the source install.
 ## What the packages do
 
 - Python code → `/usr/lib/python3/dist-packages/drivesync` (deb) or
-  `%{python3_sitelib}/drivesync` (rpm); flask/requests come from distro
-  packages via `Depends`/`Requires`, so security updates flow through apt/dnf
+  `/usr/lib/drivesync/drivesync` (rpm, a version-independent vendor dir put
+  on `sys.path` by the launcher); flask/requests come from distro
+  packages via `Depends`/`Requires`, so security updates flow through apt/dnf.
+  The RPM deliberately avoids `%{python3_sitelib}`: that path embeds the
+  *build host's* Python minor version, and a CI-built noarch RPM would then
+  be invisible to users on a different Python (the 3.15-built 0.6.0 asset
+  could not start on Fedora/Ultramarine with Python 3.14)
 - `/usr/bin/drivesync` launcher (same CLI as the source install)
 - Menu launcher + hicolor SVG icon
 - Dolphin/KDE service menu (`packaging/kde/drivesync-servicemenu.desktop`)
@@ -39,11 +44,16 @@ the source install.
 
 ## Notes on the AppImage
 
-The AppImage bundles a venv built with the **build machine's** python, so it
-runs on machines with a compatible glibc and the same python 3.x minor
-family. Build on an older, widely-shared distro (e.g. Ubuntu 22.04) for the
-best reach. It does not register a systemd autostart unit — run it once and
-enable autostart from the dashboard instead.
+The AppImage bundles its own CPython (python-build-standalone), so the CLI,
+dashboard and tray run on any distro with a compatible glibc. The native GTK
+window is the one piece that cannot be bundled: PyGObject is a C extension
+built for a specific Python ABI, so `DriveSync gui` probes the host's
+`python3` (or `$DRIVESYNC_PYTHON`) for GTK 3 + PyGObject + requests and runs
+the window with it, printing the exact install command when none is found.
+The desktop entry launches that window (running the AppImage with no
+arguments does the same); the "Open dashboard" action runs `serve --open`
+with the bundled interpreter. It does not register a systemd autostart unit
+— run it once and enable autostart from the dashboard instead.
 
 ## Notes on the Flatpak
 
@@ -64,7 +74,7 @@ window are associated correctly.
 
 1. Bump `drivesync/__init__.py`, `packaging/drivesync.spec` (Version and
    `%changelog`), `drivesync.metainfo.xml` and `CHANGELOG.md` together.
-2. `git tag v0.6.0 && git push --tags` — Actions runs the test matrix,
+2. `git tag v0.6.1 && git push --tags` — Actions runs the test matrix,
    builds all four packages, attaches them to a **draft** release and
    publishes it with `SHA256SUMS`. If any build fails the release stays a
    draft: fix it, move the tag (`git tag -f …`), force-push it and re-run.

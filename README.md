@@ -113,8 +113,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.6.0-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.6.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.6.1-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.6.1-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -124,10 +124,12 @@ Build them yourself with `packaging/build-deb.sh` and `packaging/build-rpm.sh`
 (see `packaging/README.md`), or grab them from the releases page.
 
 There is also a zero-install AppImage (`packaging/build-appimage.sh`) that
-bundles its own CPython, so it runs anywhere the glibc is new enough. It
-opens the dashboard in your browser, and includes the tray and CLI; the GTK
-desktop window needs the distro's PyGObject, so prefer the deb/rpm for the
-full desktop experience.
+bundles its own CPython, so the CLI, dashboard and tray run anywhere the
+glibc is new enough. Its `gui` command opens the native GTK window using the
+desktop's PyGObject/GTK 3 (the one piece a bundled interpreter cannot load),
+and prints the install command if they are missing; running the AppImage with
+no arguments (or its menu entry) opens that window. For a fully self-contained
+install, use the deb/rpm.
 
 For a sandboxed install, `packaging/build-flatpak.sh` builds a Flatpak on
 `org.gnome.Platform` (see `packaging/README.md`). It keeps data under

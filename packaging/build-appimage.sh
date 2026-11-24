@@ -22,11 +22,12 @@
 #   ./packaging/build-appimage.sh   -> dist/DriveSync-<ver>-x86_64.AppImage
 #
 # NOTE: for most users the .deb/.rpm packages are the better choice — they
-# are smaller, integrate with the software center, can use the distro's
-# PyGObject (GTK desktop app + native tray) and autostart cleanly. The
-# AppImage serves the dashboard + CLI and a pystray tray icon; the GTK
-# window needs `gi`, which a bundled python cannot import — run the deb/rpm
-# build for that, or DS_USE_HOST_PYTHON=1 on a host that has PyGObject.
+# are smaller, integrate with the software center and autostart cleanly.
+# The AppImage bundles its own CPython for the CLI/dashboard/tray; its
+# `gui` command uses the host's python3 when GTK 3 + PyGObject are present
+# (a bundled CPython cannot import the distro's compiled gi extension), and
+# prints the install command when they are missing. Set DRIVESYNC_PYTHON to
+# force a specific interpreter for the window.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -40,8 +41,12 @@ ARCH="${ARCH:-x86_64}"
 echo "==> Building DriveSync ${VERSION} AppImage (${ARCH})"
 
 # ---- app payload -------------------------------------------------------
-mkdir -p "$APPDIR/usr" "$APPDIR/usr/bin"
-cp -r "$ROOT/drivesync" "$APPDIR/usr/app"
+mkdir -p "$APPDIR/usr" "$APPDIR/usr/bin" "$APPDIR/usr/app"
+# The package must be importable as `drivesync`, so it needs its own
+# directory under usr/app (PYTHONPATH points at usr/app). Copying the
+# package *as* usr/app put cli.py at the top level and every command died
+# with "No module named drivesync".
+cp -r "$ROOT/drivesync" "$APPDIR/usr/app/drivesync"
 find "$APPDIR/usr/app" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
 if [ "${DS_USE_HOST_PYTHON:-0}" = "1" ]; then
@@ -84,18 +89,58 @@ else
         flask requests pillow pystray watchdog
 fi
 
-cat > "$APPDIR/AppRun" <<EOF
+# AppRun: the bundled interpreter runs the CLI and the dashboard, but the
+# GTK window needs PyGObject — a C extension built for one Python ABI, so
+# the bundled CPython cannot import the distro's gi. For `gui` we therefore
+# exec the host's python3 when it has GTK 3 + PyGObject + requests (every
+# desktop distro ships them); otherwise print the exact install command.
+# DRIVESYNC_PYTHON overrides the interpreter search.
+PYBIN_REL="${PYBIN#"$APPDIR"}"   # e.g. /usr/python/bin/python3
+cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/bash
-HERE="\$(cd "\$(dirname "\$0")" && pwd)"
-export PYTHONPATH="\$HERE/usr/app"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONPATH="$HERE/usr/app"
+
+# Double-clicking the AppImage (or a launcher that passes no arguments)
+# should open the window, not print CLI help.
+[ "$#" -eq 0 ] && set -- gui
+
+if [ "${1:-}" = "gui" ]; then
+    for py in "${DRIVESYNC_PYTHON:-}" "__PYBIN__" python3 /usr/bin/python3; do
+        [ -n "$py" ] || continue
+        command -v "$py" >/dev/null 2>&1 || continue
+        if "$py" - <<'PY' >/dev/null 2>&1
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gtk  # noqa: F401
+import requests  # noqa: F401
+PY
+        then
+            # Run the window on the host interpreter. LD_LIBRARY_PATH is
+            # deliberately NOT set here: the bundled python's lib dir can
+            # contain libs the host GTK stack must not load.
+            exec "$py" -m drivesync "$@"
+        fi
+    done
+    cat >&2 <<'MSG'
+The DriveSync GTK window needs PyGObject, GTK 3 and requests for the
+system Python. Install them, or use the deb/rpm package instead:
+  Fedora/Ultramarine: sudo dnf install python3-gobject gtk3 python3-requests
+  Debian/Ubuntu:      sudo apt install python3-gi gir1.2-gtk-3.0 python3-requests
+The dashboard and CLI work without GTK:  DriveSync-*.AppImage serve --open
+MSG
+    exit 1
+fi
+
 # LD_LIBRARY_PATH keeps libpython resolvable on hosts whose own libs are
 # older than the bundled build expects
-export LD_LIBRARY_PATH="\$HERE/usr/python/lib:\${LD_LIBRARY_PATH:-}"
-exec "$PYBIN" -m drivesync "\$@"
+export LD_LIBRARY_PATH="$HERE/usr/python/lib:${LD_LIBRARY_PATH:-}"
+exec "__PYBIN__" -m drivesync "$@"
 EOF
-# $PYBIN is an absolute path into a temp dir — it must point INSIDE the
-# AppDir, so rewrite the staging prefix to the runtime location
-sed -i "s|$STAGE/DriveSync.AppDir|\$HERE|g" "$APPDIR/AppRun"
+# PYBIN is an absolute path into the staging temp dir; rewrite it to the
+# runtime location inside the (relocatable) AppImage.
+sed -i "s|__PYBIN__|\$HERE${PYBIN_REL}|g" "$APPDIR/AppRun"
 chmod 755 "$APPDIR/AppRun"
 
 cat > "$APPDIR/DriveSync.desktop" <<EOF
@@ -104,7 +149,7 @@ Type=Application
 Name=DriveSync
 GenericName=Google Drive Sync Client
 Comment=Sync Google Drive folders on your Linux desktop
-Exec=DriveSync serve --open
+Exec=DriveSync gui
 Icon=drivesync
 Terminal=false
 Categories=Network;FileTransfer;
@@ -113,13 +158,17 @@ StartupWMClass=DriveSync
 StartupNotify=true
 SingleMainWindow=true
 X-GNOME-UsesNotifications=true
-Actions=SyncNow;
+Actions=SyncNow;Dashboard;
 EOF
 cat >> "$APPDIR/DriveSync.desktop" <<'EOF'
 
 [Desktop Action SyncNow]
 Name=Sync all now
 Exec=DriveSync sync
+
+[Desktop Action Dashboard]
+Name=Open dashboard
+Exec=DriveSync serve --open
 EOF
 cp "$ROOT/drivesync/static/mark.svg" "$APPDIR/drivesync.svg"
 # appimagetool builds .DirIcon from <Icon>.png (SVG alone is not accepted)
