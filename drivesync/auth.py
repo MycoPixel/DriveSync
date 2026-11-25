@@ -33,22 +33,68 @@ class AuthError(Exception):
     pass
 
 
+class ReauthRequired(AuthError):
+    """The stored sign-in can no longer be refreshed: the user must
+    authorize again. Distinct from a network blip or a Drive outage, which
+    fix themselves and must not send anyone back through the consent flow."""
+
+
+REAUTH_HINT = (
+    "Google no longer accepts this account's sign-in (it was revoked or "
+    "has expired). Reconnect the account to continue syncing. If this "
+    "keeps happening about every 7 days, your Google Cloud OAuth consent "
+    "screen is probably still in 'Testing' - set it to 'In production' "
+    "(see the README).")
+
+
 class _CallbackServer(HTTPServer):
     """One-shot HTTP server that captures the ?code= query on the loopback."""
 
     def __init__(self, port):
         self.result = {}
+        # interactive_auth() sets this to the per-attempt `state` so the
+        # handler can reject callbacks that are not part of this flow
+        self.expected_state = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            def _reply(self, status, body):
+                data = ("<h2>DriveSync</h2><p>%s</p>" % body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_GET(self):
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                outer.result = {k: v[0] for k, v in q.items()}
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(b"<h2>DriveSync</h2><p>Authorization received. "
-                                 b"You can close this tab and return to the app.</p>")
+                got = {k: v[0] for k, v in q.items()}
+                if "code" not in got and "error" not in got:
+                    # /favicon.ico, a port scan, a prefetch: not the
+                    # callback, and must not wipe a real one
+                    self._reply(404, "Nothing here.")
+                    return
+                if outer.expected_state is not None \
+                        and got.get("state") != outer.expected_state:
+                    self._reply(400, "This authorization response does not "
+                                     "belong to the sign-in that is in "
+                                     "progress, so it was ignored.")
+                    return
+                if outer.result:
+                    # first valid callback wins; a replay changes nothing
+                    self._reply(200, "Authorization was already received. "
+                                     "You can close this tab.")
+                    return
+                outer.result = got
+                if "error" in got:
+                    self._reply(200, "Authorization was not completed. You "
+                                     "can close this tab and try again in "
+                                     "DriveSync.")
+                else:
+                    self._reply(200, "Authorization received. You can close "
+                                     "this tab and return to the app.")
 
             def log_message(self, *args):
                 pass
@@ -104,6 +150,7 @@ def interactive_auth(config):
     params.update(dict(kv.split("=") for kv in ACCOUNT_KWARGS))
     url = AUTH_URL + "?" + urllib.parse.urlencode(params)
 
+    server.expected_state = state
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -124,12 +171,15 @@ def interactive_auth(config):
         server.shutdown()
         server.server_close()
     result = server.result
-    if result.get("state") != state:
-        raise AuthError("OAuth state mismatch (possible forged callback).")
+    if "code" not in result and "error" not in result:
+        raise AuthError("Timed out waiting for Google authorization "
+                        "(5 minutes). Start the sign-in again when you are "
+                        "ready.")
     if "error" in result:
         raise AuthError(f"Authorization failed: {result['error']}")
-    if "code" not in result:
-        raise AuthError("Timed out waiting for Google authorization.")
+    # the handler already filters on state; this is defence in depth
+    if result.get("state") != state:
+        raise AuthError("OAuth state mismatch (possible forged callback).")
 
     tokens = exchange_code(client_id, client_secret, result["code"],
                            redirect_uri, code_verifier=code_verifier)
@@ -176,8 +226,20 @@ def refresh_tokens(client_id, client_secret, refresh_token):
         "grant_type": "refresh_token",
     }, timeout=30)
     if resp.status_code != 200:
+        if _is_invalid_grant(resp):
+            raise ReauthRequired(REAUTH_HINT)
         raise AuthError(f"Token refresh failed: {resp.text[:300]}")
     return _with_expiry(resp.json())
+
+
+def _is_invalid_grant(resp):
+    """True for Google's 'refresh token is dead' answer (revoked, expired,
+    password changed, or Testing-mode 7-day expiry)."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("error") == "invalid_grant"
 
 
 def token_snapshot(token_json):
@@ -206,7 +268,8 @@ def access_token(token_json):
     (store.update_account_tokens) so a rotated refresh token survives.
     """
     if not token_json.get("refresh_token"):
-        raise AuthError("No refresh token stored; re-run authorization.")
+        raise ReauthRequired("No refresh token is stored for this account; "
+                             "reconnect it.")
     expires_at = token_json.get("expires_at", 0)
     if time.time() < expires_at - 60 and token_json.get("access_token"):
         return token_json["access_token"]
@@ -220,8 +283,8 @@ def access_token(token_json):
         client_id = token_json.get("client_id")
         client_secret = token_json.get("client_secret")
         if not (client_id and client_secret):
-            raise AuthError("Stored account has no OAuth client credentials; "
-                            "re-run authorization.")
+            raise ReauthRequired("This account has no OAuth client "
+                                 "credentials stored; reconnect it.")
         fresh = _with_expiry(refresh_tokens(client_id, client_secret,
                                             token_json["refresh_token"]))
         token_json["access_token"] = fresh["access_token"]

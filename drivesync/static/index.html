@@ -237,7 +237,7 @@
         <button class="btn primary small" id="driveUseFolder" data-i18n="Use this folder for a new sync pair">Use this folder for a new sync pair</button>
       </div>
       <nav id="driveCrumbs" class="crumbs" aria-label="Folder path"></nav>
-      <p class="muted small" id="drivePath" style="word-break:break-all"></p>
+      <p class="muted small break-all" id="drivePath"></p>
       <div class="table-scroll">
         <table class="tbl" id="driveTable">
           <thead><tr>
@@ -351,7 +351,7 @@
       <div class="row between">
         <h3 data-i18n="Activity log">Activity log</h3>
         <div class="row">
-          <input id="eventSearch" type="search" data-i18n-ph="Search path, action or detail…" placeholder="Search path, action or detail…" style="min-width:220px">
+          <input id="eventSearch" type="search" data-i18n-ph="Search path, action or detail…" placeholder="Search path, action or detail…" class="min-w-search">
           <select id="eventFilter">
             <option value="" data-i18n="All levels">All levels</option>
             <option value="conflict" data-i18n="Conflicts only">Conflicts only</option>
@@ -623,7 +623,7 @@
       <h3 data-i18n="Activity detail">Activity detail</h3>
       <button class="icon-btn" id="eventClose">✕</button>
     </div>
-    <pre id="eventDetail" class="muted" style="white-space:pre-wrap;word-break:break-word"></pre>
+    <pre id="eventDetail" class="muted pre-wrap"></pre>
   </div>
 </div>
 

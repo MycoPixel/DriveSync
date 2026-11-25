@@ -301,3 +301,8 @@ label.inline.grow input{width:100%}
 .rec-block.error{border-left-color:var(--danger)}
 .pending-paths{margin:0;padding-left:18px;font-family:ui-monospace,'Inconsolata',monospace;
   font-size:12.5px;word-break:break-all}
+
+/* utility classes (replace inline styles so the CSP can forbid them) */
+.break-all { word-break: break-all; }
+.min-w-search { min-width: 220px; }
+.pre-wrap { white-space: pre-wrap; word-break: break-word; }

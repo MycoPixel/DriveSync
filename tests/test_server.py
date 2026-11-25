@@ -462,3 +462,103 @@ def test_run_server_rejects_non_loopback_before_starting():
 
     with pytest.raises(ValueError, match="must bind to localhost"):
         run_server(None, None, host="0.0.0.0")
+
+
+# ------------------------------------------------ headers and JSON errors
+def test_ui_and_api_carry_security_headers(client):
+    c, _ = client
+    for path in ("/", "/app.js", "/api/health"):
+        r = c.get(path)
+        csp = r.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'none'" in csp
+        assert "default-src 'none'" in csp
+        assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+        assert r.headers["X-Frame-Options"] == "DENY"
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert r.headers["Referrer-Policy"] == "no-referrer"
+    assert c.get("/api/health").headers["Cache-Control"] == "no-store"
+
+
+def test_refused_requests_still_get_headers(client):
+    c, _ = client
+    r = c.get("/api/health", headers={"X-DriveSync": "0"})
+    assert r.status_code == 403
+    assert r.headers["X-Frame-Options"] == "DENY"
+
+
+def test_ui_has_no_inline_styles_or_scripts(client):
+    """The CSP forbids them, so the page must not depend on them."""
+    import re
+
+    c, _ = client
+    html = c.get("/").get_data(as_text=True)
+    assert ' style="' not in html
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html)
+    assert not re.search(r"\son[a-z]+=\"", html)
+
+
+@pytest.mark.parametrize("path", [
+    "/api/recovery/deletions/allow",
+    "/api/recovery/deletions/keep",
+    "/api/recovery/trash/restore",
+    "/api/recovery/versions/restore",
+])
+@pytest.mark.parametrize("body", [{"pair_id": "abc"}, {"pair_id": [1]},
+                                  {"pair_id": {"x": 1}}, [1, 2], "text"])
+def test_bad_recovery_input_is_a_json_400(client, path, body):
+    c, _ = client
+    r = c.post(path, json=body)
+    assert r.status_code == 400, r.get_data(as_text=True)
+    assert r.is_json and r.get_json()["ok"] is False
+    assert r.get_json()["error"]
+
+
+def test_unknown_api_route_and_wrong_method_are_json(client):
+    c, _ = client
+    r = c.get("/api/does-not-exist")
+    assert r.status_code == 404 and r.get_json()["ok"] is False
+    r = c.delete("/api/health")
+    assert r.status_code == 405 and r.get_json()["ok"] is False
+
+
+def test_unexpected_exception_is_json_without_leaking_details(
+        client, monkeypatch):
+    c, _ = client
+
+    def boom(*a, **k):
+        raise RuntimeError("secret internal detail /home/user/.ssh")
+
+    monkeypatch.setattr("drivesync.server.load_config", boom)
+    r = c.get("/api/status")
+    assert r.status_code == 500 and r.is_json
+    assert "secret internal detail" not in r.get_data(as_text=True)
+
+
+def test_missing_static_file_keeps_plain_404(client):
+    c, _ = client
+    assert c.get("/nope.js").status_code == 404
+
+
+def test_accounts_flag_only_dead_sign_ins_as_reauth(client, monkeypatch):
+    from drivesync.auth import ReauthRequired
+    from drivesync.drive import DriveError
+
+    c, store = client
+    store.add_account("dead@x.com", {"refresh_token": "r"})
+    store.add_account("offline@x.com", {"refresh_token": "r"})
+    failures = iter([ReauthRequired("reconnect me"),
+                     DriveError("network unreachable")])   # accounts by id
+
+    class FailingDrive:
+        def __init__(self, provider, limiter=None):
+            pass
+
+        def about(self):
+            raise next(failures)
+
+    monkeypatch.setattr("drivesync.server.Drive", FailingDrive)
+    rows = {r["email"]: r
+            for r in c.get("/api/accounts").get_json()["accounts"]}
+    assert rows["dead@x.com"]["reauth_required"] is True
+    assert rows["offline@x.com"]["reauth_required"] is False
+    assert rows["offline@x.com"]["error"] == "network unreachable"

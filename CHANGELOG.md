@@ -3,6 +3,48 @@
 All notable changes to DriveSync, newest first. Dates are release dates.
 Older entries below 0.2.1 are summarized from the git history.
 
+## [Unreleased]
+
+### Security
+- **A sync pair can no longer include DriveSync's own data directory.**
+  `~/.local/share/drivesync` holds `state.db` (OAuth refresh tokens) and
+  `config.json` (the client secret). A pair rooted at an ancestor such as
+  `$HOME` used to list both as ordinary files and upload them to Drive.
+  Pairs on the data directory itself are now refused (and fail closed if
+  one already exists), and the directory is excluded from both the local
+  walk and the Drive listing of any pair that contains it, so a copy
+  uploaded by an older version is not pulled back over the live database.
+- **The dashboard can no longer be framed** and now sends a strict
+  Content-Security-Policy (`default-src 'none'`, same-origin script/style/
+  connect only, `frame-ancestors 'none'`), `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`;
+  API responses are `Cache-Control: no-store`. The three inline `style=`
+  attributes in the page moved to CSS classes to make this possible.
+- **Hardened the OAuth loopback callback.** Requests without a `code` or
+  `error` (a `/favicon.ico` fetch, a prefetch) no longer overwrite the real
+  result; a callback with the wrong `state` is rejected on arrival and
+  cannot replace a valid one; the first valid callback wins.
+
+### Fixed
+- **Bad input to the API returned an HTML 500.** Non-numeric or non-object
+  JSON on the recovery endpoints now gives a JSON `400` that names the
+  field, and every unhandled error under `/api/` is a JSON response that
+  does not leak exception text (details go to the log).
+- **A timed-out sign-in was reported as "OAuth state mismatch (possible
+  forged callback)".** It now says it timed out.
+- **Any account error was labelled "sign-in expired".** A revoked or
+  expired refresh token (`invalid_grant`) is now a distinct
+  `ReauthRequired` error with a clear message, and the dashboard shows a
+  **Reconnect** button only for those accounts; a network or Drive outage
+  shows "account unavailable" instead.
+
+### Documentation
+- README: the OAuth consent screen should be set to **In production**.
+  In **Testing**, Google expires the sign-in after 7 days. Publishing needs
+  a home page, a privacy policy link and an authorized domain on the
+  Branding page even without verification; the README now walks through it
+  and `PRIVACY.md` is a policy page that can be linked.
+
 ## [0.6.1] - 2026-11-24
 
 ### Fixed

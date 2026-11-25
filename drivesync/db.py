@@ -9,6 +9,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .security import is_data_dir
+
+_DATA_DIR_MSG = ("that folder is DriveSync's own data directory (it holds "
+                 "your OAuth tokens and client secret) and cannot be synced")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     id          INTEGER PRIMARY KEY,
@@ -440,6 +445,8 @@ class Store:
         if symlink_policy not in _SYMLINK_POLICIES:
             raise ValueError(
                 f"symlink_policy must be one of {_SYMLINK_POLICIES}")
+        if is_data_dir(local_path):
+            raise ValueError(_DATA_DIR_MSG)
         for row in self.pairs():
             if roots_overlap(local_path, row["local_path"]):
                 raise ValueError(
@@ -485,6 +492,8 @@ class Store:
                 fields["symlink_policy"] not in _SYMLINK_POLICIES:
             raise ValueError(
                 f"symlink_policy must be one of {_SYMLINK_POLICIES}")
+        if "local_path" in fields and is_data_dir(fields["local_path"]):
+            raise ValueError(_DATA_DIR_MSG)
         if "enabled" in fields:
             fields["enabled"] = int(bool(fields["enabled"]))
         if "allow_deletes" in fields:

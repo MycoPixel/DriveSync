@@ -169,8 +169,14 @@ party ever sees your tokens.
 1. Go to [console.cloud.google.com](https://console.cloud.google.com/) →
    create/select a project.
 2. **APIs & Services → Library** → enable **Google Drive API**.
-3. **APIs & Services → OAuth consent screen** → External → fill the app name
-   and your email → add yourself as a **test user**.
+3. **Google Auth Platform → Branding** → fill in the app name (any name, e.g.
+   "DriveSync (personal)"), your support e-mail and the developer contact
+   e-mail. Then fill in the three fields Google requires before it lets you
+   publish, even though they are not marked with a red `*` while the app is in
+   Testing: **Application home page**, **Application privacy policy link**
+   and **Authorized domains** (see [Publishing the app](#publishing-the-app)
+   below). Leave **App logo** and **Application terms of service link**
+   empty.
 4. **APIs & Services → Credentials → Create credentials → OAuth client ID**
    → type **Desktop app**.
 5. Copy the **Client ID** and **Client secret**.
@@ -190,9 +196,36 @@ in `~/.local/share/drivesync/`.
 …or enter the credentials in the dashboard's **Accounts** tab instead — it
 stores them and starts the same consent flow in one step.
 
-> While your OAuth consent screen is in "testing" mode, only the users you
-> added as test users (i.e., you) can authorize — which is exactly what you
-> want for personal use.
+### Publishing the app
+
+Google expires the sign-in of apps whose consent screen is in **Testing**
+after **7 days**, so DriveSync would ask you to *Reconnect* every week (it
+shows "sign-in expired" and a Reconnect button in the dashboard). Setting the
+status to **In production** removes that expiry. You do **not** need to buy a
+domain, build a website or submit the app for Google verification — you only
+need to get past the console's checks:
+
+1. On the **Branding** page, fill in these three fields with any free public
+   links on the *same* domain, for example this project's pages on GitHub:
+   - **Application home page:** `https://github.com/MycoPixel/DriveSync`
+   - **Application privacy policy link:**
+     `https://github.com/MycoPixel/DriveSync/blob/master/PRIVACY.md`
+   - **Authorized domains → Add domain:** `github.com` (just the domain: no
+     `https://`, no slashes)
+
+   A GitHub profile or a public Google Doc works the same way. Keep **App
+   logo** empty: uploading one makes Google require verification.
+2. Open **Audience** and click **Publish app** → **Confirm**. The status
+   becomes **In production**.
+3. Reconnect your account in DriveSync once (a sign-in created while the app
+   was in Testing keeps its 7-day expiry).
+
+When you sign in, Google shows an "unverified app" warning: click *Advanced →
+Continue*. Unverified apps are limited to 100 users — you are the only one.
+Your credentials are still your own and stay on your machine.
+
+> The console's rules change from time to time; these are the steps that
+> worked at the time of writing (November 2026).
 
 ## Usage
 

@@ -13,13 +13,14 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import BadRequest, HTTPException
 
 from . import __version__
 from . import conflicts
 from . import engine
 from . import recovery
-from .auth import (AuthError, access_token_persisting, interactive_auth,
-                   token_from_json, whoami)
+from .auth import (AuthError, ReauthRequired, access_token_persisting,
+                   interactive_auth, token_from_json, whoami)
 from .config import db_path, load_config, save_config
 from .db import Store, parse_include_patterns, to_local
 from .drive import (Drive, DriveError, FOLDER_MIME, breadcrumbs,
@@ -27,6 +28,34 @@ from .drive import (Drive, DriveError, FOLDER_MIME, breadcrumbs,
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+# The UI is same-origin only: one script, one stylesheet, local images, and
+# fetch() to this server. Nothing else may load, and nothing may frame it
+# (clickjacking a "Remove account" / "Allow deletions" button).
+CONTENT_SECURITY_POLICY = "; ".join((
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+))
+
+
+def _to_int(value, name):
+    """int(value) or a 400 that names the field (never a bare 500)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise BadRequest(f"{name} must be an integer") from None
+
+
+def _int_field(data, name):
+    """Integer field from a JSON body; missing/empty means 0 (not found)."""
+    return _to_int(data.get(name) or 0, name)
 
 
 def is_loopback_host(host):
@@ -84,6 +113,42 @@ def create_app(store: Store, worker=None):
 
     def api_error(exc, code=400):
         return jsonify({"ok": False, "error": str(exc)}), code
+
+    def json_body():
+        """The request's JSON object ({} when absent); anything else is a
+        400 instead of an AttributeError further down."""
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise BadRequest("expected a JSON object")
+        return data
+
+    @app.errorhandler(HTTPException)
+    def http_error(exc):
+        # the API always answers in JSON; the static UI keeps werkzeug's page
+        if request.path.startswith("/api/"):
+            return api_error(exc.description or exc.name, exc.code or 500)
+        return exc
+
+    @app.errorhandler(Exception)
+    def unexpected_error(exc):
+        app.logger.exception("unhandled error on %s %s",
+                             request.method, request.path)
+        if request.path.startswith("/api/"):
+            return api_error("internal error (details are in the log)", 500)
+        return "Internal Server Error", 500
+
+    @app.after_request
+    def security_headers(resp):
+        resp.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        if request.path.startswith("/api/"):
+            # responses carry account data and quota: never cache them
+            resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.before_request
     def guard_api():
@@ -143,13 +208,16 @@ def create_app(store: Store, worker=None):
                 item["name"] = (about.get("user") or {}).get("displayName")
             except Exception as exc:
                 item["error"] = str(exc)
+                # only a dead sign-in needs the consent flow again; a
+                # network error or Drive outage clears up on its own
+                item["reauth_required"] = isinstance(exc, ReauthRequired)
             out.append(item)
         return jsonify({"ok": True, "accounts": out})
 
     @app.post("/api/accounts")
     def accounts_add():
         """Store OAuth client credentials and start the consent flow."""
-        data = request.get_json(force=True, silent=True) or {}
+        data = json_body()
         current = load_config()
         # the form may omit credentials (re-auth with the saved client):
         # only overwrite when a non-empty value was actually posted
@@ -293,12 +361,12 @@ def create_app(store: Store, worker=None):
 
     @app.post("/api/pairs")
     def pairs_add():
-        data = request.get_json(force=True, silent=True) or {}
+        data = json_body()
         try:
             local = os.path.realpath(os.path.expanduser(data["local_path"]))
             if not os.path.isdir(local):
                 return api_error(f"local path is not a directory: {local}")
-            account_id = int(data["account_id"])
+            account_id = _to_int(data["account_id"], "account_id")
             remote_id = data["remote_id"]
             # bind only to a real folder this account can see; a file id
             # would make the first pass fail in a confusing way
@@ -334,7 +402,7 @@ def create_app(store: Store, worker=None):
 
     @app.patch("/api/pairs/<int:pair_id>")
     def pairs_update(pair_id):
-        data = request.get_json(force=True, silent=True) or {}
+        data = json_body()
         try:
             pair = store.update_pair(pair_id, **data)
         except ValueError as exc:
@@ -403,7 +471,7 @@ def create_app(store: Store, worker=None):
         pair = store.pair(pair_id)
         if not pair:
             return api_error("pair not found", 404)
-        data = request.get_json(force=True, silent=True) or {}
+        data = json_body()
         try:
             result = conflicts.resolve_conflict(
                 store, pair, drive_for(pair["account_id"]),
@@ -472,8 +540,8 @@ def create_app(store: Store, worker=None):
     @app.post("/api/recovery/deletions/allow")
     def recovery_allow_deletions():
         """Approve one pass of the held deletions (mass-delete protection)."""
-        data = request.get_json(force=True, silent=True) or {}
-        pair, err = _pair_or_error(int(data.get("pair_id") or 0))
+        data = json_body()
+        pair, err = _pair_or_error(_int_field(data, "pair_id"))
         if err:
             return err
         hold = recovery.pending_deletions(store, pair["id"])
@@ -487,8 +555,8 @@ def create_app(store: Store, worker=None):
     @app.post("/api/recovery/deletions/keep")
     def recovery_keep_files():
         """Resolve the hold by keeping every file: switches deletes off."""
-        data = request.get_json(force=True, silent=True) or {}
-        pair, err = _pair_or_error(int(data.get("pair_id") or 0))
+        data = json_body()
+        pair, err = _pair_or_error(_int_field(data, "pair_id"))
         if err:
             return err
         if not recovery.pending_deletions(store, pair["id"]):
@@ -509,8 +577,8 @@ def create_app(store: Store, worker=None):
     @app.post("/api/recovery/trash/restore")
     def recovery_trash_restore():
         """Move a trashed file back to its original local path."""
-        data = request.get_json(force=True, silent=True) or {}
-        pair_id = int(data.get("pair_id") or 0)
+        data = json_body()
+        pair_id = _int_field(data, "pair_id")
         try:
             result = recovery.restore_from_trash(
                 store, pair_id, data.get("stamp") or "",
@@ -539,8 +607,8 @@ def create_app(store: Store, worker=None):
     def recovery_drive_trash_restore():
         """Untrash a Drive file; the next pass re-syncs it if it belongs
         to one of the pairs."""
-        data = request.get_json(force=True, silent=True) or {}
-        pair, err = _pair_or_error(int(data.get("pair_id") or 0))
+        data = json_body()
+        pair, err = _pair_or_error(_int_field(data, "pair_id"))
         if err:
             return err
         file_id = data.get("file_id") or ""
@@ -574,8 +642,8 @@ def create_app(store: Store, worker=None):
     def recovery_version_restore():
         """Put a kept previous version back at its path (current bytes are
         themselves pushed into the history first)."""
-        data = request.get_json(force=True, silent=True) or {}
-        pair_id = int(data.get("pair_id") or 0)
+        data = json_body()
+        pair_id = _int_field(data, "pair_id")
         try:
             result = recovery.restore_version(
                 store, pair_id, data.get("rel") or "",
@@ -637,7 +705,7 @@ def create_app(store: Store, worker=None):
 
     @app.post("/api/settings")
     def settings_set():
-        data = request.get_json(force=True, silent=True) or {}
+        data = json_body()
         # round-tripping a redacted settings object must not turn the real
         # secret into the literal mask
         if data.get("client_secret") == "***":

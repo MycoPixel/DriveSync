@@ -365,7 +365,7 @@ def test_drive_endpoints_with_broken_credentials_are_502(browser_client):
     resp = c.get("/api/drive/2/children")
     assert resp.status_code == 502
     body = resp.get_json()
-    assert body["ok"] is False and "re-run authorization" in body["error"]
+    assert body["ok"] is False and "reconnect" in body["error"].lower()
     assert c.get("/api/drive/2/folders").status_code == 502
     assert c.get("/api/drive/2/search?q=x").status_code == 502
 

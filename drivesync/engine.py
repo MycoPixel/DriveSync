@@ -50,7 +50,7 @@ from .config import app_dir
 from .db import parse_include_patterns
 from .drive import (FOLDER_MIME, PART_SUFFIX,
                     resolve_export_formats, safe_name)
-from .security import safe_join
+from .security import data_dir_ignore_patterns, is_data_dir, safe_join
 
 GDOC_PREFIX = "application/vnd.google-apps."
 CONFLICT_TAG = "%Y%m%d-%H%M%S"
@@ -973,8 +973,17 @@ def scan_pair_state(store, cfg, pair, drive, force_full=False, changes=None,
         stats.errors += 1
         return ScanResult(local_root=local_root, stats=stats,
                           error=f"local path missing: {local_root}")
+    if is_data_dir(local_root):
+        # a pair created before add_pair refused this: never scan it
+        stats.errors += 1
+        return ScanResult(local_root=local_root, stats=stats, error=(
+            "local path is DriveSync's own data directory (OAuth tokens "
+            "and client secret) — remove this pair"))
 
     patterns = list(cfg.get("ignore_patterns", []))
+    # never sync our own data dir, even when the pair root is an ancestor
+    # (e.g. $HOME): state.db holds the refresh tokens
+    patterns += data_dir_ignore_patterns(local_root)
     include = parse_include_patterns(pair["include_patterns"])
     export_map = resolve_export_formats(cfg)
     base_rows = store.base_entries(pair["id"])

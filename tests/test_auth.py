@@ -196,3 +196,124 @@ def test_interactive_auth_uses_pkce_s256(monkeypatch):
     assert params["code_challenge_method"] == ["S256"]
     assert params["code_challenge"][0]
     assert tokens["code_verifier"]
+
+
+# ------------------------------------------------- loopback callback handler
+def _serve_callback(expected_state="S"):
+    import threading
+
+    server = auth._CallbackServer(0)
+    server.expected_state = expected_state
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{port}"
+
+
+def _get(url):
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_callback_ignores_requests_without_code_or_error():
+    server, base = _serve_callback()
+    try:
+        assert _get(base + "/favicon.ico") == 404
+        assert server.result == {}
+        assert _get(base + "/?code=abc&state=S") == 200
+        # a stray request after the real callback must not wipe it
+        assert _get(base + "/favicon.ico") == 404
+        assert server.result["code"] == "abc"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_callback_rejects_wrong_state_without_overwriting():
+    server, base = _serve_callback("S")
+    try:
+        assert _get(base + "/?code=forged&state=EVIL") == 400
+        assert server.result == {}
+        assert _get(base + "/?code=real&state=S") == 200
+        assert _get(base + "/?code=forged&state=EVIL") == 400
+        assert _get(base + "/?code=replay&state=S") == 200   # replay ignored
+        assert server.result["code"] == "real"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_callback_records_error_with_matching_state():
+    server, base = _serve_callback("S")
+    try:
+        assert _get(base + "/?error=access_denied&state=S") == 200
+        assert server.result["error"] == "access_denied"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_interactive_auth_timeout_is_reported_as_timeout(monkeypatch):
+    class FakeServer:
+        def __init__(self, port):
+            self.server_address = ("127.0.0.1", 45678)
+            self.result = {}
+
+        def serve_forever(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            pass
+
+    clock = {"t": 1000.0}
+
+    def fake_time():
+        clock["t"] += 200.0       # every poll jumps past the deadline
+        return clock["t"]
+
+    monkeypatch.setattr(auth, "_CallbackServer", FakeServer)
+    monkeypatch.setattr(auth.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(auth.time, "time", fake_time)
+    monkeypatch.setattr(auth.time, "sleep", lambda s: None)
+    with pytest.raises(auth.AuthError, match="Timed out"):
+        auth.interactive_auth({"client_id": "cid", "client_secret": "csec"})
+
+
+# ------------------------------------------------------- dead refresh tokens
+def test_invalid_grant_means_reauth_required(monkeypatch):
+    monkeypatch.setattr(
+        auth.requests, "post",
+        lambda url, data, timeout: FakeResp(
+            400, {"error": "invalid_grant",
+                  "error_description": "Token has been expired or revoked."}))
+    with pytest.raises(auth.ReauthRequired) as exc:
+        auth.refresh_tokens("cid", "csec", "dead")
+    assert "Reconnect" in str(exc.value) and "Testing" in str(exc.value)
+    assert isinstance(exc.value, auth.AuthError)   # old handlers still match
+
+
+def test_other_refresh_failures_are_not_reauth(monkeypatch):
+    for status, body in ((500, {"error": "backend_error"}),
+                         (400, {"error": "invalid_client"}),
+                         (503, "not json")):
+        monkeypatch.setattr(
+            auth.requests, "post",
+            lambda url, data, timeout, s=status, b=body: FakeResp(s, b))
+        with pytest.raises(auth.AuthError) as exc:
+            auth.refresh_tokens("cid", "csec", "r")
+        assert not isinstance(exc.value, auth.ReauthRequired)
+
+
+def test_missing_credentials_need_reauth():
+    with pytest.raises(auth.ReauthRequired):
+        auth.access_token({})
+    with pytest.raises(auth.ReauthRequired):
+        auth.access_token({"refresh_token": "r"})
