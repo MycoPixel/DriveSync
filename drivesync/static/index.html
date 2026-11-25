@@ -402,6 +402,18 @@
           <input id="setConcurrency" type="number" min="1" max="16">
         </label>
         <label>
+          <span data-i18n-html="set.retries">Retry attempts <span class="muted">(extra tries for a failed transfer, 0–10)</span></span>
+          <input id="setRetries" type="number" min="0" max="10">
+        </label>
+        <label>
+          <span data-i18n-html="set.backoff">Retry backoff <span class="muted">(seconds before the first retry; doubles each time, max 30 s)</span></span>
+          <input id="setRetryBase" type="number" min="0" max="30" step="0.5">
+        </label>
+        <label>
+          <span data-i18n-html="set.resumable">Resumable upload threshold <span class="muted">(MiB; files at least this big upload in resumable sessions; 0 = always)</span></span>
+          <input id="setResumable" type="number" min="0" max="512" step="any">
+        </label>
+        <label>
           <span data-i18n-html="set.history">Kept versions per file <span class="muted">(the previous local version is saved before a pull overwrites a file; 0 = off)</span></span>
           <input id="setHistory" type="number" min="0" max="100">
         </label>

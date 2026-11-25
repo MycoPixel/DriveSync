@@ -5,6 +5,26 @@ Older entries below 0.2.1 are summarized from the git history.
 
 ## [Unreleased]
 
+### Added
+- **The desktop Options now has every sync option the web Settings page
+  has.** Options > Sync gains an **Advanced sync** section: parallel
+  transfers, kept versions per file, delete safety limit, default conflict
+  policy, instant local-change sync, Drive changes feed, Google Docs
+  conversion and ignore patterns (Spanish translations included). The web
+  page gains retry attempts, retry backoff and the resumable-upload
+  threshold, which only the desktop app had. `tests/test_settings_parity.py`
+  fails if the two drift apart again.
+
+### Fixed
+- **The desktop Options > Transfers values (retry attempts, backoff,
+  resumable threshold) were never saved.** The three keys were missing from
+  the config defaults and `save_config` drops unknown keys, so every change
+  was discarded, and a value edited by hand in `config.json` was wiped the
+  next time any setting was saved. They are now real settings, validated
+  (0-10 retries, 0-30 s backoff, 0-512 MiB threshold), and a threshold that
+  is not a whole number of MiB is no longer rounded when you edit another
+  field.
+
 ### Security
 - **A sync pair can no longer include DriveSync's own data directory.**
   `~/.local/share/drivesync` holds `state.db` (OAuth refresh tokens) and

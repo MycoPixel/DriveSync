@@ -54,6 +54,27 @@ _STRINGS = {
     "Retry attempts": "Reintentos",
     "Backoff base (seconds)": "Base de espera (segundos)",
     "Resumable threshold (MiB)": "Umbral reanudable (MiB)",
+    "Advanced sync": "Sincronización avanzada",
+    "Same options as the web dashboard's Settings page. Applies from the next sync pass.":
+        "Las mismas opciones que la página Ajustes del panel web. Se aplican desde la próxima pasada.",
+    "Parallel transfers (1–16)": "Transferencias en paralelo (1–16)",
+    "Kept versions per file (0 = off)": "Versiones guardadas por archivo (0 = apagado)",
+    "Delete safety limit (per pair per pass; 0 = unlimited)":
+        "Límite de seguridad de borrados (por par por pasada; 0 = sin límite)",
+    "Default conflict policy": "Política de conflictos por defecto",
+    "Keep newer file": "Conservar el más reciente",
+    "Keep local copy": "Conservar la copia local",
+    "Keep remote copy": "Conservar la copia en Drive",
+    "Keep both copies": "Conservar ambas copias",
+    "Sync local changes instantly": "Sincronizar cambios locales al instante",
+    "Used by 'drivesync serve' (needs watchdog). The desktop window does not watch folders itself; this takes effect the next time serve starts.":
+        "Lo usa 'drivesync serve' (necesita watchdog). La ventana de escritorio no vigila carpetas por sí misma; se aplica la próxima vez que se inicie serve.",
+    "Use the Drive changes feed (off = full relist every pass)":
+        "Usar el feed de cambios de Drive (apagado = relistar todo cada pasada)",
+    "Convert Google Docs/Sheets/Slides to Office files":
+        "Convertir Docs/Sheets/Slides de Google a archivos Office",
+    "Ignore patterns (one per line, glob style)":
+        "Patrones a ignorar (uno por línea, estilo glob)",
     "Sync schedule": "Horario de sincronización",
     "Background passes run only inside the active window; inside the peak window a separate bandwidth cap applies.":
         "Las pasadas en segundo plano solo se ejecutan dentro de la ventana activa; dentro del horario punta se aplica un límite de ancho de banda independiente.",

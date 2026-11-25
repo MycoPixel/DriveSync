@@ -884,6 +884,9 @@ class DesktopApp:
         self.sp_threshold.set_value(
             round(max(0, _cfg_int(self.cfg, "resumable_threshold",
                                   8 << 20)) / (1 << 20)))
+        # the spin shows whole MiB; remember what it showed so a hand-edited
+        # sub-MiB threshold is not rounded away when another field changes
+        self._thr_mib = int(self.sp_threshold.get_value())
         for i, (label_key, sp) in enumerate((
                 ("Retry attempts", self.sp_retries),
                 ("Backoff base (seconds)", self.sp_backoff),
@@ -893,6 +896,113 @@ class DesktopApp:
             self._reg_accessible(sp, label_key)
             sp.connect("value-changed", self._on_transfer_option)
         box.pack_start(grid, False, False, 0)
+
+        # --- advanced sync (same options as the web Settings page) --------
+        box.pack_start(self._tr_label("Advanced sync", xalign=0,
+                                      halign=Gtk.Align.START), False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Same options as the web dashboard's Settings page. Applies "
+            "from the next sync pass."), False, False, 0)
+        adv = Gtk.Grid(column_spacing=12, row_spacing=6)
+        self.sp_conc = Gtk.SpinButton.new_with_range(1, 16, 1)
+        self.sp_hist = Gtk.SpinButton.new_with_range(0, 100, 1)
+        self.sp_dellimit = Gtk.SpinButton.new_with_range(0, 100000, 1)
+        self.sp_conc.set_value(min(16, max(1, _cfg_int(
+            self.cfg, "transfer_concurrency", 4))))
+        self.sp_hist.set_value(min(100, max(0, _cfg_int(
+            self.cfg, "history_versions", 10))))
+        self.sp_dellimit.set_value(min(100000, max(0, _cfg_int(
+            self.cfg, "delete_safety_limit", 10))))
+        for sp in (self.sp_conc, self.sp_hist, self.sp_dellimit):
+            sp.connect("value-changed", self._on_advanced_changed)
+
+        self.cmb_policy = Gtk.ComboBoxText()
+        policy_labels = ("Keep newer file", "Keep local copy",
+                         "Keep remote copy", "Keep both copies")
+        for key in policy_labels:
+            self.cmb_policy.append_text(i18n.t(key))
+        pol = self.cfg.get("conflict_policy", "newer")
+        self.cmb_policy.set_active(POLICIES.index(pol)
+                                   if pol in POLICIES else 0)
+        h_policy = self.cmb_policy.connect("changed",
+                                           self._on_advanced_changed)
+
+        def refill_policy():
+            """Re-label the items after a language switch, without
+            firing 'changed' (which would rewrite the config)."""
+            active = max(0, self.cmb_policy.get_active())
+            self.cmb_policy.handler_block(h_policy)
+            self.cmb_policy.remove_all()
+            for key in policy_labels:
+                self.cmb_policy.append_text(i18n.t(key))
+            self.cmb_policy.set_active(active)
+            self.cmb_policy.handler_unblock(h_policy)
+        self._reg_rebuilder(refill_policy)
+
+        for i, (label_key, wgt) in enumerate((
+                ("Parallel transfers (1–16)", self.sp_conc),
+                ("Kept versions per file (0 = off)", self.sp_hist),
+                ("Delete safety limit (per pair per pass; 0 = unlimited)",
+                 self.sp_dellimit),
+                ("Default conflict policy", self.cmb_policy))):
+            adv.attach(self._tr_label(label_key, xalign=0), 0, i, 1, 1)
+            adv.attach(wgt, 1, i, 1, 1)
+            self._reg_accessible(wgt, label_key)
+        box.pack_start(adv, False, False, 0)
+
+        self.chk_watch = Gtk.CheckButton(
+            label=i18n.t("Sync local changes instantly"))
+        self._reg(self.chk_watch, "set_label", "Sync local changes instantly")
+        self.chk_watch.set_active(bool(self.cfg.get("watch_enabled", True)))
+        self.chk_watch.connect("toggled", self._on_advanced_changed)
+        self._reg_accessible(self.chk_watch, "Sync local changes instantly")
+        box.pack_start(self.chk_watch, False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Used by 'drivesync serve' (needs watchdog). The desktop window "
+            "does not watch folders itself; this takes effect the next time "
+            "serve starts."), False, False, 0)
+        self.chk_incremental = Gtk.CheckButton(
+            label=i18n.t("Use the Drive changes feed (off = full relist "
+                         "every pass)"))
+        self._reg(self.chk_incremental, "set_label",
+                  "Use the Drive changes feed (off = full relist every pass)")
+        self.chk_incremental.set_active(
+            bool(self.cfg.get("incremental_scan", True)))
+        self.chk_incremental.connect("toggled", self._on_advanced_changed)
+        self._reg_accessible(
+            self.chk_incremental,
+            "Use the Drive changes feed (off = full relist every pass)")
+        box.pack_start(self.chk_incremental, False, False, 0)
+        self.chk_convert = Gtk.CheckButton(
+            label=i18n.t("Convert Google Docs/Sheets/Slides to Office files"))
+        self._reg(self.chk_convert, "set_label",
+                  "Convert Google Docs/Sheets/Slides to Office files")
+        self.chk_convert.set_active(
+            bool(self.cfg.get("convert_google_docs", True)))
+        self.chk_convert.connect("toggled", self._on_advanced_changed)
+        self._reg_accessible(
+            self.chk_convert,
+            "Convert Google Docs/Sheets/Slides to Office files")
+        box.pack_start(self.chk_convert, False, False, 0)
+
+        box.pack_start(self._tr_label(
+            "Ignore patterns (one per line, glob style)", xalign=0,
+            halign=Gtk.Align.START), False, False, 0)
+        self.txt_ignores = Gtk.TextView()
+        self.txt_ignores.set_monospace(True)
+        self.txt_ignores.set_wrap_mode(Gtk.WrapMode.NONE)
+        self.txt_ignores.get_buffer().set_text(
+            "\n".join(str(p) for p in
+                      (self.cfg.get("ignore_patterns") or [])))
+        # saved when the field loses focus, not on every keystroke
+        self.txt_ignores.connect("focus-out-event", self._on_advanced_changed)
+        self._reg_accessible(self.txt_ignores,
+                             "Ignore patterns (one per line, glob style)")
+        sw_ign = Gtk.ScrolledWindow()
+        sw_ign.set_shadow_type(Gtk.ShadowType.IN)
+        sw_ign.set_min_content_height(110)
+        sw_ign.add(self.txt_ignores)
+        box.pack_start(sw_ign, False, False, 0)
         return _scrollable(box)
 
     def _options_network_page(self):
@@ -1163,12 +1273,47 @@ class DesktopApp:
         The Worker reloads config each pass (config_source), so saved
         values apply from the next sync pass without a restart.
         """
-        self.cfg = update_config(
-            transfer_retries=int(self.sp_retries.get_value()),
-            transfer_retry_base=round(
+        changes = {
+            "transfer_retries": int(self.sp_retries.get_value()),
+            "transfer_retry_base": round(
                 float(self.sp_backoff.get_value()), 1),
-            resumable_threshold=(
-                int(self.sp_threshold.get_value()) * (1 << 20)))
+        }
+        mib = int(self.sp_threshold.get_value())
+        if mib != self._thr_mib:
+            # only when the user changed it: the spin shows whole MiB and
+            # must not round a hand-edited byte value on an unrelated edit
+            changes["resumable_threshold"] = mib * (1 << 20)
+            self._thr_mib = mib
+        try:
+            self.cfg = update_config(**changes)
+        except ValueError as exc:
+            self._error(str(exc))
+
+    def _on_advanced_changed(self, _w, *_args):
+        """Persist the Options > Advanced sync section (web parity).
+
+        Connected to spin buttons, a combo, check buttons and the ignore
+        patterns view's focus-out-event, so it accepts (and ignores) the
+        extra event argument and returns False to let GTK keep going.
+        The Worker reloads config each pass, so values apply from the
+        next sync pass.
+        """
+        buf = self.txt_ignores.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        patterns = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        try:
+            self.cfg = update_config(
+                transfer_concurrency=int(self.sp_conc.get_value()),
+                history_versions=int(self.sp_hist.get_value()),
+                delete_safety_limit=int(self.sp_dellimit.get_value()),
+                conflict_policy=POLICIES[max(0, self.cmb_policy.get_active())],
+                watch_enabled=bool(self.chk_watch.get_active()),
+                incremental_scan=bool(self.chk_incremental.get_active()),
+                convert_google_docs=bool(self.chk_convert.get_active()),
+                ignore_patterns=patterns)
+        except ValueError as exc:
+            self._error(str(exc))
+        return False
 
     def _on_autostart_toggled(self, sw, _pspec):
         on = sw.get_active()

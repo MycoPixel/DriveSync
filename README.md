@@ -293,6 +293,16 @@ The **Options** tab holds the personal settings:
 | Start at login | on/off | XDG autostart entry in `~/.config/autostart/drivesync.desktop` |
 | Stay in the system tray | on/off | Closing the window keeps the app running behind the tray icon (off = closing exits). Launching DriveSync again — including clicking a pinned KDE launcher — brings the hidden window back |
 
+The **Sync** sub-tab has the same sync options as the web dashboard's
+Settings page: the schedule and bandwidth limits, retry attempts, backoff and
+resumable-upload threshold, and an **Advanced sync** section with parallel
+transfers, kept versions per file, the delete safety limit, the default
+conflict policy, instant local-change sync, the Drive changes feed, Google
+Docs conversion and ignore patterns. They are stored in the same
+`config.json` keys, so a change in one UI shows up in the other. (Instant
+local-change sync is run by `drivesync serve`; the desktop window itself does
+not watch folders.)
+
 The app version lives on the Options tab's **About** card, not in the
 window title. Themes and accents are plain config keys (`theme`,
 `accent`, `language`, `start_at_login` in `config.json`), so `drivesync

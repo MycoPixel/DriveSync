@@ -220,3 +220,49 @@ def test_config_rejects_bad_appearance_values(tmp_path, monkeypatch,
     monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path))
     with pytest.raises(ValueError, match=frag):
         update_config(**kwargs)
+
+
+# ------------------------------------------- transfer settings must persist
+def test_transfer_settings_persist_and_reload(tmp_path, monkeypatch):
+    """Regression: transfer_retries / transfer_retry_base / resumable_threshold
+    were missing from DEFAULT_CONFIG, so save_config silently dropped them and
+    the GUI's Options > Transfers values never took effect."""
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path))
+    saved = update_config(transfer_retries=7, transfer_retry_base=5.5,
+                          resumable_threshold=64 << 20)
+    assert saved["transfer_retries"] == 7
+    again = load_config()
+    assert again["transfer_retries"] == 7
+    assert again["transfer_retry_base"] == 5.5
+    assert again["resumable_threshold"] == 64 << 20
+    # unrelated saves keep them (they used to be wiped on any save)
+    update_config(sync_interval=60)
+    assert load_config()["transfer_retries"] == 7
+
+
+def test_transfer_settings_defaults_match_the_engine(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path))
+    cfg = load_config()
+    assert (cfg["transfer_retries"], cfg["transfer_retry_base"],
+            cfg["resumable_threshold"]) == (2, 2.0, 8 << 20)
+
+
+@pytest.mark.parametrize("bad", [
+    {"transfer_retries": 11}, {"transfer_retries": -1},
+    {"transfer_retries": "x"}, {"transfer_retries": None.__class__},
+    {"transfer_retry_base": 31}, {"transfer_retry_base": -0.5},
+    {"transfer_retry_base": float("nan")},
+    {"transfer_retry_base": float("inf")},
+    {"resumable_threshold": -1}, {"resumable_threshold": (512 << 20) + 1},
+    {"resumable_threshold": "big"},
+])
+def test_transfer_settings_are_validated(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path))
+    with pytest.raises(ValueError):
+        update_config(**bad)
+
+
+def test_unknown_keys_are_still_dropped(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path))
+    update_config(not_a_setting=1)
+    assert "not_a_setting" not in load_config()
