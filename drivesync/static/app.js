@@ -132,6 +132,12 @@ const ES = {
     'Límite de seguridad de borrados <span class="muted">(máximo de borrados por par por ciclo; 0 = sin límite)</span>',
   "set.concurrency": 'Parallel transfers <span class="muted">(uploads/downloads at once, 1–16)</span>|' +
     'Transferencias en paralelo <span class="muted">(subidas/descargas a la vez, 1–16)</span>',
+  "set.retries": 'Retry attempts <span class="muted">(extra tries for a failed transfer, 0–10)</span>|' +
+    'Reintentos <span class="muted">(intentos extra para una transferencia fallida, 0–10)</span>',
+  "set.backoff": 'Retry backoff <span class="muted">(seconds before the first retry; doubles each time, max 30 s)</span>|' +
+    'Espera entre reintentos <span class="muted">(segundos antes del primer reintento; se duplica cada vez, máx. 30 s)</span>',
+  "set.resumable": 'Resumable upload threshold <span class="muted">(MiB; files at least this big upload in resumable sessions; 0 = always)</span>|' +
+    'Umbral de subida reanudable <span class="muted">(MiB; los archivos de este tamaño o más se suben en sesiones reanudables; 0 = siempre)</span>',
   "set.history": 'Kept versions per file <span class="muted">(the previous local version is saved before a pull overwrites a file; 0 = off)</span>|' +
     'Versiones guardadas por archivo <span class="muted">(la versión local anterior se guarda antes de que una descarga la sobrescriba; 0 = apagado)</span>',
   "set.bandwidth": 'Bandwidth limit <span class="muted">(KB/s shared by uploads + downloads; 0 = unlimited)</span>|' +
@@ -1893,6 +1899,7 @@ $("#eventBackdrop").addEventListener("click", (e) => {
 });
 
 /* ---------- settings ---------- */
+let _resumableLoaded = null;
 async function loadSettings() {
   try {
     const { settings } = await api("/api/settings");
@@ -1902,6 +1909,13 @@ async function loadSettings() {
     $("#setDeleteLimit").value = settings.delete_safety_limit;
     $("#setConcurrency").value = settings.transfer_concurrency;
     $("#setHistory").value = settings.history_versions ?? 10;
+    $("#setRetries").value = settings.transfer_retries ?? 2;
+    $("#setRetryBase").value = settings.transfer_retry_base ?? 2;
+    // shown in MiB; remember the exact byte value so saving an untouched
+    // field cannot round a hand-edited threshold (e.g. 1024 bytes) to 0
+    const thrRaw = settings.resumable_threshold ?? (8 << 20);
+    $("#setResumable").value = String(+(thrRaw / 1048576).toFixed(3));
+    _resumableLoaded = { raw: thrRaw, text: $("#setResumable").value };
     $("#setBandwidth").value = settings.bandwidth_limit_kb;
     $("#setPeakBandwidth").value = settings.bandwidth_limit_kb_peak ?? 0;
     $("#setActiveFrom").value = settings.active_from || "";
@@ -1935,6 +1949,11 @@ $("#settingsForm").addEventListener("submit", async (e) => {
         delete_safety_limit: +$("#setDeleteLimit").value,
         transfer_concurrency: +$("#setConcurrency").value,
         history_versions: +$("#setHistory").value,
+        transfer_retries: +$("#setRetries").value,
+        transfer_retry_base: +$("#setRetryBase").value,
+        resumable_threshold: (_resumableLoaded && $("#setResumable").value === _resumableLoaded.text)
+          ? _resumableLoaded.raw
+          : Math.round(+$("#setResumable").value * 1048576),
         bandwidth_limit_kb: +$("#setBandwidth").value,
         bandwidth_limit_kb_peak: +$("#setPeakBandwidth").value,
         active_from: $("#setActiveFrom").value,

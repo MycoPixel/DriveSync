@@ -10,6 +10,11 @@ DEFAULT_CONFIG = {
     "conflict_policy": "newer",   # newer | local | remote | both
     "delete_safety_limit": 10,    # max deletes per pair per pass; 0 = unlimited
     "transfer_concurrency": 4,    # parallel uploads/downloads per pass (1-16)
+    "transfer_retries": 2,        # extra attempts for a failed transfer (0-10)
+    "transfer_retry_base": 2.0,   # seconds; the wait doubles each retry,
+                                  # capped at 30 s (0-30)
+    "resumable_threshold": 8 << 20,  # bytes; uploads at least this big use
+                                     # resumable sessions (0 = always)
     "tray_enabled": True,         # system tray icon (needs pystray + pillow)
     "watch_enabled": True,        # instant local-change sync (needs watchdog)
     "bandwidth_limit_kb": 0,      # uploads+downloads cap in KB/s; 0 = unlimited
@@ -123,6 +128,33 @@ def save_config(cfg: dict) -> dict:
     if not (1 <= conc <= 16):
         raise ValueError("transfer_concurrency must be between 1 and 16")
     merged["transfer_concurrency"] = conc
+
+    # transfer resilience knobs. They were never in DEFAULT_CONFIG, and
+    # save_config drops unknown keys, so the GUI's Options > Transfers
+    # values were silently discarded (and hand-edited ones wiped on the
+    # next save). Ranges match the GUI spin buttons.
+    try:
+        retries = int(merged["transfer_retries"])
+    except (TypeError, ValueError):
+        raise ValueError("transfer_retries must be an integer")
+    if not (0 <= retries <= 10):
+        raise ValueError("transfer_retries must be between 0 and 10")
+    merged["transfer_retries"] = retries
+    try:
+        retry_base = float(merged["transfer_retry_base"])
+    except (TypeError, ValueError):
+        raise ValueError("transfer_retry_base must be a number (seconds)")
+    if not (0.0 <= retry_base <= 30.0):      # also rejects NaN / inf
+        raise ValueError("transfer_retry_base must be between 0 and 30 seconds")
+    merged["transfer_retry_base"] = round(retry_base, 1)
+    try:
+        threshold = int(merged["resumable_threshold"])
+    except (TypeError, ValueError):
+        raise ValueError("resumable_threshold must be an integer (bytes)")
+    if not (0 <= threshold <= 512 << 20):
+        raise ValueError(
+            "resumable_threshold must be between 0 and 536870912 bytes (512 MiB)")
+    merged["resumable_threshold"] = threshold
     merged["tray_enabled"] = bool(merged["tray_enabled"])
     merged["incremental_scan"] = bool(merged["incremental_scan"])
     merged["watch_enabled"] = bool(merged["watch_enabled"])
