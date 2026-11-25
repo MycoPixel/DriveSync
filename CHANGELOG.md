@@ -40,7 +40,10 @@ Older entries below 0.2.1 are summarized from the git history.
 
 ### Documentation
 - README: the OAuth consent screen should be set to **In production**.
-  In **Testing**, Google expires the sign-in after 7 days.
+  In **Testing**, Google expires the sign-in after 7 days. Publishing needs
+  a home page, a privacy policy link and an authorized domain on the
+  Branding page even without verification; the README now walks through it
+  and `PRIVACY.md` is a policy page that can be linked.
 
 ## [0.6.1] - 2026-11-24
 
