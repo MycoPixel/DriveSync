@@ -228,6 +228,8 @@ const ES = {
   "Last result": "Último resultado",
   "Last error": "Último error",
   "sign-in expired": "sesión expirada",
+  "account unavailable": "cuenta no disponible",
+  "Reconnect": "Reconectar",
   "{used} / {limit} used": "{used} / {limit} usados",
   "{used} used": "{used} usados",
   "No Google account connected yet.": "Aún no hay cuenta de Google conectada.",
@@ -711,12 +713,16 @@ async function loadDashboard() {
           const used = humanBytes(+q.usage || 0), limit = +q.limit || 0;
           const storage = limit ? T("{used} / {limit} used", { used, limit: humanBytes(limit) })
             : (used !== "—" ? T("{used} used", { used }) : "");
-          const extra = a.error ? ` · ${t("sign-in expired")}`
+          const extra = a.reauth_required ? ` · ${esc(t("sign-in expired"))}`
+            : a.error ? ` · ${esc(t("account unavailable"))}`
             : storage ? ` · ${esc(storage)}` : "";
+          const reconnect = a.reauth_required
+            ? ` <button class="btn ghost small" data-reconnect>${esc(t("Reconnect"))}</button>` : "";
           return `<div class="acct"><span>📮 ${esc(a.email)}</span>
-          <span class="muted small">${esc(a.name || "")}${extra}</span></div>`;
+          <span class="muted small" ${a.error ? `title="${esc(a.error)}"` : ""}>${esc(a.name || "")}${extra}</span>${reconnect}</div>`;
         }).join("")
       : `<p class="muted small">${esc(t("No Google account connected yet."))}</p>`;
+    bindReconnectButtons();
   } catch (e) { /* ignore */ }
 
   try {
@@ -762,11 +768,16 @@ async function loadAccounts() {
       ? accounts.map((a) => {
           const q = a.quota || {};
           const used = humanBytes(+q.usage || 0), limit = +q.limit || 0;
-          const storage = limit ? `${used} / ${humanBytes(limit)}` : used || "—";
+          const storage = a.reauth_required ? esc(t("sign-in expired"))
+            : a.error ? `<span title="${esc(a.error)}">${esc(t("account unavailable"))}</span>`
+            : limit ? `${used} / ${humanBytes(limit)}` : used || "—";
+          const reconnect = a.reauth_required
+            ? `<button class="btn small" data-reconnect>${esc(t("Reconnect"))}</button> ` : "";
           return `<tr><td>${a.id}</td><td>${esc(a.email)}</td><td>${storage}</td>
-            <td><button class="btn danger small" data-del-acct="${a.id}">${esc(t("Remove"))}</button></td></tr>`;
+            <td>${reconnect}<button class="btn danger small" data-del-acct="${a.id}">${esc(t("Remove"))}</button></td></tr>`;
         }).join("")
       : `<tr><td colspan="4" class="muted">${esc(t("No accounts connected."))}</td></tr>`;
+    bindReconnectButtons();
     document.querySelectorAll("[data-del-acct]").forEach((b) =>
       b.addEventListener("click", async () => {
         if (!confirm(t("Remove this account and all of its sync pairs?"))) return;
@@ -784,6 +795,25 @@ async function loadAccounts() {
     dsel.innerHTML = accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`).join("");
     if (dprev && accounts.some((a) => String(a.id) === dprev)) dsel.value = dprev;
   } catch (e) { /* ignore */ }
+}
+
+/* Re-authorize with the saved OAuth client. The server upserts the account
+   by e-mail, so the existing pairs keep working once Google confirms. */
+function bindReconnectButtons() {
+  document.querySelectorAll("[data-reconnect]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      toast(t("A Google window should open in your browser; approve access there…"));
+      try {
+        const { account } = await api("/api/accounts", { method: "POST", body: {} });
+        toast(T("Connected {email} 🎉", { email: account.email }));
+        loadAccounts();
+        loadDashboard();
+      } catch (err) {
+        toast(err.message);
+        btn.disabled = false;
+      }
+    }));
 }
 
 $("#authForm").addEventListener("submit", async (e) => {

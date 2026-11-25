@@ -9,11 +9,45 @@ both checks so call sites cannot drift.
 
 from __future__ import annotations
 
+import glob
 import os
 import stat
 from pathlib import Path
 
 from .config import app_dir, config_path, db_path
+
+
+def is_data_dir(path):
+    """True when `path` is DriveSync's own data directory.
+
+    That directory holds ``state.db`` (OAuth refresh tokens) and
+    ``config.json`` (the client secret); it must never be a sync root.
+    """
+    try:
+        return os.path.realpath(str(path)) == os.path.realpath(str(app_dir()))
+    except (OSError, ValueError):
+        return False
+
+
+def data_dir_ignore_patterns(local_root):
+    """Ignore patterns that keep the data directory out of a sync pair.
+
+    A pair rooted at an *ancestor* of the data directory (``$HOME`` is the
+    common case) would otherwise list ``state.db`` and ``config.json`` as
+    ordinary files and upload them to Drive. The patterns are applied to the
+    local walk and to the Drive listing alike, so a copy that an earlier
+    version already uploaded cannot be pulled back over the live database.
+    Returns ``[]`` when the data directory is not below the root.
+    """
+    try:
+        rel = os.path.relpath(os.path.realpath(str(app_dir())),
+                              os.path.realpath(str(local_root)))
+    except (OSError, ValueError):
+        return []
+    if rel in (".", "") or rel == ".." or rel.startswith(".." + os.sep):
+        return []
+    rel = glob.escape(rel.replace(os.sep, "/"))
+    return [rel, rel + "/*"]
 
 
 def safe_join(root, rel, allow_symlink_escape=False):

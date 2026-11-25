@@ -170,7 +170,9 @@ party ever sees your tokens.
    create/select a project.
 2. **APIs & Services → Library** → enable **Google Drive API**.
 3. **APIs & Services → OAuth consent screen** → External → fill the app name
-   and your email → add yourself as a **test user**.
+   and your email → add yourself as a **test user**. Then click **Publish app**
+   so the status becomes **In production** (see the note below — this avoids
+   having to sign in again every week).
 4. **APIs & Services → Credentials → Create credentials → OAuth client ID**
    → type **Desktop app**.
 5. Copy the **Client ID** and **Client secret**.
@@ -190,9 +192,14 @@ in `~/.local/share/drivesync/`.
 …or enter the credentials in the dashboard's **Accounts** tab instead — it
 stores them and starts the same consent flow in one step.
 
-> While your OAuth consent screen is in "testing" mode, only the users you
-> added as test users (i.e., you) can authorize — which is exactly what you
-> want for personal use.
+> **Testing vs. In production.** Google expires the sign-in of apps whose
+> consent screen is in **Testing** after **7 days**, so DriveSync would ask
+> you to *Reconnect* every week (it shows "sign-in expired" and a Reconnect
+> button in the dashboard). Setting the status to **In production** removes
+> that expiry. You do not need to submit the app for verification for
+> personal use: Google just shows the "unverified app" warning (click
+> *Advanced → Continue*) and limits the app to 100 users — you are the only
+> one. Your credentials are still your own and stay on your machine.
 
 ## Usage
 
