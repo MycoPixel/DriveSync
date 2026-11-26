@@ -10,17 +10,23 @@
 # Optional extras (installed separately when wanted): keyring, pystray,
 # pillow, PyGObject, fusepy.
 blinker==1.9.0
-certifi==2025.8.3
-charset-normalizer==3.4.3
+certifi==2026.10.18
+charset-normalizer==3.4.4
 click==8.1.8
 flask==3.1.3
-idna==3.10
+idna==3.18
 importlib-metadata==8.7.0 ; python_version < "3.10"
 itsdangerous==2.2.0
 jinja2==3.1.6
 markupsafe==3.0.2
-requests==2.32.5
-urllib3==2.5.0
+# Python 3.9 is EOL; the fixed requests/urllib3 releases require 3.10+.
+# The <3.10 pins are the newest releases that still install there, while
+# the audit job (3.14) covers the versions actually shipped to current
+# Pythons.
+requests==2.33.1 ; python_version >= "3.10"
+requests==2.32.5 ; python_version < "3.10"
+urllib3==2.8.0 ; python_version >= "3.10"
+urllib3==2.6.3 ; python_version < "3.10"
 watchdog==6.0.0
 werkzeug==3.1.9
 zipp==3.23.0 ; python_version < "3.10"
