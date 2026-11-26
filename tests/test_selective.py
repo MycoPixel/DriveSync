@@ -294,7 +294,7 @@ def client(tmp_path, monkeypatch):
     store = Store(tmp_path / "state.db")
     app = create_app(store, worker=None)
     c = app.test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     yield c, store
     store.close()
 
@@ -400,7 +400,7 @@ def test_cli_pairs_include_flags(home, capsys):
 # ---- GUI helpers (need PyGObject for the module import) -------------------
 def test_startup_page_logic(tmp_path, monkeypatch):
     pytest.importorskip("gi")
-    from drivesync.gui import PAGE_ACTIVITY, startup_page
+    from drivesync.gui import startup_page
 
     assert startup_page({}, []) == 1                       # Setup
     assert startup_page({"client_id": "x"}, []) == 2       # Accounts

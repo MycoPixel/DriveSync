@@ -102,21 +102,14 @@ main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 .muted{color:var(--muted)}
 .small{font-size:13px}
 
-/* Pair management: preserve every column on narrow screens and let the
-   table scroll, rather than hiding sync settings and status information. */
+/* Wide data tables (activity, Drive browser, recovery) scroll on narrow
+   screens rather than hiding columns. */
 .table-scroll{width:100%;overflow-x:auto;overscroll-behavior-x:contain}
-.pairs-table{min-width:1040px}
-.pairs-table th:last-child,.pairs-table td:last-child{min-width:220px}
-.pair-actions{display:flex;flex-direction:column;gap:6px;min-width:200px}
-.pair-actions-main,.pair-actions-review{display:flex;flex-wrap:wrap;gap:5px}
-.pair-actions-review{padding-top:5px;border-top:1px solid var(--line)}
-.pair-actions .btn{white-space:nowrap}
 
 @media (max-width:760px){
   .grid.two{grid-template-columns:1fr}
   main{padding:14px 14px 50px}
   .tabs,.topbar{padding-left:14px;padding-right:14px}
-  .pairs-table{min-width:1040px}
 }
 
 .form-grid label.check{flex-direction:row;align-items:center;gap:8px;font-weight:400;flex-wrap:wrap}
@@ -306,3 +299,44 @@ label.inline.grow input{width:100%}
 .break-all { word-break: break-all; }
 .min-w-search { min-width: 220px; }
 .pre-wrap { white-space: pre-wrap; word-break: break-word; }
+
+/* ---- accessibility -------------------------------------------------- */
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.tabs button[role="tab"]:focus-visible{outline-offset:-3px}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;
+    animation-iteration-count:1!important;transition-duration:.001ms!important;
+    scroll-behavior:auto!important}
+}
+
+/* ---- pair cards (replace the 10-column table) ----------------------- */
+.pairs-cards{display:flex;flex-direction:column;gap:12px}
+.pair-card{border:1px solid var(--line);border-radius:var(--radius);
+  padding:14px 16px;display:flex;flex-direction:column;gap:8px;background:var(--card)}
+.pair-card-head{display:flex;justify-content:space-between;align-items:flex-start;
+  gap:10px;flex-wrap:wrap}
+.pair-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.pair-paths{display:flex;flex-direction:column;gap:2px;font-size:14px}
+.pair-meta{font-size:12.5px}
+.chip{display:inline-flex;align-items:center;gap:4px;border-radius:999px;
+  padding:2px 9px;font-size:12px;font-weight:700;border:1px solid var(--line);
+  background:var(--bg);color:var(--ink);white-space:nowrap}
+.chip.state-on{background:rgba(54,200,87,.16);color:#1d9939;border-color:transparent}
+.chip.state-off{background:rgba(214,69,69,.13);color:var(--danger);border-color:transparent}
+.chip.state-warn{background:rgba(183,121,31,.16);color:#8a5a12;border-color:transparent}
+.chip.info{background:rgba(11,87,208,.10);color:var(--navy);border-color:transparent}
+.chip.error{background:rgba(214,69,69,.13);color:var(--danger);border-color:transparent}
+.pair-menu{position:relative}
+.pair-menu summary{list-style:none;cursor:pointer;display:inline-block}
+.pair-menu summary::-webkit-details-marker{display:none}
+.pair-menu-list{position:absolute;right:0;top:calc(100% + 6px);z-index:20;
+  display:flex;flex-direction:column;gap:6px;min-width:210px;padding:10px;
+  border:1px solid var(--line);border-radius:12px;background:var(--card);
+  box-shadow:0 12px 30px rgba(0,0,0,.18)}
+.pair-menu-list .btn{text-align:left;justify-content:flex-start}
+.toast-action{margin-left:14px;color:var(--accent);border-color:currentColor}
+.wizard-steps{margin:0 0 12px 20px;display:flex;flex-direction:column;gap:4px;
+  font-size:14px}
+.modal label.check{display:flex;flex-direction:row;align-items:center;gap:8px;
+  font-weight:400;flex-wrap:wrap}
+.modal label.check input{width:auto}

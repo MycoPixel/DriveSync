@@ -7,7 +7,6 @@ Plan/PlannedOp structure, ExecReport per-op outcomes, and the upgraded
 preview payload.
 """
 
-import pytest
 
 from drivesync.engine import build_plan, execute_plan, preview_pair, sync_pair
 

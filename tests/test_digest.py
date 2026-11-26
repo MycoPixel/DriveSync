@@ -8,14 +8,12 @@ The loop calls _maybe_digest every tick BEFORE the sync gates: a
 digest is a report about sync activity, not sync activity.
 """
 
-import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
 
 from drivesync import engine
 from drivesync.config import update_config
-from drivesync.db import Store
 from drivesync.worker import Worker
 
 
@@ -141,10 +139,22 @@ def test_disabled_is_inert(env):
     assert env.store.recent_events(limit=10, action="digest") == []
 
 
-def test_not_yet_due_schedules_without_sending(env, w):
-    fire = (datetime.now() + timedelta(hours=2)).strftime("%H:%M")
+def test_not_yet_due_schedules_without_sending(env, w, monkeypatch):
+    """A fire time later today must only schedule, never send.
+
+    Pin the clock: ``now + 2h`` wraps past midnight when the test runs
+    after 22:00, which made the fire time look already due.
+    """
+    fixed = datetime(2026, 11, 25, 10, 0, 0)
+
+    class FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed if tz is None else fixed.replace(tzinfo=tz)
+
+    monkeypatch.setattr("drivesync.worker.datetime", FakeDatetime)
     worker = Worker(env.store, {"digest_enabled": True,
-                                "digest_time": fire})
+                                "digest_time": "12:00"})
     worker._maybe_digest()
     assert worker.sent == [] if hasattr(worker, "sent") else True
     assert worker.status["digest"]["next_at"] is not None
@@ -264,7 +274,7 @@ def test_e2e_settings_roundtrip_and_live_digest(env):
     from drivesync.server import create_app
     app = create_app(env.store, worker=worker)
     c = app.test_client()
-    c.environ_base = {"HTTP_X_DRIVESYNC": "1"}
+    c.environ_base = {"HTTP_X_DRIVESYNC": app.config["API_TOKEN"]}
 
     r = c.post("/api/settings", json={
         "digest_enabled": True, "digest_time": "06:30",

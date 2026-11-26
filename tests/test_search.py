@@ -102,7 +102,7 @@ def client(tmp_path, monkeypatch):
                                          "expires_at": time.time() + 3600})
     app = create_app(store, worker=None)
     c = app.test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     yield c, store
     store.close()
 

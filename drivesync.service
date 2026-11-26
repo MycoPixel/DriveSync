@@ -14,5 +14,19 @@ ExecStart=__VENV__/bin/python -m drivesync serve
 Restart=on-failure
 RestartSec=10
 
+# Sandboxing. The worker only needs the user's home (sync folders, config,
+# SQLite DB) and outbound HTTPS to Google, so keep everything else out of
+# reach. ProtectHome must stay off: syncing files under ~ is the whole job.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=off
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
 [Install]
 WantedBy=default.target

@@ -17,7 +17,7 @@ def client(tmp_path, monkeypatch):
     store = Store(tmp_path / "state.db")
     app = create_app(store, worker=None)
     c = app.test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     yield c, store
     store.close()
 

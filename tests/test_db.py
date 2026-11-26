@@ -301,3 +301,59 @@ def test_to_local_renders_local_timezone():
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", out)
     # parsing back as local wall time must give the same instant
     assert datetime.fromisoformat(out).astimezone().timestamp() == utc_dt.timestamp()
+
+
+# ---- optional OS keyring storage -------------------------------------------
+def _fake_keyring(monkeypatch):
+    """Install a tiny in-memory keyring module."""
+    import sys
+    import types
+
+    saved = {}
+    mod = types.ModuleType("keyring")
+    mod.get_keyring = lambda: object()
+    mod.set_password = lambda service, user, pw: saved.__setitem__(
+        (service, user), pw)
+    mod.get_password = lambda service, user: saved.get((service, user))
+    mod.delete_password = lambda service, user: saved.pop((service, user),
+                                                          None)
+    monkeypatch.setitem(sys.modules, "keyring", mod)
+    return saved
+
+
+def test_keyring_stores_only_a_marker_in_sqlite(store, monkeypatch):
+    import json
+    _fake_keyring(monkeypatch)
+    assert store.configure_keyring(True) is True
+    store.add_account("me@example.com", {"refresh_token": "secret"})
+
+    raw = store._exec("SELECT token_json FROM accounts WHERE email=?",
+                      ("me@example.com",)).fetchone()["token_json"]
+    assert json.loads(raw) == {"keyring": True}
+    # reads still return the hydrated token to callers
+    token = json.loads(store.account(1)["token_json"])
+    assert token["refresh_token"] == "secret"
+
+
+def test_enabling_keyring_migrates_existing_plaintext_tokens(
+        store, monkeypatch):
+    import json
+    store.add_account("old@example.com", {"refresh_token": "r"})
+    _fake_keyring(monkeypatch)
+    assert store.configure_keyring(True) is True
+    raw = store._exec("SELECT token_json FROM accounts WHERE email=?",
+                      ("old@example.com",)).fetchone()["token_json"]
+    assert json.loads(raw) == {"keyring": True}
+    assert json.loads(store.account(1)["token_json"])["refresh_token"] == "r"
+
+
+def test_keyring_unavailable_falls_back_to_sqlite(store, monkeypatch):
+    import json
+    import sys
+    # None in sys.modules makes `import keyring` raise ImportError.
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    assert store.configure_keyring(True) is False
+    store.add_account("me@example.com", {"refresh_token": "r"})
+    raw = store._exec("SELECT token_json FROM accounts WHERE email=?",
+                      ("me@example.com",)).fetchone()["token_json"]
+    assert json.loads(raw)["refresh_token"] == "r"

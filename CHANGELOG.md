@@ -5,15 +5,53 @@ Older entries below 0.2.1 are summarized from the git history.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-25
+
 ### Added
 - **The desktop Options now has every sync option the web Settings page
   has.** Options > Sync gains an **Advanced sync** section: parallel
   transfers, kept versions per file, delete safety limit, default conflict
   policy, instant local-change sync, Drive changes feed, Google Docs
-  conversion and ignore patterns (Spanish translations included). The web
-  page gains retry attempts, retry backoff and the resumable-upload
-  threshold, which only the desktop app had. `tests/test_settings_parity.py`
-  fails if the two drift apart again.
+  conversion, OS-keyring token storage and ignore patterns (Spanish
+  translations included). The web page gains retry attempts, retry backoff
+  and the resumable-upload threshold, which only the desktop app had.
+  `tests/test_settings_parity.py` fails if the two drift apart again.
+- **Sign-in no longer blocks the dashboard.** `POST /api/accounts` starts
+  a cancellable background job; the page polls it, offers **Cancel
+  sign-in**, and **Test connection** validates the OAuth client before
+  Google's consent page opens.
+- **Read-only Drive mode.** *Settings → Drive access* requests only
+  `drive.readonly` from Google and refuses to create or switch a pair to a
+  direction that would upload or delete on Drive. Existing pairs keep
+  syncing downloads.
+- **Optional OS keyring storage for OAuth tokens** (`keyring_tokens`).
+  Enabling it migrates existing tokens and leaves only a marker in SQLite;
+  without a keyring backend the setting falls back to the database.
+- **Friendly errors, in-app confirmations and undo.** The browser
+  `confirm()` calls are replaced by a styled, accessible dialog; removing
+  an account can revoke its Google grant in the same step; removing a pair
+  can be undone for 60 seconds; pause/resume and the delete-safety toggle
+  also offer undo. API failures are translated into actionable messages.
+- **The pairs list is a card layout**, not a 10-column table: state,
+  direction, delete-safety and live transfer progress are chips, and each
+  card has a **More** menu for edit, open folder, open in Drive, conflicts,
+  scope, pause and remove. The page has proper tablist/tabpanel roles,
+  visible focus rings and reduced-motion support.
+- **Appearance (theme, accent, language) is shared with the desktop app**
+  through `config.json`; localStorage is only a fast first paint.
+
+### Changed
+- **Release engineering:** runtime dependencies are pinned in
+  `requirements.lock`, CI audits that lockfile, lints with a wider Ruff
+  rule set, installs and smoke-tests every built package
+  (`drivesync --version`), pins GitHub Actions to commit SHAs and the
+  Fedora container to a concrete tag, and publishes signed build
+  provenance for the release assets.
+- **The systemd user unit is sandboxed:** `NoNewPrivileges`, `PrivateTmp`,
+  `ProtectSystem=full`, restricted address families (AF_UNIX/INET/INET6),
+  `RestrictSUIDSGID`, locked personality and protected kernel tunables/
+  modules/control groups. `ProtectHome` stays off so sync roots under the
+  home directory remain writable.
 
 ### Fixed
 - **The desktop Options > Transfers values (retry attempts, backoff,
@@ -26,6 +64,13 @@ Older entries below 0.2.1 are summarized from the git history.
   field.
 
 ### Security
+- **The dashboard API now requires a random per-server token** instead of
+  the public `X-DriveSync: 1` header. The token is generated with
+  `secrets.token_urlsafe(32)` at startup and injected into the page the
+  server serves (or accepted as `Authorization: Bearer`); cross-site pages
+  cannot read it or set the header without a CORS preflight, which the
+  server never grants. Removing an account can also revoke its Google
+  grant, and keyring storage keeps refresh tokens out of SQLite.
 - **A sync pair can no longer include DriveSync's own data directory.**
   `~/.local/share/drivesync` holds `state.db` (OAuth refresh tokens) and
   `config.json` (the client secret). A pair rooted at an ancestor such as

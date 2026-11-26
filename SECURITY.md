@@ -23,12 +23,13 @@ unless they prefer otherwise.
 
 The valuable assets are:
 
-1. **Google OAuth refresh tokens** — stored in `state.db`; they grant
-   access to the user's Drive until revoked.
+1. **Google OAuth refresh tokens** — stored in `state.db` (or the OS
+   keyring when `keyring_tokens` is on); they grant access to the user's
+   Drive until revoked.
 2. **The user's local files** inside sync roots — the app may overwrite,
    move or delete them (always through the safety/recovery paths below).
-3. **The local dashboard** — an unauthenticated HTTP API on loopback that
-   can read tokens indirectly and mutate files.
+3. **The local dashboard** — a loopback HTTP API guarded by a random
+   per-process token; it can mutate files and trigger sign-in.
 
 Out of scope: a local attacker who can already read the user's home
 directory, a compromised Google account, and a compromised OS/browser.
@@ -47,16 +48,33 @@ directory, a compromised Google account, and a compromised OS/browser.
 - OAuth uses the installed-app loopback flow with **PKCE (S256)**, a random
   `state` value checked on the callback, and a short-lived local callback
   server bound to `127.0.0.1`.
+- **Read-only mode** (`drive_scope=readonly`) requests only
+  `drive.readonly` from Google and refuses to create or switch a pair to
+  any direction that would write to Drive.
+- Removing an account can **revoke its grant at Google** in the same step
+  (the Accounts dialog asks first), so a discarded token stops working
+  even if a backup of `state.db` survives.
+- **Optional OS keyring storage** (`keyring_tokens=true`) moves refresh
+  tokens out of SQLite into the desktop keyring (Secret Service / KWallet);
+  the database then holds only a `{"keyring": true}` marker. If no keyring
+  backend is available the setting is ignored and SQLite is used, so the
+  app never starts in a broken state.
 
 ### Local dashboard
 
 - `serve` refuses any `--host` that is not loopback
   (`127.0.0.1`, `::1`, `localhost`). `0.0.0.0`/`::` are coerced to
   loopback in the CLI and rejected by `run_server`.
-- Every `/api/*` request requires the `X-DriveSync: 1` header (a custom
-  header cannot be sent cross-origin without a CORS preflight, which the
-  server never grants), plus loopback `Host` and, when present, loopback
-  `Origin` checks. This blocks DNS rebinding and cross-site POSTs.
+- Every `/api/*` request requires a **random per-server token**
+  (`secrets.token_urlsafe(32)`), sent as `X-DriveSync` or as
+  `Authorization: Bearer …`. The dashboard receives it in a
+  `<meta name="drivesync-token">` tag on the page it serves; a cross-origin
+  page cannot read that tag and cannot set the custom header without a
+  CORS preflight, which the server never grants. Loopback `Host` and, when
+  present, loopback `Origin` checks run as well. This blocks DNS rebinding
+  and cross-site POSTs.
+- Sign-in runs as a cancellable background job; cancelling stops the
+  loopback callback server and no token is stored.
 - The API returns JSON errors, never tracebacks or token values.
 
 ### Destructive operations
@@ -77,10 +95,23 @@ directory, a compromised Google account, and a compromised OS/browser.
 
 ### Dependencies and releases
 
-- CI runs `pip-audit` against the application requirements on the release
-  interpreter.
+- Runtime dependencies are pinned in `requirements.lock`; CI installs that
+  file and runs `pip-audit -r requirements.lock` on the release
+  interpreter, so the audit covers exactly what users get.
+- CI runs a wider Ruff rule set (fatal errors plus unused/duplicate names
+  and mutable default arguments) configured in `pyproject.toml`.
 - Releases are built from tagged commits by GitHub Actions; the test matrix
-  must pass before the draft release is published.
+  must pass before the draft release is published. Actions are pinned to
+  commit SHAs and the Fedora container to a concrete release tag.
+- Every package is installed and smoke-tested (`drivesync --version`) on
+  the platform it targets before it is attached to the release.
+- The `publish` job emits **signed build provenance** for the deb, rpm,
+  AppImage and Flatpak assets, verifiable with `gh attestation verify`.
+- The shipped systemd user unit runs with `NoNewPrivileges`, a private
+  `/tmp`, a read-only system tree (`ProtectSystem=full`), restricted
+  address families (AF_UNIX/INET/INET6), `RestrictSUIDSGID` and locked
+  personality. `ProtectHome` stays off because syncing files under the
+  home directory is the app's purpose.
 - The Flatpak manifest uses the GNOME runtime and only adds Flask,
   requests and the app itself.
 
@@ -96,9 +127,13 @@ check failed.
 
 ## Known limitations
 
-- The dashboard has no user authentication. It is safe only because it is
-  loopback-only; do not put it behind a reverse proxy or expose the port.
+- The dashboard token is a CSRF/rebinding defense, not user
+  authentication: any process that can already read the user's session or
+  files can obtain it. It is safe only because it is loopback-only; do not
+  put it behind a reverse proxy or expose the port.
 - A user who can run code as the same account can read the tokens; file
   permissions protect against other local users, not a compromised session.
+  With `keyring_tokens` on, token theft additionally requires access to the
+  unlocked desktop keyring.
 - `drivesync mount` (FUSE) is read-only and still subject to the Drive
   account's own permissions.

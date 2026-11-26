@@ -120,7 +120,6 @@ def test_hold_survives_a_restart(tmp_path):
     """Recovery after application restart: the hold lives in the store, so
     a freshly opened Store sees it (the worker can die any time)."""
     from drivesync.db import Store
-    import drivesync.engine as engine
 
     store = Store(tmp_path / "state.db")
     local = tmp_path / "local"
@@ -265,8 +264,8 @@ def test_version_history_restores_an_overwritten_file(env, tmp_path,
     assert (env.local / "essay.txt").read_bytes() == b"remote rewrite"
     versions = recovery.list_versions(env.pair["id"], "essay.txt")
     assert len(versions) == 1                 # "draft one" was kept
-    result = recovery.restore_version(env.store, env.pair["id"], "essay.txt",
-                                      versions[0]["stamp"])
+    recovery.restore_version(env.store, env.pair["id"], "essay.txt",
+                             versions[0]["stamp"])
     assert (env.local / "essay.txt").read_bytes() == b"draft one"
     # the restore is itself undoable: the overwritten bytes were re-kept
     versions = recovery.list_versions(env.pair["id"], "essay.txt")
@@ -333,7 +332,7 @@ def client(tmp_path, monkeypatch):
     store = Store(tmp_path / "state.db")
     app = create_app(store, worker=None)
     c = app.test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     yield c, store
     store.close()
 

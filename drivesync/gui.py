@@ -46,7 +46,7 @@ from . import themes  # noqa: E402
 
 from . import __version__  # noqa: E402
 from .auth import (access_token_persisting, interactive_auth,  # noqa: E402
-                   token_from_json, whoami)
+                   revoke_token, token_from_json, whoami)
 from .config import app_dir, load_config, update_config  # noqa: E402
 from .db import Store, parse_include_patterns, to_local  # noqa: E402
 from .drive import (Drive, FOLDER_MIME, breadcrumbs, file_category,
@@ -285,11 +285,26 @@ class DesktopApp:
     def __init__(self):
         self.store = Store(app_dir() / "state.db")
         self.cfg = load_config()
+        try:
+            self.store.configure_keyring(self.cfg.get("keyring_tokens", False))
+        except Exception:
+            pass
         self.worker = Worker(self.store, self.cfg, config_source=load_config)
         self.worker.start()
         self._closing = False
         self.tray = None
+        self._watch_handle = None
         self._listener = None
+        # The desktop window now watches local folders too (the same
+        # watchdog-backed watcher `drivesync serve` uses). Without watchdog
+        # this is a no-op and the periodic scan still applies.
+        if self.cfg.get("watch_enabled", True):
+            try:
+                from . import watch
+                self._watch_handle, _msg = watch.start(
+                    self.worker, self.store, self.cfg)
+            except Exception:
+                self._watch_handle = None
         # i18n registries: persistent widgets whose text follows the
         # language switch (see _retranslate)
         self._tr = []            # (widget, setter_name, string_key)
@@ -958,9 +973,8 @@ class DesktopApp:
         self._reg_accessible(self.chk_watch, "Sync local changes instantly")
         box.pack_start(self.chk_watch, False, False, 0)
         box.pack_start(self._tr_dim(
-            "Used by 'drivesync serve' (needs watchdog). The desktop window "
-            "does not watch folders itself; this takes effect the next time "
-            "serve starts."), False, False, 0)
+            "Instant sync for local changes (needs watchdog). Applies to "
+            "the desktop window and 'drivesync serve'."), False, False, 0)
         self.chk_incremental = Gtk.CheckButton(
             label=i18n.t("Use the Drive changes feed (off = full relist "
                          "every pass)"))
@@ -973,6 +987,20 @@ class DesktopApp:
             self.chk_incremental,
             "Use the Drive changes feed (off = full relist every pass)")
         box.pack_start(self.chk_incremental, False, False, 0)
+        self.chk_keyring = Gtk.CheckButton(
+            label=i18n.t("Keep OAuth tokens in the OS keyring"))
+        self._reg(self.chk_keyring, "set_label",
+                  "Keep OAuth tokens in the OS keyring")
+        self.chk_keyring.set_active(
+            bool(self.cfg.get("keyring_tokens", False)))
+        self.chk_keyring.connect("toggled", self._on_advanced_changed)
+        self._reg_accessible(self.chk_keyring,
+                             "Keep OAuth tokens in the OS keyring")
+        box.pack_start(self.chk_keyring, False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Stores refresh tokens with the desktop keyring (needs the "
+            "'keyring' package). Off keeps them in the local database."),
+            False, False, 0)
         self.chk_convert = Gtk.CheckButton(
             label=i18n.t("Convert Google Docs/Sheets/Slides to Office files"))
         self._reg(self.chk_convert, "set_label",
@@ -1308,11 +1336,16 @@ class DesktopApp:
                 delete_safety_limit=int(self.sp_dellimit.get_value()),
                 conflict_policy=POLICIES[max(0, self.cmb_policy.get_active())],
                 watch_enabled=bool(self.chk_watch.get_active()),
+                keyring_tokens=bool(self.chk_keyring.get_active()),
                 incremental_scan=bool(self.chk_incremental.get_active()),
                 convert_google_docs=bool(self.chk_convert.get_active()),
                 ignore_patterns=patterns)
+            self.store.configure_keyring(
+                self.cfg.get("keyring_tokens", False))
         except ValueError as exc:
             self._error(str(exc))
+        except Exception:
+            pass          # a keyring hiccup must not break the Options page
         return False
 
     def _on_autostart_toggled(self, sw, _pspec):
@@ -1552,6 +1585,21 @@ class DesktopApp:
         row.pack_start(btn_rm, False, False, 0)
         box.pack_start(row, False, False, 0)
 
+        self.chk_readonly = Gtk.CheckButton(
+            label=i18n.t("Read-only Drive access (no uploads or deletions)"))
+        self._reg(self.chk_readonly, "set_label",
+                  "Read-only Drive access (no uploads or deletions)")
+        self.chk_readonly.set_active(
+            self.cfg.get("drive_scope") == "readonly")
+        self.chk_readonly.connect("toggled", self._on_scope_toggled)
+        self._reg_accessible(self.chk_readonly,
+                             "Read-only Drive access")
+        box.pack_start(self.chk_readonly, False, False, 0)
+        box.pack_start(self._tr_dim(
+            "Requests only Drive read access from Google. Reconnect an "
+            "account for the change to take effect; pairs that would upload "
+            "or delete are refused."), False, False, 0)
+
         note = self._tr_dim(
             "Google's consent page opens in your browser once per account "
             "— that step must happen on google.com. Tokens are stored "
@@ -1560,6 +1608,19 @@ class DesktopApp:
 
         self._refresh_accounts()
         return _card(box)
+
+    def _on_scope_toggled(self, chk):
+        scope = "readonly" if chk.get_active() else "full"
+        try:
+            self.cfg = update_config(drive_scope=scope)
+        except ValueError as exc:
+            self._error(str(exc))
+            chk.set_active(self.cfg.get("drive_scope") == "readonly")
+            return
+        if self.store.accounts():
+            self._info(i18n.t(
+                "Saved. Reconnect the account(s) for the new Drive scope to "
+                "take effect."))
 
     def _on_signin(self, _btn):
         self.btn_signin.set_sensitive(False)
@@ -1589,13 +1650,35 @@ class DesktopApp:
         if sel[1] is None:
             return
         acc_id = self.acc_store[sel[1]][0]
-        if self._confirm(i18n.T(
+        account = self.store.account(acc_id)
+        dlg = Gtk.MessageDialog(
+            transient_for=self.win, modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=i18n.T(
                 "Remove account #{acc_id}? Stored tokens are deleted; sync "
                 "pairs using it are kept but will pause until "
-                "re-authorized.", acc_id=acc_id)):
-            self.store.delete_account(acc_id)
-            self._refresh_accounts()
-            self._refresh_setup_status()
+                "re-authorized.", acc_id=acc_id))
+        chk = Gtk.CheckButton(label=i18n.t(
+            "Also revoke DriveSync's access at Google (recommended)"))
+        chk.set_active(True)
+        dlg.get_content_area().pack_start(chk, False, False, 0)
+        dlg.show_all()
+        answer = dlg.run()
+        revoke = chk.get_active()
+        dlg.destroy()
+        if answer != Gtk.ResponseType.OK:
+            return
+        token = token_from_json(account["token_json"]) if account else {}
+        self.store.delete_account(acc_id)
+        self._refresh_accounts()
+        self._refresh_setup_status()
+        if revoke:
+            ok, detail = revoke_token(token)
+            if not ok:
+                self._info(i18n.T(
+                    "Account removed, but Google revocation failed: "
+                    "{detail}", detail=detail))
 
     def _refresh_accounts(self):
         self.acc_store.clear()
@@ -3781,6 +3864,11 @@ class DesktopApp:
         try:
             if self._listener is not None:
                 self._listener.stop()
+        except Exception:
+            pass
+        try:
+            if self._watch_handle is not None:
+                self._watch_handle.stop()
         except Exception:
             pass
         try:

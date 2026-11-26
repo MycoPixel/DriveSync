@@ -7,20 +7,25 @@ so it must never be exposed to the network.
 import ipaddress
 import logging
 import os
+import secrets
+import subprocess
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, make_response, request, send_from_directory
 from werkzeug.exceptions import BadRequest, HTTPException
 
 from . import __version__
 from . import conflicts
 from . import engine
 from . import recovery
-from .auth import (AuthError, ReauthRequired, access_token_persisting,
-                   interactive_auth, token_from_json, whoami)
+from .auth import (AuthCancelled, AuthError, ReauthRequired,
+                   access_token_persisting, interactive_auth, revoke_token,
+                   token_from_json, validate_client, whoami)
 from .config import db_path, load_config, save_config
 from .db import Store, parse_include_patterns, to_local
 from .drive import (Drive, DriveError, FOLDER_MIME, breadcrumbs,
@@ -98,13 +103,48 @@ def _browser_rows(items):
     return out
 
 
-def create_app(store: Store, worker=None):
+def create_app(store: Store, worker=None, api_token=None):
     app = Flask(__name__, static_folder=None)
     app.config["JSON_SORT_KEYS"] = False
+    # A random per-server token replaces the old static X-DriveSync: 1
+    # header. The dashboard gets it from a <meta> tag injected into index.html;
+    # another local process can still read that page, but a blind script or a
+    # stale bookmark can no longer drive the API, and every restart rotates it.
+    token = api_token or secrets.token_urlsafe(32)
+    app.config["API_TOKEN"] = token
+
+    try:
+        store.configure_keyring(load_config().get("keyring_tokens", False))
+    except Exception:
+        pass
+
+    auth_jobs = {}
+    auth_jobs_lock = threading.Lock()
+    account_cache = {}
+    account_cache_lock = threading.Lock()
+    pair_undo = {}
+    pair_undo_lock = threading.Lock()
+
+    def _prune_auth_jobs():
+        cutoff = time.time() - 900
+        with auth_jobs_lock:
+            for key in [k for k, j in auth_jobs.items()
+                        if j.get("created", 0) < cutoff]:
+                auth_jobs.pop(key, None)
+
+    def _prune_pair_undo():
+        now = time.time()
+        with pair_undo_lock:
+            for key in [k for k, (expiry, _snap) in pair_undo.items()
+                        if expiry < now]:
+                pair_undo.pop(key, None)
 
     # ---- helpers --------------------------------------------------
-    def drive_for(account_id):
-        account = store.account(account_id)
+    def drive_for(account_id, account=None):
+        # Callers that already hold the row (the parallel accounts list)
+        # pass it in: sharing one SQLite connection across worker threads
+        # makes a second lookup racy for no benefit.
+        account = account or store.account(account_id)
         if not account:
             raise DriveError("account not found")
         token = token_from_json(account["token_json"])
@@ -162,8 +202,12 @@ def create_app(store: Store, worker=None):
         """
         if not request.path.startswith("/api/"):
             return None
-        if request.headers.get("X-DriveSync") != "1":
-            return api_error("missing X-DriveSync header", 403)
+        supplied = request.headers.get("X-DriveSync") or ""
+        bearer = (request.headers.get("Authorization") or "").removeprefix(
+            "Bearer ").strip()
+        if not (secrets.compare_digest(supplied, token)
+                or (bearer and secrets.compare_digest(bearer, token))):
+            return api_error("missing or invalid X-DriveSync token", 403)
         host = urlsplit("//" + (request.host or "")).hostname
         if host not in LOOPBACK:
             return api_error("unexpected Host header", 403)
@@ -176,7 +220,13 @@ def create_app(store: Store, worker=None):
     # ---- static UI -------------------------------------------------
     @app.get("/")
     def index():
-        return send_from_directory(STATIC_DIR, "index.html")
+        with open(os.path.join(STATIC_DIR, "index.html"),
+                  encoding="utf-8") as fh:
+            html = fh.read()
+        html = html.replace("__DRIVESYNC_API_TOKEN__", token)
+        resp = make_response(html)
+        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+        return resp
 
     @app.get("/<path:filename>")
     def static_files(filename):
@@ -198,12 +248,26 @@ def create_app(store: Store, worker=None):
     # ---- accounts --------------------------------------------------
     @app.get("/api/accounts")
     def accounts_list():
-        out = []
-        for a in store.accounts():
-            item = {"id": a["id"], "email": a["email"],
-                    "created_at": a["created_at"]}
+        """Accounts with quota, fetched in parallel and cached briefly.
+
+        Each Drive call costs a network round trip; the old serial loop made
+        a 5-account page wait for five. Cache the decorated rows for a minute
+        so tab switches and the 4-second dashboard refresh do not hammer
+        Drive (``?refresh=1`` bypasses it).
+        """
+        force = request.args.get("refresh") in ("1", "true")
+        now = time.time()
+
+        def fetch(account):
+            with account_cache_lock:
+                cached = account_cache.get(account["id"])
+            if not force and cached and cached[0] > now:
+                return cached[1]
+            item = {"id": account["id"], "email": account["email"],
+                    "created_at": account["created_at"]}
+            ttl = 60
             try:
-                about = drive_for(a["id"]).about()
+                about = drive_for(account["id"], account=account).about()
                 item["quota"] = about.get("storageQuota", {})
                 item["name"] = (about.get("user") or {}).get("displayName")
             except Exception as exc:
@@ -211,12 +275,29 @@ def create_app(store: Store, worker=None):
                 # only a dead sign-in needs the consent flow again; a
                 # network error or Drive outage clears up on its own
                 item["reauth_required"] = isinstance(exc, ReauthRequired)
-            out.append(item)
+                ttl = 15
+            with account_cache_lock:
+                account_cache[account["id"]] = (now + ttl, item)
+            return item
+
+        accounts = store.accounts()
+        if len(accounts) > 1:
+            with ThreadPoolExecutor(
+                    max_workers=min(4, len(accounts))) as pool:
+                out = list(pool.map(fetch, accounts))
+        else:
+            out = [fetch(a) for a in accounts]
         return jsonify({"ok": True, "accounts": out})
 
     @app.post("/api/accounts")
     def accounts_add():
-        """Store OAuth client credentials and start the consent flow."""
+        """Store OAuth client credentials and start the consent flow.
+
+        The browser redirect can take minutes, so the flow runs in a
+        background job and returns immediately. The UI polls
+        /api/accounts/auth/<job> and can cancel it.
+        """
+        _prune_auth_jobs()
         data = json_body()
         current = load_config()
         # the form may omit credentials (re-auth with the saved client):
@@ -226,20 +307,101 @@ def create_app(store: Store, worker=None):
             value = (data.get(key) or "").strip()
             if value:
                 updates[key] = value
-        cfg = save_config({**current, **updates})
+        # the auth form's scope selector applies to this sign-in and later
+        # ones; save_config() validates it.
+        scope = str(data.get("drive_scope") or "").strip().lower()
+        if scope:
+            updates["drive_scope"] = scope
         try:
-            tokens = interactive_auth(cfg)
-            email = whoami(tokens["access_token"]).get("emailAddress", "unknown")
-        except AuthError as exc:
+            cfg = save_config({**current, **updates})
+        except ValueError as exc:
             return api_error(exc)
-        row = store.add_account(email, tokens)
-        store.log(None, "account-added", "", email)
-        return jsonify({"ok": True, "account": {"id": row["id"], "email": email}})
+        if not cfg.get("client_id") or not cfg.get("client_secret"):
+            return api_error("Client ID and client secret are required.")
+        job_id = secrets.token_urlsafe(12)
+        cancel = threading.Event()
+        job = {"status": "pending", "cancel": cancel,
+               "created": time.time()}
+        with auth_jobs_lock:
+            auth_jobs[job_id] = job
+
+        def run_auth():
+            try:
+                tokens = interactive_auth(cfg, cancel_event=cancel)
+                email = whoami(tokens["access_token"]).get(
+                    "emailAddress", "unknown")
+                row = store.add_account(email, tokens)
+                store.log(None, "account-added", "", email)
+                with account_cache_lock:
+                    account_cache.clear()
+                job.update(status="done", account={"id": row["id"],
+                                                   "email": email})
+            except AuthCancelled as exc:
+                job.update(status="cancelled", error=str(exc))
+            except AuthError as exc:
+                job.update(status="error", error=str(exc))
+            except Exception as exc:      # keep the job readable, not a 500
+                job.update(status="error", error=str(exc))
+
+        threading.Thread(target=run_auth, daemon=True,
+                         name="drivesync-auth").start()
+        return jsonify({"ok": True, "job": job_id,
+                        "status": "pending"}), 202
+
+    @app.get("/api/accounts/auth/<job_id>")
+    def accounts_auth_status(job_id):
+        _prune_auth_jobs()
+        with auth_jobs_lock:
+            job = auth_jobs.get(job_id)
+            if job is None:
+                return api_error("sign-in job not found", 404)
+            out = {"status": job.get("status"), "error": job.get("error"),
+                   "account": job.get("account")}
+        return jsonify({"ok": True, **out})
+
+    @app.delete("/api/accounts/auth/<job_id>")
+    def accounts_auth_cancel(job_id):
+        with auth_jobs_lock:
+            job = auth_jobs.get(job_id)
+            if job is None:
+                return api_error("sign-in job not found", 404)
+            if job.get("status") == "pending":
+                job["cancel"].set()
+                job["status"] = "cancelled"
+        return jsonify({"ok": True, "status": "cancelled"})
+
+    @app.post("/api/oauth/test")
+    def oauth_test():
+        """Validate an OAuth client without starting the consent flow."""
+        data = json_body()
+        cfg = load_config()
+        client_id = (data.get("client_id") or cfg.get("client_id") or "").strip()
+        client_secret = (data.get("client_secret")
+                         or cfg.get("client_secret") or "").strip()
+        ok, message = validate_client(client_id, client_secret)
+        if not ok:
+            return api_error(message)
+        return jsonify({"ok": True, "message": message})
 
     @app.delete("/api/accounts/<int:account_id>")
     def accounts_delete(account_id):
+        data = request.get_json(silent=True) or {}
+        revoke = bool(data.get("revoke"))
+        account = store.account(account_id)
+        if account is None:
+            return api_error("account not found", 404)
+        token = token_from_json(account["token_json"])
         store.delete_account(account_id)
-        return jsonify({"ok": True})
+        with account_cache_lock:
+            account_cache.pop(account_id, None)
+        revoked = None
+        if revoke:
+            ok, detail = revoke_token(token)
+            revoked = {"ok": ok, "detail": detail}
+            store.log(None, "account-revoked" if ok else "revoke-failed",
+                      "", f"{account['email']}: {detail}",
+                      level="info" if ok else "error")
+        return jsonify({"ok": True, "revoked": revoked})
 
     # ---- drive browsing (folder picker + Drive browser) --------------
     @app.get("/api/drive/<int:account_id>/folders")
@@ -337,6 +499,15 @@ def create_app(store: Store, worker=None):
         last = None
         if worker is not None:
             last = (worker.status.get("pairs") or {}).get(p["id"])
+        progress = None
+        if worker is not None:
+            rows = [t for t in (worker.status.get("transfers") or [])
+                    if t.get("pair_id") == p["id"]
+                    and t.get("status") in ("queued", "uploading",
+                                            "downloading", "retrying")]
+            if rows:
+                total = sum(int(t.get("size") or 0) for t in rows)
+                progress = {"active": len(rows), "bytes": total}
         return {"id": p["id"], "account_id": p["account_id"],
                 "local_path": p["local_path"], "remote_id": p["remote_id"],
                 "remote_path": p["remote_path"], "direction": p["direction"],
@@ -352,7 +523,7 @@ def create_app(store: Store, worker=None):
                 "bandwidth_limit_kb_peak": p["bandwidth_limit_kb_peak"],
                 "include_patterns": parse_include_patterns(
                     p["include_patterns"]),
-                "last_sync": last}
+                "last_sync": last, "progress": progress}
 
     @app.get("/api/pairs")
     def pairs_list():
@@ -368,6 +539,13 @@ def create_app(store: Store, worker=None):
                 return api_error(f"local path is not a directory: {local}")
             account_id = _to_int(data["account_id"], "account_id")
             remote_id = data["remote_id"]
+            direction = data.get("direction", "bidirectional")
+            if load_config().get("drive_scope") == "readonly" \
+                    and direction != "download":
+                return api_error(
+                    "This install is authorized for read-only Drive access. "
+                    "Use the 'Download only' direction, or reconnect the "
+                    "account with full access in Settings.")
             # bind only to a real folder this account can see; a file id
             # would make the first pass fail in a confusing way
             try:
@@ -380,7 +558,7 @@ def create_app(store: Store, worker=None):
             pair = store.add_pair(
                 account_id, local, remote_id,
                 remote_path=data.get("remote_path", ""),
-                direction=data.get("direction", "bidirectional"),
+                direction=direction,
                 conflict_policy=data.get("conflict_policy")
                 or load_config()["conflict_policy"],
                 enabled=data.get("enabled", 1),
@@ -403,6 +581,11 @@ def create_app(store: Store, worker=None):
     @app.patch("/api/pairs/<int:pair_id>")
     def pairs_update(pair_id):
         data = json_body()
+        if load_config().get("drive_scope") == "readonly" \
+                and str(data.get("direction") or "download") != "download":
+            return api_error(
+                "This install is authorized for read-only Drive access; "
+                "pairs must stay in the 'Download only' direction.")
         try:
             pair = store.update_pair(pair_id, **data)
         except ValueError as exc:
@@ -411,8 +594,54 @@ def create_app(store: Store, worker=None):
 
     @app.delete("/api/pairs/<int:pair_id>")
     def pairs_delete(pair_id):
+        _prune_pair_undo()
+        snapshot = store.snapshot_pair(pair_id)
+        if snapshot is None:
+            return api_error("pair not found", 404)
         store.delete_pair(pair_id)
-        return jsonify({"ok": True})
+        undo = secrets.token_urlsafe(12)
+        with pair_undo_lock:
+            pair_undo[undo] = (time.time() + 60, snapshot)
+        return jsonify({"ok": True, "undo": undo,
+                        "pair": pair_json(snapshot["pair"])})
+
+    @app.post("/api/pairs/undo")
+    def pairs_undo():
+        """Undo a pair removal made in the last minute."""
+        _prune_pair_undo()
+        data = json_body()
+        undo = str(data.get("undo") or "")
+        with pair_undo_lock:
+            entry = pair_undo.pop(undo, None)
+        if entry is None:
+            return api_error("undo window expired", 410)
+        pair = store.restore_pair(entry[1])
+        if pair is None:
+            return api_error("could not restore the pair (id is in use)", 409)
+        store.log(pair["id"], "pair-restored", "",
+                  f"{pair['local_path']} <-> "
+                  f"{pair['remote_path'] or pair['remote_id']}")
+        if worker is not None:
+            worker.sync_now(pair["id"])
+        return jsonify({"ok": True, "pair": pair_json(pair)})
+
+    @app.post("/api/pairs/<int:pair_id>/open-folder")
+    def pairs_open_folder(pair_id):
+        """Open the pair's local folder with the desktop's file manager."""
+        pair = store.pair(pair_id)
+        if not pair:
+            return api_error("pair not found", 404)
+        path = pair["local_path"]
+        if not os.path.isdir(path):
+            return api_error(f"local folder does not exist: {path}", 404)
+        try:
+            subprocess.Popen(["xdg-open", path],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except (OSError, ValueError) as exc:
+            return api_error(f"could not open the folder: {exc}", 503)
+        return jsonify({"ok": True, "path": path})
 
     @app.post("/api/pairs/<int:pair_id>/sync")
     def pairs_sync(pair_id):
@@ -718,6 +947,10 @@ def create_app(store: Store, worker=None):
             cfg = save_config({**load_config(), **data})
         except ValueError as exc:
             return api_error(str(exc))
+        try:
+            store.configure_keyring(cfg.get("keyring_tokens", False))
+        except Exception:
+            pass
         if worker:
             worker.apply_config(cfg)
         return jsonify({"ok": True, "settings": _public_settings(cfg)})

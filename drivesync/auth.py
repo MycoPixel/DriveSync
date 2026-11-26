@@ -19,7 +19,23 @@ import requests
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 SCOPE = "https://www.googleapis.com/auth/drive"
+SCOPE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
+
+
+def scope_for(config):
+    """OAuth scope for this install: full access or read-only.
+
+    Read-only accounts can still browse and download, but Google refuses
+    every upload/delete/rename. The sync engine reports those failures as
+    ordinary Drive errors; the pair form warns before a writable pair is
+    created against a read-only scope.
+    """
+    if str(config.get("drive_scope") or "full").strip().lower() == "readonly":
+        return SCOPE_READONLY
+    return SCOPE
+
 
 ACCOUNT_KWARGS = ("access_type=offline", "prompt=consent",
                   "include_granted_scopes=true")
@@ -37,6 +53,10 @@ class ReauthRequired(AuthError):
     """The stored sign-in can no longer be refreshed: the user must
     authorize again. Distinct from a network blip or a Drive outage, which
     fix themselves and must not send anyone back through the consent flow."""
+
+
+class AuthCancelled(AuthError):
+    """The user cancelled the interactive consent flow."""
 
 
 REAUTH_HINT = (
@@ -112,11 +132,13 @@ def _client_credentials(config):
     return cid, csec
 
 
-def interactive_auth(config):
+def interactive_auth(config, cancel_event=None):
     """Run the installed-app flow; returns the full token dict.
 
     Opens the browser when possible; always prints the URL so it can be
-    pasted into a browser on a headless machine.
+    pasted into a browser on a headless machine. ``cancel_event`` (a
+    threading.Event) lets the dashboard's Cancel button abort the wait and
+    release the loopback callback port.
     """
     client_id, client_secret = _client_credentials(config)
     port = int(config.get("auth_port", 53137))
@@ -142,7 +164,7 @@ def interactive_auth(config):
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": SCOPE,
+        "scope": scope_for(config),
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
@@ -166,6 +188,8 @@ def interactive_auth(config):
         deadline = time.time() + 300  # 5 minutes to complete consent
         while time.time() < deadline and "code" not in server.result \
                 and "error" not in server.result:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AuthCancelled("Sign-in cancelled.")
             time.sleep(0.3)
     finally:
         server.shutdown()
@@ -305,6 +329,68 @@ def whoami(access_token_value):
     if resp.status_code != 200:
         raise AuthError(f"Could not read account info: {resp.text[:300]}")
     return resp.json().get("user", {})
+
+
+def revoke_token(token_json):
+    """Best-effort revocation of a stored Google grant.
+
+    Google keeps honoring a refresh token until it is revoked, even after
+    the local account row is deleted. This is deliberately best-effort:
+    removing the local account must succeed even when offline, so the
+    caller reports the outcome instead of failing the deletion.
+    """
+    token = (token_json or {}).get("refresh_token") \
+        or (token_json or {}).get("access_token")
+    if not token:
+        return False, "no token stored"
+    try:
+        resp = requests.post(REVOKE_URL, data={"token": token}, timeout=10)
+    except requests.RequestException as exc:
+        return False, f"could not reach Google ({exc.__class__.__name__})"
+    if resp.status_code in (200, 204):
+        return True, "revoked"
+    return False, f"Google answered HTTP {resp.status_code}"
+
+
+def validate_client(client_id, client_secret):
+    """Check an OAuth client without starting the consent flow.
+
+    A deliberate token exchange with a bogus code distinguishes a bad
+    client (``invalid_client`` / ``unauthorized_client``) from a good one
+    (Google answers ``invalid_grant`` because the code is fake). Returns
+    ``(ok, message)`` and never raises.
+    """
+    client_id = str(client_id or "").strip()
+    client_secret = str(client_secret or "").strip()
+    if not client_id or not client_secret:
+        return False, "Client ID and client secret are both required."
+    if not client_id.endswith(".apps.googleusercontent.com") \
+            or "." not in client_id:
+        return False, ("That does not look like a Google OAuth client ID "
+                       "(it should end with .apps.googleusercontent.com).")
+    try:
+        resp = requests.post(TOKEN_URL, data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": "drivesync-connection-test",
+            "grant_type": "authorization_code",
+            "redirect_uri": "http://127.0.0.1",
+        }, timeout=15)
+    except requests.RequestException as exc:
+        return False, ("Could not reach Google to test the credentials "
+                       f"({exc.__class__.__name__}). Check your connection.")
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    error = str(body.get("error") or "")
+    if error in ("invalid_client", "unauthorized_client"):
+        return False, ("Google rejected this client ID/secret. Copy them "
+                       "again from the OAuth client page (Desktop app type).")
+    if resp.status_code >= 500:
+        return False, "Google is having trouble right now; try again shortly."
+    # invalid_grant is expected for the fake code: the client itself is valid
+    return True, ("Credentials look valid. You can connect the account now.")
 
 
 def token_from_json(raw):

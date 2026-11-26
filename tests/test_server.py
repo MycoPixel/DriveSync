@@ -12,7 +12,7 @@ def client(tmp_path, monkeypatch):
     store = Store(tmp_path / "state.db")
     app = create_app(store, worker=None)
     c = app.test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     yield c, store
     store.close()
 
@@ -80,8 +80,9 @@ def test_transfer_queue_endpoint_returns_newest_first(client, tmp_path, monkeypa
         ]}
 
     from drivesync.server import create_app
-    c = create_app(store, worker=FakeWorker()).test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    app = create_app(store, worker=FakeWorker())
+    c = app.test_client()
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     try:
         rows = c.get("/api/transfers").get_json()["transfers"]
         assert [row["id"] for row in rows] == ["new", "old"]
@@ -151,12 +152,16 @@ def test_sync_without_worker_returns_503(client):
 
 def test_api_rejects_requests_without_csrf_header(client):
     """A cross-site page cannot send a custom header without a CORS
-    preflight, which this server never grants."""
+    preflight, which this server never grants; the value is a per-session
+    random token, not a constant."""
     c, _ = client
+    tok = c.application.config["API_TOKEN"]
     assert c.get("/api/health", headers={"X-DriveSync": "0"}).status_code == 403
-    assert c.get("/api/health", headers={"X-DriveSync": "1"}).status_code == 200
+    assert c.get("/api/health", headers={"X-DriveSync": "1"}).status_code == 403
+    assert c.get("/api/health", headers={"X-DriveSync": tok}).status_code == 200
     # the static UI stays readable (it contains no secrets)
     assert c.get("/", headers={"X-DriveSync": "0"}).status_code == 200
+    assert tok in c.get("/").get_data(as_text=True)
 
 
 def test_api_rejects_rebinding_host_and_cross_origin(client):
@@ -212,8 +217,9 @@ def test_drive_for_persists_refreshed_tokens(client, monkeypatch):
             return []
 
     monkeypatch.setattr("drivesync.server.Drive", FakeDrive)
-    c = create_app(store, worker=None).test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    app = create_app(store, worker=None)
+    c = app.test_client()
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     assert c.get("/api/drive/1/folders").get_json()["ok"] is True
 
     stored = json.loads(store.account(1)["token_json"])
@@ -230,8 +236,9 @@ def test_settings_post_hot_reloads_worker(client):
         def apply_config(self, cfg):
             seen.update(cfg)
 
-    c = create_app(store, worker=FakeWorker()).test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    app = create_app(store, worker=FakeWorker())
+    c = app.test_client()
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     resp = c.post("/api/settings", json={"sync_interval": 77})
     assert resp.get_json()["ok"]
     assert seen["sync_interval"] == 77
@@ -242,23 +249,84 @@ def test_accounts_add_keeps_saved_credentials(client, monkeypatch):
     c, _ = client
     from drivesync import config
     import drivesync.server as srv
+    import time
 
     config.update_config(client_id="cid", client_secret="csec")
     monkeypatch.setattr(srv, "interactive_auth",
-                        lambda cfg: {"access_token": "tok",
-                                     "refresh_token": "r"})
+                        lambda cfg, cancel_event=None: {
+                            "access_token": "tok", "refresh_token": "r"})
     monkeypatch.setattr(srv, "whoami",
                         lambda tok: {"emailAddress": "me@example.com"})
 
-    resp = c.post("/api/accounts", json={})
-    assert resp.get_json()["ok"]
+    def start_and_wait(body):
+        resp = c.post("/api/accounts", json=body)
+        assert resp.status_code == 202
+        job = resp.get_json()["job"]
+        for _ in range(100):
+            status = c.get(f"/api/accounts/auth/{job}").get_json()
+            if status["status"] in ("done", "error", "cancelled"):
+                return status
+            time.sleep(0.01)
+        raise AssertionError("sign-in job did not finish")
+
+    assert start_and_wait({})["status"] == "done"
     cfg = config.load_config()
     assert cfg["client_id"] == "cid" and cfg["client_secret"] == "csec"
 
-    c.post("/api/accounts", json={"client_id": "new",
-                                  "client_secret": "newsec"})
+    assert start_and_wait({"client_id": "new",
+                           "client_secret": "newsec"})["status"] == "done"
     cfg = config.load_config()
     assert cfg["client_id"] == "new" and cfg["client_secret"] == "newsec"
+
+
+def test_account_removal_can_revoke_the_google_grant(client, monkeypatch):
+    c, store = client
+    from drivesync import server as srv
+    store.add_account("me@example.com", {"access_token": "tok",
+                                         "refresh_token": "refresh"})
+    seen = {}
+    monkeypatch.setattr(srv, "revoke_token",
+                        lambda tok: (seen.update(tok) or (True, "revoked")))
+    resp = c.delete("/api/accounts/1", json={"revoke": True})
+    body = resp.get_json()
+    assert body["ok"] and body["revoked"]["ok"] is True
+    assert seen["refresh_token"] == "refresh"
+    assert store.account(1) is None
+
+
+def test_account_removal_without_revoke_leaves_the_grant(client, monkeypatch):
+    c, store = client
+    from drivesync import server as srv
+    store.add_account("me@example.com", {"refresh_token": "refresh"})
+    monkeypatch.setattr(srv, "revoke_token",
+                        lambda tok: (_ for _ in ()).throw(
+                            AssertionError("must not revoke")))
+    assert c.delete("/api/accounts/1").get_json()["revoked"] is None
+
+
+def test_oauth_test_endpoint_reports_bad_client(client, monkeypatch):
+    c, _ = client
+    from drivesync import server as srv
+    monkeypatch.setattr(srv, "validate_client",
+                        lambda cid, csec: (False, "bad client"))
+    resp = c.post("/api/oauth/test", json={"client_id": "x",
+                                           "client_secret": "y"})
+    assert resp.status_code == 400 and "bad client" in resp.get_json()["error"]
+
+
+def test_read_only_scope_refuses_writable_pairs(client, tmp_path, monkeypatch):
+    c, store = client
+    from drivesync import config
+    config.update_config(drive_scope="readonly")
+    fake_folder_drive(monkeypatch)
+    store.add_account("me@example.com", {})
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    resp = c.post("/api/pairs", json={
+        "account_id": 1, "local_path": str(docs), "remote_id": "abc",
+        "direction": "bidirectional"})
+    assert resp.status_code == 400
+    assert "read-only" in resp.get_json()["error"]
 
 
 def test_events_filter_param(client):
@@ -397,7 +465,7 @@ def test_pair_json_includes_last_sync(client, tmp_path, monkeypatch):
     docs.mkdir()
     app = create_app(store, worker=None)
     c2 = app.test_client()
-    c2.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c2.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     pair = c2.post("/api/pairs", json={
         "account_id": 1, "local_path": str(docs),
         "remote_id": "abc", "direction": "download"}).get_json()["pair"]
@@ -410,7 +478,7 @@ def test_pair_json_includes_last_sync(client, tmp_path, monkeypatch):
 
     app2 = create_app(store, worker=StubWorker())
     c3 = app2.test_client()
-    c3.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c3.environ_base["HTTP_X_DRIVESYNC"] = app2.config["API_TOKEN"]
     row = c3.get("/api/pairs").get_json()["pairs"][0]
     assert row["last_sync"]["ok"] is True
     assert row["last_sync"]["stats"]["pushed"] == 1
@@ -562,3 +630,107 @@ def test_accounts_flag_only_dead_sign_ins_as_reauth(client, monkeypatch):
     assert rows["dead@x.com"]["reauth_required"] is True
     assert rows["offline@x.com"]["reauth_required"] is False
     assert rows["offline@x.com"]["error"] == "network unreachable"
+
+
+# ---- async sign-in cancellation -------------------------------------------
+def test_sign_in_job_can_be_cancelled(client, monkeypatch):
+    c, _ = client
+    import threading
+    import time
+    from drivesync import config
+    import drivesync.server as srv
+
+    config.update_config(client_id="cid", client_secret="csec")
+    started = threading.Event()
+
+    def slow_auth(cfg, cancel_event=None):
+        started.set()
+        cancel_event.wait(2)
+        raise srv.AuthCancelled("cancelled by the user")
+
+    monkeypatch.setattr(srv, "interactive_auth", slow_auth)
+    resp = c.post("/api/accounts", json={})
+    assert resp.status_code == 202
+    job = resp.get_json()["job"]
+    assert started.wait(2)
+    assert c.delete(f"/api/accounts/auth/{job}").status_code == 200
+
+    status = None
+    for _ in range(100):
+        status = c.get(f"/api/accounts/auth/{job}").get_json()
+        if status["status"] in ("done", "error", "cancelled"):
+            break
+        time.sleep(0.01)
+    assert status["status"] == "cancelled"
+    assert c.get("/api/accounts").get_json()["accounts"] == []
+
+
+# ---- pair removal undo ----------------------------------------------------
+def test_pair_removal_can_be_undone_once(client, tmp_path):
+    c, store = client
+    store.add_account("me@example.com", {})
+    local = tmp_path / "docs"
+    local.mkdir()
+    pair = store.add_pair(1, str(local), "abc")
+    body = c.delete(f"/api/pairs/{pair['id']}").get_json()
+    assert body["ok"] and body["undo"]
+    assert c.get("/api/pairs").get_json()["pairs"] == []
+
+    restored = c.post("/api/pairs/undo", json={"undo": body["undo"]})
+    assert restored.status_code == 200
+    assert restored.get_json()["pair"]["id"] == pair["id"]
+    assert [p["id"] for p in c.get("/api/pairs").get_json()["pairs"]] == \
+        [pair["id"]]
+    # the token is single-use
+    assert c.post("/api/pairs/undo",
+                  json={"undo": body["undo"]}).status_code == 410
+
+
+def test_read_only_scope_keeps_existing_pairs_download_only(client, tmp_path):
+    c, store = client
+    from drivesync import config
+    config.update_config(drive_scope="readonly")
+    store.add_account("me@example.com", {})
+    pair = store.add_pair(1, str(tmp_path), "abc", direction="download")
+
+    refused = c.patch(f"/api/pairs/{pair['id']}",
+                      json={"direction": "upload"})
+    assert refused.status_code == 400
+    assert "read-only" in refused.get_json()["error"]
+
+    # non-direction edits (pause, delete toggle, ...) still work
+    assert c.patch(f"/api/pairs/{pair['id']}",
+                   json={"enabled": 0}).status_code == 200
+
+
+def test_sign_in_persists_the_selected_drive_scope(client, monkeypatch):
+    c, _ = client
+    import time
+    from drivesync import config
+    import drivesync.server as srv
+
+    config.update_config(client_id="cid", client_secret="csec")
+    monkeypatch.setattr(srv, "interactive_auth",
+                        lambda cfg, cancel_event=None: {
+                            "access_token": "tok", "refresh_token": "r"})
+    monkeypatch.setattr(srv, "whoami",
+                        lambda tok: {"emailAddress": "me@example.com"})
+    resp = c.post("/api/accounts", json={"drive_scope": "readonly"})
+    assert resp.status_code == 202
+    job = resp.get_json()["job"]
+    for _ in range(100):
+        status = c.get(f"/api/accounts/auth/{job}").get_json()
+        if status["status"] in ("done", "error", "cancelled"):
+            break
+        time.sleep(0.01)
+    assert status["status"] == "done"
+    assert config.load_config()["drive_scope"] == "readonly"
+
+
+def test_sign_in_rejects_an_unknown_drive_scope(client):
+    c, _ = client
+    from drivesync import config
+    config.update_config(client_id="cid", client_secret="csec")
+    resp = c.post("/api/accounts", json={"drive_scope": "write"})
+    assert resp.status_code == 400
+    assert "drive_scope" in resp.get_json()["error"]

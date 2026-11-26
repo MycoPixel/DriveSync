@@ -7,7 +7,6 @@ and mirrors the last detection into status["network"] for both UIs.
 DRIVE_SYNC_METERED is the env override (and the test hook).
 """
 
-import threading
 
 import pytest
 

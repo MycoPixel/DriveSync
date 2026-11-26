@@ -6,7 +6,7 @@
 # The package mirrors the .deb layout: python code in a private directory,
 # launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.6.1
+Version:        0.7.0
 # No distro release suffix: this is a noarch, pure-python package and a
 # host-specific tag made the artifact name differ per build machine for no
 # benefit. Keep release/name stable everywhere.
@@ -127,6 +127,16 @@ After=network-online.target
 ExecStart=/usr/bin/drivesync serve
 Restart=on-failure
 RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=off
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=default.target
@@ -157,6 +167,18 @@ EOF
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.7.0-1
+- Dashboard: random per-server API token, cancellable async sign-in,
+  OAuth client test, account revocation on removal and pair-removal undo
+- Read-only Drive mode (drive_scope=readonly) and optional OS-keyring
+  storage for OAuth tokens
+- Sync pairs are shown as cards with live progress and per-pair actions;
+  in-app confirmation dialogs, friendly errors and undo actions
+- The desktop app now watches local folders and shares appearance settings
+  (theme, accent, language) with the web dashboard
+- Sandboxed systemd user unit, dependency lockfile, wider linting,
+  package install smoke tests and signed release provenance
+
 * %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.6.1-1
 - RPM: install the app into a Python-version independent /usr/lib/drivesync
   vendor dir. A noarch package built in CI (fedora:latest, Python 3.15) put

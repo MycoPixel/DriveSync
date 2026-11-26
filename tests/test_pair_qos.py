@@ -10,7 +10,7 @@ from datetime import datetime, time as dtime
 
 import pytest
 
-from drivesync.db import Store, _validate_pair_qos
+from drivesync.db import _validate_pair_qos
 from drivesync import engine
 from drivesync.worker import Worker, in_window
 

@@ -113,8 +113,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.6.1-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.6.1-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.7.0-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.7.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -194,7 +194,12 @@ warning (normal for personal test apps), click *Continue*. Tokens are stored
 in `~/.local/share/drivesync/`.
 
 …or enter the credentials in the dashboard's **Accounts** tab instead — it
-stores them and starts the same consent flow in one step.
+stores them and starts the same consent flow in one step. The sign-in runs
+in the background: the page stays usable, **Cancel sign-in** stops waiting,
+and **Test connection** validates the client ID/secret before opening
+Google. Choose **Read-only** under *Drive access* to request only
+`drive.readonly`; DriveSync then refuses pairs that would upload or delete
+on Drive.
 
 ### Publishing the app
 
@@ -262,6 +267,10 @@ drivesync serve                 # foreground headless: dashboard + worker
 drivesync serve --open          # same, and it opens the dashboard in a browser
 systemctl --user enable --now drivesync   # or as a login service
 ```
+
+The shipped unit is sandboxed (`NoNewPrivileges`, `PrivateTmp`,
+`ProtectSystem=full`, restricted address families, …). `ProtectHome` stays
+off because sync roots live under your home directory.
 
 The desktop app (`drivesync gui`) is what the menu launcher opens: one GTK
 window with Setup / Accounts / Folders / Drive / Activity / Options tabs,
@@ -403,6 +412,8 @@ overwrite pull.
 | Convert Google Docs | on | Native docs downloaded as Office files |
 | Incremental scan | on | 1–2 API calls per pass via the changes feed |
 | Watch local changes | on | Instant push via inotify (needs watchdog) |
+| Drive access | `full` | `readonly` asks Google for `drive.readonly` and refuses any pair direction that writes to Drive |
+| OAuth token storage | database | `keyring_tokens` keeps refresh tokens in the OS keyring; the database holds only a marker |
 | Kept versions per file | 10 | Old local versions saved before a pull overwrites; 0 = off |
 | Bandwidth limit | 0 (unlimited) | KB/s cap on uploads + downloads combined |
 | Sync window | always | `active_from`/`active_to` HH:MM; overnight works |
@@ -526,8 +537,12 @@ the venv.
 
 ## Security
 
-OAuth tokens live in `state.db` (`0600`, data directory `0700`) and the
-dashboard is loopback-only with a custom-header CSRF check. Check an
+OAuth tokens live in `state.db` (`0600`, data directory `0700`) unless
+the **Keep OAuth tokens in the system keyring** setting moves them to the
+OS keyring (`keyring_tokens=true`). The dashboard is loopback-only and every API call
+needs the random per-server token embedded in the page (or sent as a
+Bearer token), which blocks cross-site requests and DNS rebinding. Removing
+an account can revoke its Google grant at the same time. Check an
 installation with:
 
 ```bash
@@ -555,9 +570,15 @@ or the client secret, and the FUSE mount is read-only by construction.
 ## Development
 
 ```bash
+python3 -m pip install -r requirements.lock pytest ruff
 python3 -m pytest tests/        # engine, store, config, CLI, API, GUI
+python3 -m ruff check drivesync tests   # rules live in pyproject.toml
 drivesync doctor                # environment check
 ```
+
+`requirements.lock` pins the exact runtime versions CI audits and release
+builds install; bump it deliberately when changing the ranges in
+`pyproject.toml`.
 
 The engine's decision step is a pure function (maps in, ops out) tested
 against a mock Drive — see `tests/test_engine.py` for the full matrix

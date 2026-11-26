@@ -48,6 +48,26 @@
   <icon type="theme">drivesync</icon>
   <icon type="stock">drivesync</icon>
   <releases>
+    <release version="0.7.0" date="2026-11-25">
+      <description>
+        <p>
+          Security and workflow release. The dashboard API now requires a
+          random per-server token, sign-in runs as a cancellable background
+          job, removing an account can revoke its Google grant, and pair
+          removals can be undone. Read-only Drive mode and optional OS
+          keyring token storage are available in both the web and desktop
+          settings.
+        </p>
+        <p>
+          The pairs list is now a card layout with live progress and
+          per-pair actions, browser confirmations were replaced by an
+          accessible dialog, and the desktop app watches local folders for
+          instant sync. The systemd user unit is sandboxed, releases are
+          built from a pinned dependency lockfile and now carry signed
+          build provenance.
+        </p>
+      </description>
+    </release>
     <release version="0.6.1" date="2026-11-24">
       <description>
         <p>

@@ -41,9 +41,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build .deb
         run: ./packaging/build-deb.sh
+      - name: Install and smoke-test the .deb
+        # Proves the package's dependencies resolve and the entry point
+        # actually starts, not just that dpkg-deb produced a file.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/*.deb
+          drivesync --version
       - name: Attach .deb to the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -54,15 +61,21 @@ jobs:
   rpm:
     needs: [prepare-release, tests]
     runs-on: ubuntu-latest
-    container: fedora:latest
+    # Pinned to a concrete release: `latest` silently changed Python (and
+    # therefore the package's site-packages path) between runs.
+    container: fedora:43
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install build tools
         run: dnf install -y rpm-build python3 git gh
       - name: Build .rpm
         run: ./packaging/build-rpm.sh
+      - name: Install and smoke-test the .rpm
+        run: |
+          dnf install -y ./dist/*.rpm
+          drivesync --version
       - name: Attach .rpm to the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -76,9 +89,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build AppImage
         run: ./packaging/build-appimage.sh
+      - name: Smoke-test the AppImage
+        # No FUSE on runners: extract-and-run exercises the bundled CPython.
+        run: APPIMAGE_EXTRACT_AND_RUN=1 ./dist/*.AppImage --version
       - name: Attach AppImage to the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -92,7 +108,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install flatpak-builder
         run: |
           sudo apt-get update
@@ -116,21 +132,22 @@ jobs:
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install flask requests pytest watchdog ruff pip-audit
-      - name: Upgrade build tools
-        run: python -m pip install --upgrade pip setuptools wheel
+      - name: Install the locked runtime and test tools
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.lock pytest ruff pip-audit
       - name: Audit the app's dependencies
-        # Audit once on the newest interpreter: on legacy Pythons (3.9) the
-        # resolver can only pick older requests/urllib3 versions whose fixes
-        # require a newer Python. Audit what we ship, not the CI toolchain.
+        # Audit the exact versions the lock installs; auditing requirements
+        # ranges can silently resolve to a different set than we ship.
         if: matrix.python-version == '3.14'
-        run: python -m pip_audit -r requirements.txt
-      - name: Lint (fatal errors only)
-        run: python -m ruff check --select E9,F63,F7,F82 drivesync tests
+        run: python -m pip_audit -r requirements.lock
+      - name: Lint
+        # Rule set lives in pyproject.toml so local runs and CI agree.
+        run: python -m ruff check drivesync tests
       - run: python -m pytest tests/ -q
 
   gui-smoke:
@@ -138,7 +155,7 @@ jobs:
     # job is the only place the real window is built (under a virtual display).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install GTK, PyGObject and a virtual display
         run: |
           sudo apt-get update
@@ -154,12 +171,24 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      id-token: write          # OIDC for the provenance attestation
+      attestations: write
     steps:
       - name: Download the release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: gh release download "$GITHUB_REF_NAME" --dir dist --clobber
+      - name: Attest build provenance
+        # Signed by GitHub's OIDC identity, so users can verify a download
+        # was produced by this workflow and tag.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/*.flatpak
       - name: Generate SHA-256 checksums
         run: |
           cd dist

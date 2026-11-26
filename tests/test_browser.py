@@ -240,7 +240,7 @@ def browser_client(tmp_path, monkeypatch):
         "access_token": "tok", "refresh_token": "r", "expires_at": 9e12})
     app = create_app(store, worker=None)
     c = app.test_client()
-    c.environ_base["HTTP_X_DRIVESYNC"] = "1"
+    c.environ_base["HTTP_X_DRIVESYNC"] = app.config["API_TOKEN"]
     yield c, store
     store.close()
 
@@ -447,7 +447,7 @@ def test_drive_row_shape_and_owner_column():
 def test_drive_type_and_sort_tables_stay_aligned():
     """The combo tables are index-aligned; a mismatch would silently show
     the wrong rows. Also every category token must have a Kind label."""
-    gi = pytest.importorskip("gi")
+    pytest.importorskip("gi")
 
     from drivesync import gui as gui_mod
     from drivesync.drive import file_category

@@ -2,32 +2,110 @@
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
+/* per-server random token injected into the page; the API rejects the old
+   static "1" header so a blind local script cannot drive it. */
+const API_TOKEN = document.querySelector('meta[name="drivesync-token"]')
+  ?.getAttribute("content") || "";
 /* escape every server value before it goes into innerHTML: file names,
    folder names and log messages are user/Drive-controlled text */
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
+
+/* Turn raw Google/network text into an actionable sentence. The server
+   still returns the precise error; this only decides how to phrase it. */
+function friendlyError(message) {
+  const raw = String(message || "").trim();
+  const low = raw.toLowerCase();
+  if (/invalid_grant|reauth|sign-in (has )?expired|no longer accepts/.test(low))
+    return t("Your Google sign-in expired. Open Accounts and press Reconnect.");
+  if (/quota|storagequota|storage quota/.test(low))
+    return t("Google Drive storage is full. Free some space, then retry.");
+  if (/rate.?limit|userratelimitexceeded|ratelimitexceeded|too many requests|429/.test(low))
+    return t("Google Drive is rate-limiting requests. Wait a minute and retry.");
+  if (/offline|connection|timed out|timeout|network is unreachable|name resolution|dns/.test(low))
+    return t("You appear to be offline, or Google Drive is unreachable. Check the connection and retry.");
+  if (/403|forbidden|permission/.test(low))
+    return t("Google refused that operation. Check the account's permissions and whether this is a read-only sign-in.");
+  if (/500|502|503|504|server error|backend error/.test(low))
+    return t("Google Drive is having trouble right now. Try again shortly.");
+  return raw;
+}
+
 const api = async (path, opts = {}) => {
   const resp = await fetch(path, {
     ...opts,
     headers: {
       "Content-Type": "application/json",
-      "X-DriveSync": "1",
+      "X-DriveSync": API_TOKEN,
       ...(opts.headers || {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await resp.json().catch(() => ({ ok: false, error: "bad JSON" }));
-  if (!resp.ok || data.ok === false) throw new Error(data.error || resp.statusText);
+  if (!resp.ok || data.ok === false) throw new Error(friendlyError(data.error || resp.statusText));
   return data;
 };
 
-function toast(msg, ms = 2600) {
+function toast(msg, ms = 2600, action = null) {
   const t = $("#toast");
-  t.textContent = msg;
+  t.textContent = "";
+  const text = document.createElement("span");
+  text.textContent = msg;
+  t.appendChild(text);
+  if (action) {
+    const btn = document.createElement("button");
+    btn.className = "btn ghost small toast-action";
+    btn.textContent = action.label;
+    btn.addEventListener("click", () => {
+      t.classList.add("hidden");
+      action.run();
+    });
+    t.appendChild(btn);
+    ms = Math.max(ms, 6000);
+  }
   t.classList.remove("hidden");
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.add("hidden"), ms);
+}
+
+/* In-app confirmation modal (the browser's confirm() is blocking, ugly and
+   impossible to style). Resolves true/false; optional checkbox result is
+   available as the second argument of the resolved object. */
+function confirmDialog({ title, text, yes = "Continue", no = "Cancel",
+                        check = null, danger = false }) {
+  return new Promise((resolve) => {
+    const back = $("#confirmBackdrop");
+    const done = (ok) => {
+      back.classList.add("hidden");
+      $("#confirmYes").classList.remove("danger");
+      $("#confirmYes").classList.add("primary");
+      resolve({ ok, checked: $("#confirmCheck").checked });
+    };
+    $("#confirmTitle").textContent = title || t("Confirm");
+    $("#confirmText").textContent = text || "";
+    $("#confirmYes").textContent = t(yes);
+    $("#confirmNo").textContent = t(no);
+    if (danger) {
+      $("#confirmYes").classList.remove("primary");
+      $("#confirmYes").classList.add("danger");
+    }
+    const row = $("#confirmCheckRow");
+    if (check) {
+      row.classList.remove("hidden");
+      $("#confirmCheckLabel").textContent = t(check.label);
+      $("#confirmCheck").checked = !!check.checked;
+    } else {
+      row.classList.add("hidden");
+      $("#confirmCheck").checked = false;
+    }
+    $("#confirmYes").onclick = () => done(true);
+    $("#confirmNo").onclick = () => done(false);
+    $("#confirmClose").onclick = () => done(false);
+    back.onclick = (e) => { if (e.target === back) done(false); };
+    back.classList.remove("hidden");
+    $("#confirmYes").focus();
+  });
 }
 
 function setMsg(id, text, cls) {
@@ -539,6 +617,42 @@ if (_theme === "graphite") _theme = "graphite-dark";
 if (!THEMES.includes(_theme)) _theme = "system";
 let _accent = localStorage.getItem("ds_accent") || "blue";
 
+/* Appearance is shared with the desktop app through config.json. The
+   localStorage copy is only a fast first paint; the server wins on boot. */
+function saveAppearance(partial) {
+  api("/api/settings", { method: "POST", body: partial }).catch(() => {});
+}
+
+async function loadAppearanceFromConfig() {
+  try {
+    const { settings } = await api("/api/settings");
+    let changed = false;
+    if (settings.theme && THEMES.includes(settings.theme)
+        && settings.theme !== _theme) {
+      _theme = settings.theme;
+      localStorage.setItem("ds_theme", _theme);
+      changed = true;
+    }
+    if (settings.accent && ACCENTS[settings.accent]
+        && settings.accent !== _accent) {
+      _accent = settings.accent;
+      localStorage.setItem("ds_accent", _accent);
+      changed = true;
+    }
+    const lang = settings.language === "es" ? "es" : "en";
+    if (lang !== _lang) {
+      _lang = lang;
+      localStorage.setItem("ds_lang", _lang);
+      changed = true;
+    }
+    if (changed) {
+      applyTheme();
+      applyLang();
+      loadTab(state.tab);
+    }
+  } catch (e) { /* keep the local fallback */ }
+}
+
 const _darkMQ = window.matchMedia("(prefers-color-scheme: dark)");
 function themeIsDark() {
   return _theme === "dark" || _theme.endsWith("-dark")
@@ -578,6 +692,7 @@ function renderAppearance() {
           localStorage.setItem("ds_theme", th);
           applyTheme();
           renderAppearance();
+          saveAppearance({ theme: th });
         });
         wrap.appendChild(b);
       }
@@ -599,6 +714,7 @@ function renderAppearance() {
         localStorage.setItem("ds_accent", name);
         applyAccent();
         renderAppearance();
+        saveAppearance({ accent: name });
       });
       accents.appendChild(b);
     }
@@ -631,6 +747,7 @@ function applyLang() {
 $("#langBtn")?.addEventListener?.("click", () => {
   _lang = _lang === "en" ? "es" : "en";
   localStorage.setItem("ds_lang", _lang);
+  saveAppearance({ language: _lang });
   applyLang();
   loadTab(state.tab);            // re-render the dynamic parts in Spanish
 });
@@ -638,9 +755,13 @@ $("#langBtn")?.addEventListener?.("click", () => {
 /* ---------- tabs ---------- */
 document.querySelectorAll("#tabs button").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll("#tabs button").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("#tabs button").forEach((b) => {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
     $("#tab-" + btn.dataset.tab).classList.add("active");
     state.tab = btn.dataset.tab;
     loadTab(btn.dataset.tab);
@@ -786,10 +907,30 @@ async function loadAccounts() {
     bindReconnectButtons();
     document.querySelectorAll("[data-del-acct]").forEach((b) =>
       b.addEventListener("click", async () => {
-        if (!confirm(t("Remove this account and all of its sync pairs?"))) return;
-        await api(`/api/accounts/${b.dataset.delAcct}`, { method: "DELETE" });
-        toast(t("Account removed"));
-        loadAccounts();
+        const account = state.accounts.find(
+          (a) => String(a.id) === b.dataset.delAcct);
+        const { ok, checked } = await confirmDialog({
+          title: t("Remove account"),
+          text: T("Remove {email} and all of its sync pairs? Local files and Drive contents are kept.",
+                  { email: account ? account.email : "#" + b.dataset.delAcct }),
+          yes: "Remove account",
+          danger: true,
+          check: { label: "Also revoke DriveSync's access token at Google (recommended)",
+                   checked: true },
+        });
+        if (!ok) return;
+        try {
+          const res = await api(`/api/accounts/${b.dataset.delAcct}`,
+            { method: "DELETE", body: { revoke: checked } });
+          const revoked = res.revoked;
+          if (checked && revoked && !revoked.ok) {
+            toast(T("Account removed, but Google revocation failed: {detail}",
+                    { detail: revoked.detail }));
+          } else {
+            toast(t("Account removed"));
+          }
+          loadAccounts();
+        } catch (err) { toast(err.message); }
       }));
     const sel = $("#pairAccount");
     const prev = sel.value;
@@ -811,7 +952,25 @@ function bindReconnectButtons() {
       btn.disabled = true;
       toast(t("A Google window should open in your browser; approve access there…"));
       try {
-        const { account } = await api("/api/accounts", { method: "POST", body: {} });
+        const started = await api("/api/accounts", { method: "POST", body: {} });
+        const job = started.job;
+        const account = await new Promise((resolve, reject) => {
+          const timer = setInterval(async () => {
+            try {
+              const st = await api(`/api/accounts/auth/${job}`);
+              if (st.status === "done") {
+                clearInterval(timer);
+                resolve(st.account);
+              } else if (st.status === "error" || st.status === "cancelled") {
+                clearInterval(timer);
+                reject(new Error(st.error || t("Sign-in did not finish.")));
+              }
+            } catch (err) {
+              clearInterval(timer);
+              reject(err);
+            }
+          }, 1000);
+        });
         toast(T("Connected {email} 🎉", { email: account.email }));
         loadAccounts();
         loadDashboard();
@@ -822,21 +981,90 @@ function bindReconnectButtons() {
     }));
 }
 
-$("#authForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  setMsg("#authMsg", t("A Google window should open in your browser; approve access there…"), "");
-  $("#authBtn").disabled = true;
+let _authJob = null;
+let _authPoll = null;
+
+function setAuthBusy(busy) {
+  $("#authBtn").disabled = busy;
+  $("#authTestBtn").disabled = busy;
+  $("#authCancelBtn").classList.toggle("hidden", !busy);
+}
+
+$("#authTestBtn").addEventListener("click", async () => {
+  const cid = $("#clientId").value.trim();
+  const csec = $("#clientSecret").value.trim();
+  setMsg("#authMsg", t("Checking the credentials with Google…"), "");
   try {
-    const { account } = await api("/api/accounts", {
+    const res = await api("/api/oauth/test", {
       method: "POST",
-      body: { client_id: $("#clientId").value.trim(), client_secret: $("#clientSecret").value.trim() },
+      body: { client_id: cid, client_secret: csec },
     });
-    setMsg("#authMsg", T("Connected {email} 🎉", { email: account.email }), "ok");
-    loadAccounts();
+    setMsg("#authMsg", t(res.message), "ok");
+  } catch (err) {
+    setMsg("#authMsg", err.message, "err");
+  }
+});
+
+$("#authCancelBtn").addEventListener("click", async () => {
+  if (!_authJob) return;
+  try {
+    await api(`/api/accounts/auth/${_authJob}`, { method: "DELETE" });
+    setMsg("#authMsg", t("Sign-in cancelled."), "");
   } catch (err) {
     setMsg("#authMsg", err.message, "err");
   } finally {
-    $("#authBtn").disabled = false;
+    clearInterval(_authPoll);
+    _authPoll = null;
+    _authJob = null;
+    setAuthBusy(false);
+  }
+});
+
+$("#authForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  setMsg("#authMsg", t("A Google window should open in your browser; approve access there…"), "");
+  setAuthBusy(true);
+  try {
+    const started = await api("/api/accounts", {
+      method: "POST",
+      body: {
+        client_id: $("#clientId").value.trim(),
+        client_secret: $("#clientSecret").value.trim(),
+        drive_scope: $("#authScope").value,
+      },
+    });
+    _authJob = started.job;
+    clearInterval(_authPoll);
+    _authPoll = setInterval(async () => {
+      try {
+        const st = await api(`/api/accounts/auth/${_authJob}`);
+        if (st.status === "done") {
+          clearInterval(_authPoll);
+          _authPoll = null;
+          _authJob = null;
+          setAuthBusy(false);
+          setMsg("#authMsg", T("Connected {email} 🎉",
+                               { email: st.account.email }), "ok");
+          loadAccounts();
+          loadDashboard();
+        } else if (st.status === "error" || st.status === "cancelled") {
+          clearInterval(_authPoll);
+          _authPoll = null;
+          _authJob = null;
+          setAuthBusy(false);
+          setMsg("#authMsg", st.error || t("Sign-in did not finish."), "err");
+        }
+      } catch (err) {
+        clearInterval(_authPoll);
+        _authPoll = null;
+        _authJob = null;
+        setAuthBusy(false);
+        setMsg("#authMsg", err.message, "err");
+      }
+    }, 1000);
+  } catch (err) {
+    setAuthBusy(false);
+    setMsg("#authMsg", err.message, "err");
   }
 });
 
@@ -872,77 +1100,160 @@ function untilTomorrow() {
   return d.toISOString();
 }
 
+function etaText(bytes, kb) {
+  if (!bytes) return "";
+  if (!kb) return t("calculating…");
+  const seconds = Math.max(1, Math.round(bytes / (kb * 1024)));
+  if (seconds < 60) return T("{sec}s", { sec: seconds });
+  return T("{m}m", { m: Math.ceil(seconds / 60) });
+}
+
 async function loadPairs() {
   await loadAccounts();
   try {
     const { pairs } = await api("/api/pairs");
     state.pairs = pairs;
-    $("#pairsTable tbody").innerHTML = pairs.length
-      ? pairs.map((p) => {
-        const scopeTxt = (p.include_patterns && p.include_patterns.length)
-          ? T("{n} subfolder(s)", { n: p.include_patterns.length }) : t("everything");
-        const untilActive = p.paused_until && new Date(p.paused_until) > new Date();
-        return `<tr>
-          <td>#${p.id}</td><td>${esc(p.local_path)}</td>
-          <td>${esc(p.remote_path || p.remote_id)}</td><td>${esc(p.direction)}</td>
-          <td>${esc(p.conflict_policy)}</td>
-          <td>${p.allow_deletes
-            ? `<button class="btn ghost small" data-nodel="${p.id}" title="${esc(t("Deletions are allowed (files go to trash)"))}">${esc(t("On"))}</button>`
-            : `<button class="btn ghost small" data-yodel="${p.id}" title="${esc(t("Deletions blocked — files are kept on both sides"))}">${esc(t("Off"))}</button>`}</td>
-          <td>${esc(scopeTxt)}
-            <button class="btn ghost small" data-scope="${p.id}" data-account="${p.account_id}" data-remote="${esc(p.remote_id)}">${esc(t("Edit"))}</button></td>
-          <td>${esc(stateText(p))}
-            <button class="btn ghost small" data-until="${p.id}" title="${esc(t("Pause until tomorrow 09:00 (click again to cancel)"))}">${esc(untilActive ? t("Cancel pause") : t("Until tomorrow"))}</button>
-            ${p.enabled
-              ? `<button class="btn ghost small" data-pause="${p.id}">${esc(t("Pause"))}</button>`
-              : `<button class="btn ghost small" data-resume="${p.id}">${esc(t("Resume"))}</button>`}</td>
-          <td class="muted small">${esc(lastSyncText(p))}</td>
-          <td>
-            <div class="pair-actions">
-              <div class="pair-actions-main">
+    const box = $("#pairsCards");
+    if (!pairs.length) {
+      box.innerHTML = `<p class="muted small">${esc(t("No sync pairs yet."))}</p>`;
+      return;
+    }
+    box.innerHTML = pairs.map((p) => {
+      const scopeTxt = (p.include_patterns && p.include_patterns.length)
+        ? T("{n} subfolder(s)", { n: p.include_patterns.length }) : t("everything");
+      const untilActive = p.paused_until && new Date(p.paused_until) > new Date();
+      const state = !p.enabled ? "off" : untilActive ? "warn" : "on";
+      const stateLabel = !p.enabled ? t("paused")
+        : untilActive ? T("paused until {when}",
+                          { when: new Date(p.paused_until).toLocaleString() })
+        : t("enabled");
+      const last = p.last_sync;
+      const err = last && !last.ok && last.error;
+      const progress = p.progress
+        ? `<span class="chip info">${esc(T("{n} transfer(s) active", { n: p.progress.active }))}${
+            p.progress.bytes ? ` · ${esc(humanBytes(p.progress.bytes))} · ${esc(t("ETA"))} ${esc(etaText(p.progress.bytes, (last && last.bandwidth_kb) || 0))}` : ""}</span>`
+        : "";
+      const driveUrl = `https://drive.google.com/drive/folders/${encodeURIComponent(p.remote_id)}`;
+      return `<article class="pair-card" data-pair="${p.id}">
+        <div class="pair-card-head">
+          <div class="pair-title">
+            <b>#${p.id}</b>
+            <span class="chip">${esc(p.direction)}</span>
+            <span class="chip state-${state}">${esc(stateLabel)}</span>
+            <span class="chip ${p.allow_deletes ? "info" : "warn"}">${esc(t("Deletes"))}: ${p.allow_deletes ? esc(t("On")) : esc(t("Off"))}</span>
+            ${progress}
+            ${err ? `<span class="chip error" title="${esc(err)}">${esc(t("last sync failed"))}</span>` : ""}
+          </div>
+          <div class="row wrap">
+            <button class="btn primary small" data-sync="${p.id}">${esc(t("Sync"))}</button>
+            <button class="btn ghost small" data-preview="${p.id}">${esc(t("Preview"))}</button>
+            <details class="pair-menu">
+              <summary class="btn ghost small">${esc(t("More"))}</summary>
+              <div class="pair-menu-list">
                 <button class="btn ghost small" data-edit="${p.id}">${esc(t("Edit…"))}</button>
-                <button class="btn ghost small" data-sync="${p.id}">${esc(t("Sync"))}</button>
-                <button class="btn ghost small" data-preview="${p.id}">${esc(t("Preview"))}</button>
-              </div>
-              <div class="pair-actions-review">
+                <button class="btn ghost small" data-open-folder="${p.id}">${esc(t("Open folder"))}</button>
+                <a class="btn ghost small" href="${esc(driveUrl)}" target="_blank" rel="noreferrer">${esc(t("Open in Drive"))}</a>
                 <button class="btn ghost small" data-conflicts="${p.id}">${esc(t("Conflicts"))}</button>
+                <button class="btn ghost small" data-scope="${p.id}" data-account="${p.account_id}" data-remote="${esc(p.remote_id)}">${esc(t("Scope"))}: ${esc(scopeTxt)}</button>
+                ${p.enabled
+                  ? `<button class="btn ghost small" data-pause="${p.id}">${esc(t("Pause"))}</button>`
+                  : `<button class="btn ghost small" data-resume="${p.id}">${esc(t("Resume"))}</button>`}
+                <button class="btn ghost small" data-until="${p.id}" title="${esc(t("Pause until tomorrow 09:00 (click again to cancel)"))}">${esc(untilActive ? t("Cancel pause") : t("Until tomorrow"))}</button>
+                ${p.allow_deletes
+                  ? `<button class="btn ghost small" data-nodel="${p.id}" title="${esc(t("Deletions are allowed (files go to trash)"))}">${esc(t("Block deletions"))}</button>`
+                  : `<button class="btn ghost small" data-yodel="${p.id}" title="${esc(t("Deletions blocked — files are kept on both sides"))}">${esc(t("Allow deletions"))}</button>`}
                 <button class="btn danger small" data-del="${p.id}">${esc(t("Remove"))}</button>
               </div>
-            </div>
-          </td></tr>`;
-      }).join("")
-      : `<tr><td colspan="10" class="muted">${esc(t("No sync pairs yet."))}</td></tr>`;
+            </details>
+          </div>
+        </div>
+        <div class="pair-paths">
+          <div><span class="muted small">${esc(t("Local"))}</span> <span class="break-all">${esc(p.local_path)}</span></div>
+          <div><span class="muted small">${esc(t("Drive folder"))}</span> <span class="break-all">${esc(p.remote_path || p.remote_id)}</span></div>
+        </div>
+        <div class="pair-meta muted small">${esc(t("Last sync"))}: ${esc(lastSyncText(p))}${
+          p.bandwidth_limit_kb ? ` · ${esc(T("cap {kb} KB/s", { kb: p.bandwidth_limit_kb }))}` : ""}</div>
+      </article>`;
+    }).join("");
 
     document.querySelectorAll("[data-nodel],[data-yodel]").forEach((b) =>
       b.addEventListener("click", async () => {
         const on = !!b.dataset.yodel;  // currently off -> turning on
-        await api(`/api/pairs/${b.dataset.nodel || b.dataset.yodel}`,
-                  { method: "PATCH", body: { allow_deletes: on ? 1 : 0 } });
-        toast(on ? t("Deletions allowed again") : t("Deletions blocked — files will be kept"));
-        loadPairs();
+        try {
+          await api(`/api/pairs/${b.dataset.nodel || b.dataset.yodel}`,
+                    { method: "PATCH", body: { allow_deletes: on ? 1 : 0 } });
+          toast(on ? t("Deletions allowed again") : t("Deletions blocked — files will be kept"),
+                6000, { label: t("Undo"), run: async () => {
+                  await api(`/api/pairs/${b.dataset.nodel || b.dataset.yodel}`,
+                            { method: "PATCH", body: { allow_deletes: on ? 0 : 1 } });
+                  loadPairs();
+                } });
+          loadPairs();
+        } catch (err) { toast(err.message); }
       }));
     document.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
-      if (!confirm(T("Remove pair #{pid}? Local files and Drive contents are kept.", { pid: b.dataset.del }))) return;
-      await api(`/api/pairs/${b.dataset.del}`, { method: "DELETE" });
-      loadPairs();
+      const pair = state.pairs.find((p) => p.id === +b.dataset.del);
+      const { ok } = await confirmDialog({
+        title: t("Remove pair"),
+        text: T("Remove pair #{pid}? Local files and Drive contents are kept.",
+                { pid: b.dataset.del }) + (pair ? `\n\n${pair.local_path}` : ""),
+        yes: "Remove pair", danger: true,
+      });
+      if (!ok) return;
+      try {
+        const res = await api(`/api/pairs/${b.dataset.del}`, { method: "DELETE" });
+        toast(T("Pair #{pid} removed", { pid: b.dataset.del }), 8000,
+              { label: t("Undo"), run: async () => {
+                  try {
+                    await api("/api/pairs/undo", { method: "POST",
+                                                   body: { undo: res.undo } });
+                    toast(t("Pair restored"));
+                    loadPairs();
+                  } catch (err) { toast(err.message); }
+                } });
+        loadPairs();
+      } catch (err) { toast(err.message); }
     }));
     document.querySelectorAll("[data-pause],[data-resume]").forEach((b) =>
       b.addEventListener("click", async () => {
         const id = b.dataset.pause || b.dataset.resume;
-        await api(`/api/pairs/${id}`, { method: "PATCH", body: { enabled: b.dataset.resume ? 1 : 0 } });
-        loadPairs();
+        const resuming = !!b.dataset.resume;
+        try {
+          await api(`/api/pairs/${id}`, { method: "PATCH", body: { enabled: resuming ? 1 : 0 } });
+          toast(resuming ? t("Pair resumed") : t("Pair paused"), 6000,
+                { label: t("Undo"), run: async () => {
+                    await api(`/api/pairs/${id}`, { method: "PATCH",
+                                                   body: { enabled: resuming ? 0 : 1 } });
+                    loadPairs();
+                  } });
+          loadPairs();
+        } catch (err) { toast(err.message); }
       }));
     document.querySelectorAll("[data-until]").forEach((b) =>
       b.addEventListener("click", async () => {
         const id = b.dataset.until;
-        const pair = state.pairs.find((p) => p.id === id);
+        const pair = state.pairs.find((p) => String(p.id) === id);
         const active = pair && pair.paused_until
           && new Date(pair.paused_until) > new Date();
-        await api(`/api/pairs/${id}`, { method: "PATCH",
-          body: { paused_until: active ? null : untilTomorrow() } });
-        toast(active ? t("Pause cancelled — pair active again")
-                     : t("Paused until tomorrow 09:00"));
-        loadPairs();
+        try {
+          await api(`/api/pairs/${id}`, { method: "PATCH",
+            body: { paused_until: active ? null : untilTomorrow() } });
+          toast(active ? t("Pause cancelled — pair active again")
+                       : t("Paused until tomorrow 09:00"), 6000,
+                { label: t("Undo"), run: async () => {
+                    await api(`/api/pairs/${id}`, { method: "PATCH",
+                                                   body: { paused_until: active ? untilTomorrow() : null } });
+                    loadPairs();
+                  } });
+          loadPairs();
+        } catch (err) { toast(err.message); }
+      }));
+    document.querySelectorAll("[data-open-folder]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        try {
+          await api(`/api/pairs/${b.dataset.openFolder}/open-folder`,
+                    { method: "POST" });
+        } catch (err) { toast(err.message); }
       }));
     document.querySelectorAll("[data-edit]").forEach((b) =>
       b.addEventListener("click", () => openEdit(+b.dataset.edit)));
@@ -1133,7 +1444,12 @@ $("#pairForm").addEventListener("submit", async (e) => {
     startPaused ? t("The pair will remain paused until you review its preview and resume it.") :
       t("The first synchronization may begin immediately and transfer files."),
   ].join("\n");
-  if (!confirm(`${t("Review new sync pair")}\n\n${summary}\n\n${t("Continue?")}`)) return;
+  const { ok } = await confirmDialog({
+    title: t("Review new sync pair"),
+    text: summary,
+    yes: "Continue",
+  });
+  if (!ok) return;
   try {
     await api("/api/pairs", {
       method: "POST",
@@ -1929,6 +2245,10 @@ async function loadSettings() {
     $("#setDigestTime").value = settings.digest_time || "";
     $("#setDigestSkip").checked = settings.digest_skip_empty !== false;
     $("#setWatch").checked = settings.watch_enabled !== false;
+    $("#setKeyring").checked = settings.keyring_tokens === true;
+    if ($("#authScope")) {
+      $("#authScope").value = settings.drive_scope || "full";
+    }
     $("#setIncremental").checked = settings.incremental_scan !== false;
     $("#setConvertDocs").checked = settings.convert_google_docs !== false;
     const st = await api("/api/status");
@@ -1967,6 +2287,7 @@ $("#settingsForm").addEventListener("submit", async (e) => {
         digest_time: $("#setDigestTime").value,
         digest_skip_empty: $("#setDigestSkip").checked,
         watch_enabled: $("#setWatch").checked,
+        keyring_tokens: $("#setKeyring").checked,
         incremental_scan: $("#setIncremental").checked,
         convert_google_docs: $("#setConvertDocs").checked,
         ignore_patterns: $("#setIgnores").value.split("\n").map((s) => s.trim()).filter(Boolean),
@@ -1996,6 +2317,7 @@ function humanBytes(n) {
 /* ---------- boot ---------- */
 applyTheme();
 applyLang();
+loadAppearanceFromConfig();
 loadDashboard();
 
 /* Keep the visible tab current. Transfers change fastest (1.5 s); status,

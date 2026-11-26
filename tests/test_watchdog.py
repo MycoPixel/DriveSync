@@ -170,5 +170,26 @@ def test_upload_body_pings_without_limiter(tmp_path):
 
 
 def test_service_unit_declares_notify_and_watchdog():
-    text = open("drivesync.service", encoding="utf-8").read()
+    from pathlib import Path
+    unit = Path(__file__).resolve().parents[1] / "drivesync.service"
+    text = unit.read_text(encoding="utf-8")
     assert "Type=notify" in text and "WatchdogSec=" in text
+
+
+def test_service_units_are_sandboxed():
+    """Every shipped user unit must carry the same hardening block."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    sources = [root / "drivesync.service",
+               root / "packaging" / "build-deb.sh",
+               root / "packaging" / "drivesync.spec"]
+    required = ("NoNewPrivileges=yes", "PrivateTmp=yes",
+                "ProtectSystem=full", "ProtectHome=off",
+                "ProtectKernelTunables=yes", "ProtectKernelModules=yes",
+                "ProtectControlGroups=yes",
+                "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+                "RestrictSUIDSGID=yes", "LockPersonality=yes")
+    for src in sources:
+        text = src.read_text(encoding="utf-8")
+        missing = [line for line in required if line not in text]
+        assert not missing, f"{src.name} is missing {missing}"

@@ -74,7 +74,7 @@ window are associated correctly.
 
 1. Bump `drivesync/__init__.py`, `packaging/drivesync.spec` (Version and
    `%changelog`), `drivesync.metainfo.xml` and `CHANGELOG.md` together.
-2. `git tag v0.6.1 && git push --tags` — Actions runs the test matrix,
+2. `git tag v0.7.0 && git push --tags` — Actions runs the test matrix,
    builds all four packages, attaches them to a **draft** release and
    publishes it with `SHA256SUMS`. If any build fails the release stays a
    draft: fix it, move the tag (`git tag -f …`), force-push it and re-run.

@@ -223,6 +223,8 @@ class Store:
         self._lock = threading.RLock()
         self._batch_depth = 0
         self.recovered = False
+        self.keyring_enabled = False
+        self._keyring_ok = None
         self._conn = self._connect_recovering()
         with self._lock:
             # WAL lets the dashboard read while a sync pass writes; NORMAL
@@ -402,27 +404,137 @@ class Store:
                 self._conn.commit()
             return cur
 
+    # ---- optional OS keyring for OAuth tokens ----------------------
+    _KEYRING_SERVICE = "drivesync"
+
+    def _keyring(self):
+        """The keyring module, or None when it is unavailable/not installed."""
+        if self._keyring_ok is False:
+            return None
+        try:
+            import keyring
+            # A backend may exist but fail at runtime (no Secret Service
+            # daemon, locked KWallet); probe cheaply once.
+            keyring.get_keyring()
+        except Exception:
+            self._keyring_ok = False
+            return None
+        self._keyring_ok = True
+        return keyring
+
+    def _keyring_set(self, email, token_json):
+        kr = self._keyring()
+        if kr is None:
+            return False
+        try:
+            kr.set_password(self._KEYRING_SERVICE, email,
+                            json.dumps(token_json))
+            return True
+        except Exception:
+            return False
+
+    def _keyring_get(self, email):
+        kr = self._keyring()
+        if kr is None:
+            return None
+        try:
+            raw = kr.get_password(self._KEYRING_SERVICE, email)
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None
+
+    def _keyring_delete(self, email):
+        kr = self._keyring()
+        if kr is None:
+            return
+        try:
+            kr.delete_password(self._KEYRING_SERVICE, email)
+        except Exception:
+            pass
+
+    def _hydrate(self, row):
+        """Replace a keyring marker with the real token dict."""
+        if row is None:
+            return None
+        try:
+            data = json.loads(row["token_json"]) if isinstance(
+                row["token_json"], str) else row["token_json"]
+        except (TypeError, ValueError):
+            return row
+        if isinstance(data, dict) and data.get("keyring"):
+            token = self._keyring_get(row["email"])
+            out = dict(row)
+            out["token_json"] = json.dumps(token or {"keyring_missing": True})
+            return out
+        return row
+
+    def configure_keyring(self, enabled):
+        """Turn keyring storage on/off; returns whether it is active.
+
+        Enabling migrates existing plaintext tokens into the keyring and
+        leaves only a marker in SQLite. Disabling writes future tokens back
+        to the database but does not destroy the keyring copy (a later
+        re-enable finds it again).
+        """
+        self.keyring_enabled = bool(enabled)
+        if not self.keyring_enabled:
+            return False
+        if self._keyring() is None:
+            self.keyring_enabled = False
+            return False
+        try:
+            rows = self._exec("SELECT * FROM accounts").fetchall()
+        except Exception:
+            return True
+        for row in rows:
+            try:
+                data = json.loads(row["token_json"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("keyring"):
+                continue
+            if self._keyring_set(row["email"], data):
+                self._exec("UPDATE accounts SET token_json=? WHERE id=?",
+                           (json.dumps({"keyring": True}), row["id"]))
+        return True
+
     # ---- accounts -------------------------------------------------
     def add_account(self, email, token_json):
         # Upsert: on re-auth the INSERT takes the DO UPDATE path, where
         # lastrowid is NOT set (stays 0/None) — look up by email instead.
+        stored = token_json
+        if self.keyring_enabled and self._keyring_set(email, token_json):
+            stored = {"keyring": True}
         self._exec(
             "INSERT INTO accounts(email, token_json, created_at) VALUES (?,?,?) "
             "ON CONFLICT(email) DO UPDATE SET token_json=excluded.token_json",
-            (email, json.dumps(token_json), utcnow()))
-        return self._exec("SELECT * FROM accounts WHERE email=?", (email,)).fetchone()
+            (email, json.dumps(stored), utcnow()))
+        return self._hydrate(
+            self._exec("SELECT * FROM accounts WHERE email=?", (email,)).fetchone())
 
     def accounts(self):
-        return self._exec("SELECT * FROM accounts ORDER BY id").fetchall()
+        return [self._hydrate(row) for row in
+                self._exec("SELECT * FROM accounts ORDER BY id").fetchall()]
 
     def account(self, account_id):
-        return self._exec("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+        return self._hydrate(self._exec(
+            "SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone())
 
     def update_account_tokens(self, account_id, token_json):
+        row = self._exec("SELECT email FROM accounts WHERE id=?",
+                         (account_id,)).fetchone()
+        stored = token_json
+        if row and self.keyring_enabled and \
+                self._keyring_set(row["email"], token_json):
+            stored = {"keyring": True}
         self._exec("UPDATE accounts SET token_json=? WHERE id=?",
-                   (json.dumps(token_json), account_id))
+                   (json.dumps(stored), account_id))
 
     def delete_account(self, account_id):
+        row = self._exec("SELECT email FROM accounts WHERE id=?",
+                         (account_id,)).fetchone()
+        if row:
+            self._keyring_delete(row["email"])
         self._exec("DELETE FROM entries WHERE pair_id IN "
                    "(SELECT id FROM pairs WHERE account_id=?)", (account_id,))
         self._exec("DELETE FROM pairs WHERE account_id=?", (account_id,))
@@ -549,6 +661,40 @@ class Store:
         self.kv_delete(f"stale:{pair_id}")
         self.kv_delete(f"pending_deletes:{pair_id}")
         self.kv_delete(f"deletes_approved:{pair_id}")
+
+    def snapshot_pair(self, pair_id):
+        """Everything needed to undo a pair removal (pair + base + history)."""
+        pair = self.pair(pair_id)
+        if pair is None:
+            return None
+        return {
+            "pair": dict(pair),
+            "entries": [dict(r) for r in self.base_entries(pair_id)],
+            "recovery": [dict(r) for r in self._exec(
+                "SELECT * FROM recovery WHERE pair_id=?", (pair_id,)).fetchall()],
+        }
+
+    def restore_pair(self, snapshot):
+        """Restore a snapshot from snapshot_pair; None if the id is taken."""
+        pair = dict(snapshot["pair"])
+        if self.pair(pair["id"]) is not None:
+            return None
+        columns = ", ".join(pair)
+        marks = ",".join("?" for _ in pair)
+        with self.batch():
+            self._exec(f"INSERT INTO pairs({columns}) VALUES ({marks})",
+                       tuple(pair.values()))
+            for row in snapshot.get("entries", []):
+                cols = ", ".join(row)
+                marks = ",".join("?" for _ in row)
+                self._exec(f"INSERT INTO entries({cols}) VALUES ({marks})",
+                           tuple(row.values()))
+            for row in snapshot.get("recovery", []):
+                cols = ", ".join(row)
+                marks = ",".join("?" for _ in row)
+                self._exec(f"INSERT INTO recovery({cols}) VALUES ({marks})",
+                           tuple(row.values()))
+        return self.pair(pair["id"])
 
     # ---- base snapshots -------------------------------------------
     def base_entries(self, pair_id):

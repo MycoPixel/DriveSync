@@ -140,10 +140,6 @@ class Worker:
                 self.interval = int(cfg.get("sync_interval", self.interval))
             except (TypeError, ValueError):
                 pass
-        try:
-            limit = int(cfg.get("bandwidth_limit_kb", 0) or 0)
-        except (TypeError, ValueError):
-            limit = 0
         # the swap decision compares the OLD rate with the NEW effective
         # rate, so do not pre-assign _limit_kb here — _update_limiter does
         self._update_limiter()

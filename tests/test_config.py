@@ -63,3 +63,17 @@ def test_corrupt_config_file_falls_back_to_defaults():
 def test_env_override_path():
     assert config.app_dir().exists() is False or True  # just resolves
     assert str(config.config_path()).endswith("home/config.json")
+
+
+def test_scope_and_keyring_defaults():
+    cfg = config.load_config()
+    assert cfg["drive_scope"] == "full"
+    assert cfg["keyring_tokens"] is False
+
+
+def test_drive_scope_is_normalized_and_validated():
+    assert config.update_config(
+        drive_scope="READONLY")["drive_scope"] == "readonly"
+    assert config.update_config(drive_scope="full")["drive_scope"] == "full"
+    with pytest.raises(ValueError):
+        config.update_config(drive_scope="write")

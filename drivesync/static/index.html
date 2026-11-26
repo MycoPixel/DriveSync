@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="drivesync-token" content="__DRIVESYNC_API_TOKEN__">
 <title>DriveSync — Google Drive sync for Linux</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -20,20 +21,20 @@
   <button id="syncNowBtn" class="btn primary" data-i18n="Sync now">Sync now</button>
 </header>
 
-<nav class="tabs" id="tabs">
-  <button data-tab="dashboard" class="active" data-i18n="Dashboard">Dashboard</button>
-  <button data-tab="pairs" data-i18n="Sync pairs">Sync pairs</button>
-  <button data-tab="accounts" data-i18n="Accounts">Accounts</button>
-  <button data-tab="drive" data-i18n="Drive">Drive</button>
-  <button data-tab="transfers" data-i18n="Transfers">Transfers</button>
-  <button data-tab="recovery" data-i18n="Recovery">Recovery</button>
-  <button data-tab="activity" data-i18n="Activity">Activity</button>
-  <button data-tab="settings" data-i18n="Settings">Settings</button>
+<nav class="tabs" id="tabs" role="tablist" aria-label="DriveSync sections">
+  <button data-tab="dashboard" class="active" role="tab" aria-selected="true" aria-controls="tab-dashboard" data-i18n="Dashboard">Dashboard</button>
+  <button data-tab="pairs" role="tab" aria-selected="false" aria-controls="tab-pairs" data-i18n="Sync pairs">Sync pairs</button>
+  <button data-tab="accounts" role="tab" aria-selected="false" aria-controls="tab-accounts" data-i18n="Accounts">Accounts</button>
+  <button data-tab="drive" role="tab" aria-selected="false" aria-controls="tab-drive" data-i18n="Drive">Drive</button>
+  <button data-tab="transfers" role="tab" aria-selected="false" aria-controls="tab-transfers" data-i18n="Transfers">Transfers</button>
+  <button data-tab="recovery" role="tab" aria-selected="false" aria-controls="tab-recovery" data-i18n="Recovery">Recovery</button>
+  <button data-tab="activity" role="tab" aria-selected="false" aria-controls="tab-activity" data-i18n="Activity">Activity</button>
+  <button data-tab="settings" role="tab" aria-selected="false" aria-controls="tab-settings" data-i18n="Settings">Settings</button>
 </nav>
 
 <main>
   <!-- DASHBOARD -->
-  <section id="tab-dashboard" class="tab active">
+  <section id="tab-dashboard" class="tab active" role="tabpanel" aria-label="Dashboard">
     <div class="dashboard-metrics" aria-label="Sync overview">
       <article class="metric-card"><span class="metric-label" data-i18n="Google accounts">Google accounts</span><strong id="metricAccounts">—</strong></article>
       <article class="metric-card"><span class="metric-label" data-i18n="Sync pairs">Sync pairs</span><strong id="metricPairs">—</strong><small id="metricPairState"></small></article>
@@ -61,7 +62,7 @@
   </section>
 
   <!-- PAIRS -->
-  <section id="tab-pairs" class="tab">
+  <section id="tab-pairs" class="tab" role="tabpanel" aria-label="Pairs">
     <div class="card">
       <h3 data-i18n="Add a sync pair">Add a sync pair</h3>
       <form id="pairForm" class="form-grid">
@@ -136,42 +137,52 @@
     </div>
     <div class="card">
       <h3 data-i18n="Current pairs">Current pairs</h3>
-      <div class="table-scroll" role="region" aria-label="Current sync pairs" tabindex="0">
-        <table class="tbl pairs-table" id="pairsTable">
-          <thead><tr>
-            <th data-i18n="#">#</th><th data-i18n="Local">Local</th>
-            <th data-i18n="Drive folder">Drive folder</th><th data-i18n="Direction">Direction</th>
-            <th data-i18n="Conflicts">Conflicts</th><th data-i18n="Deletes">Deletes</th>
-            <th data-i18n="Scope">Scope</th><th data-i18n="State">State</th>
-            <th data-i18n="Last sync">Last sync</th><th data-i18n="Actions">Actions</th></tr></thead>
-          <tbody></tbody>
-        </table>
+      <p class="muted small" data-i18n="pairs-cards-hint">Each pair is a card: status chips at a glance, with the full action list behind “More”.</p>
+      <div id="pairsCards" class="pairs-cards" aria-live="polite">
+        <p class="muted small" data-i18n="loading…">loading…</p>
       </div>
     </div>
   </section>
 
   <!-- ACCOUNTS -->
-  <section id="tab-accounts" class="tab">
+  <section id="tab-accounts" class="tab" role="tabpanel" aria-label="Accounts">
     <div class="card">
       <h3 data-i18n="Connect a Google account">Connect a Google account</h3>
+      <ol class="wizard-steps">
+        <li><span data-i18n="Open the Google Cloud Console">Open the Google Cloud Console</span>:
+          <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noreferrer" data-i18n="create a project">create a project</a>.</li>
+        <li><a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer" data-i18n="Enable the Google Drive API">Enable the Google Drive API</a>.</li>
+        <li><a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noreferrer" data-i18n="Configure the OAuth consent screen">Configure the OAuth consent screen</a>
+          (<span data-i18n="add yourself as a test user while it is in Testing">add yourself as a test user while it is in Testing</span>).</li>
+        <li><a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" data-i18n="Create credentials → OAuth client ID → Desktop app">Create credentials → OAuth client ID → Desktop app</a>.</li>
+        <li><span data-i18n="Paste the client ID and secret below, then test the connection.">Paste the client ID and secret below, then test the connection.</span></li>
+      </ol>
       <p class="muted" data-i18n-html="auth-hint">DriveSync uses <b>your own OAuth client</b> — nothing of yours
-        flows through third-party servers. Create a “Desktop app” client in the
-        <a href="https://console.cloud.google.com/apis/credentials" target="_blank"
-           rel="noreferrer">Google Cloud Console</a> (Drive API enabled), then paste its
-        credentials below. See the README for a 2-minute walkthrough.</p>
+        flows through third-party servers. See the README for a 2-minute walkthrough.</p>
       <form id="authForm" class="form-grid">
         <label>
           <span data-i18n="Client ID">Client ID</span>
-          <input id="clientId" type="text" placeholder="1234567890-abc.apps.googleusercontent.com">
+          <input id="clientId" type="text" placeholder="1234567890-abc.apps.googleusercontent.com"
+                 autocomplete="off" spellcheck="false">
         </label>
         <label>
           <span data-i18n="Client secret">Client secret</span>
-          <input id="clientSecret" type="password" placeholder="GOCSPX-…">
+          <input id="clientSecret" type="password" placeholder="GOCSPX-…"
+                 autocomplete="off">
         </label>
-        <div class="row end">
+        <label>
+          <span data-i18n="Drive access">Drive access</span>
+          <select id="authScope">
+            <option value="full" data-i18n="Full access (read and write)">Full access (read and write)</option>
+            <option value="readonly" data-i18n="Read-only (download only)">Read-only (download only)</option>
+          </select>
+        </label>
+        <div class="row wrap">
+          <button type="button" class="btn ghost" id="authTestBtn" data-i18n="Test connection">Test connection</button>
           <button type="submit" class="btn primary" id="authBtn" data-i18n="Connect account">Connect account</button>
+          <button type="button" class="btn danger hidden" id="authCancelBtn" data-i18n="Cancel sign-in">Cancel sign-in</button>
         </div>
-        <p id="authMsg" class="msg"></p>
+        <p id="authMsg" class="msg" role="status" aria-live="polite"></p>
       </form>
     </div>
     <div class="card">
@@ -185,7 +196,7 @@
   </section>
 
   <!-- DRIVE BROWSER -->
-  <section id="tab-drive" class="tab">
+  <section id="tab-drive" class="tab" role="tabpanel" aria-label="Drive">
     <div class="card">
       <div class="row between">
         <h3 data-i18n="Google Drive browser">Google Drive browser</h3>
@@ -251,7 +262,7 @@
   </section>
 
   <!-- TRANSFERS -->
-  <section id="tab-transfers" class="tab">
+  <section id="tab-transfers" class="tab" role="tabpanel" aria-label="Transfers">
     <div class="card">
       <div class="row between">
         <h3 data-i18n="Transfer queue">Transfer queue</h3>
@@ -268,7 +279,7 @@
   </section>
 
   <!-- RECOVERY -->
-  <section id="tab-recovery" class="tab">
+  <section id="tab-recovery" class="tab" role="tabpanel" aria-label="Recovery">
     <div class="card" id="recoveryPendingCard">
       <h3 data-i18n="Deletions awaiting confirmation">Deletions awaiting confirmation</h3>
       <p class="muted small" data-i18n="recovery-pending-hint">A pass wanted to delete more files than the safety limit allows. Nothing was deleted — confirm below or keep every file. Recovery never propagates a deletion until you decide.</p>
@@ -346,7 +357,7 @@
   </section>
 
   <!-- ACTIVITY -->
-  <section id="tab-activity" class="tab">
+  <section id="tab-activity" class="tab" role="tabpanel" aria-label="Activity">
     <div class="card">
       <div class="row between">
         <h3 data-i18n="Activity log">Activity log</h3>
@@ -365,10 +376,10 @@
   </section>
 
   <!-- SETTINGS -->
-  <section id="tab-settings" class="tab">
+  <section id="tab-settings" class="tab" role="tabpanel" aria-label="Settings">
     <div class="card">
       <h3 data-i18n="Appearance & language">Appearance & language</h3>
-      <p class="muted small" data-i18n="Saved in this browser; the desktop app keeps its own choices.">Saved in this browser; the desktop app keeps its own choices.</p>
+      <p class="muted small" data-i18n="appearance-shared">Saved to DriveSync's settings, so the desktop app and this dashboard use the same theme, accent and language.</p>
       <div class="appearance">
         <div class="row wrap" id="themeBtns"></div>
         <div class="row wrap" id="accentBtns"></div>
@@ -473,6 +484,10 @@
           <span data-i18n-html="set.watch">Sync local changes instantly <span class="muted">(needs watchdog)</span></span>
         </label>
         <label class="check">
+          <input id="setKeyring" type="checkbox">
+          <span data-i18n-html="set.keyring">Keep OAuth tokens in the system keyring <span class="muted">(Secret Service/KWallet; needs the optional keyring package — otherwise tokens stay in the private 0600 database)</span></span>
+        </label>
+        <label class="check">
           <input id="setIncremental" type="checkbox">
           <span data-i18n-html="set.incremental">Use the Drive changes feed <span class="muted">(incremental scan; off = full relist every pass)</span></span>
         </label>
@@ -498,7 +513,7 @@
 </main>
 
 <!-- folder picker modal -->
-<div class="modal-backdrop hidden" id="pickerBackdrop">
+<div class="modal-backdrop hidden" id="pickerBackdrop" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-head">
       <h3 data-i18n="Choose a Drive folder">Choose a Drive folder</h3>
@@ -518,7 +533,7 @@
 </div>
 
 <!-- selective-sync scope modal -->
-<div class="modal-backdrop hidden" id="scopeBackdrop">
+<div class="modal-backdrop hidden" id="scopeBackdrop" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-head">
       <h3 id="scopeTitle">Choose subfolders</h3>
@@ -538,7 +553,7 @@
 </div>
 
 <!-- pair edit modal -->
-<div class="modal-backdrop hidden" id="editBackdrop">
+<div class="modal-backdrop hidden" id="editBackdrop" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-head">
       <h3 id="editTitle">Edit pair</h3>
@@ -602,7 +617,7 @@
 </div>
 
 <!-- conflict copies modal -->
-<div class="modal-backdrop hidden" id="conflictsBackdrop">
+<div class="modal-backdrop hidden" id="conflictsBackdrop" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-head">
       <h3 id="conflictsTitle">Conflict copies</h3>
@@ -616,7 +631,7 @@
 </div>
 
 <!-- sync preview modal -->
-<div class="modal-backdrop hidden" id="previewBackdrop">
+<div class="modal-backdrop hidden" id="previewBackdrop" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-head">
       <h3 id="previewTitle">Preview</h3>
@@ -629,7 +644,7 @@
 </div>
 
 <!-- event detail modal -->
-<div class="modal-backdrop hidden" id="eventBackdrop">
+<div class="modal-backdrop hidden" id="eventBackdrop" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-head">
       <h3 data-i18n="Activity detail">Activity detail</h3>
@@ -639,7 +654,25 @@
   </div>
 </div>
 
-<div class="toast hidden" id="toast"></div>
+<div class="modal-backdrop hidden" id="confirmBackdrop" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="confirmTitle">Confirm</h3>
+      <button class="icon-btn" id="confirmClose" aria-label="Close">✕</button>
+    </div>
+    <p id="confirmText" class="pre-wrap"></p>
+    <label class="check hidden" id="confirmCheckRow">
+      <input id="confirmCheck" type="checkbox">
+      <span id="confirmCheckLabel"></span>
+    </label>
+    <div class="row end">
+      <button class="btn ghost" id="confirmNo" data-i18n="Cancel">Cancel</button>
+      <button class="btn primary" id="confirmYes" data-i18n="Continue">Continue</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
 </body>
 </html>

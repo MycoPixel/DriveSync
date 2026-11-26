@@ -28,7 +28,12 @@ from .db import Store, parse_include_patterns, to_local
 
 
 def _open_store():
-    return Store(app_dir() / "state.db")
+    store = Store(app_dir() / "state.db")
+    try:
+        store.configure_keyring(load_config().get("keyring_tokens", False))
+    except Exception:
+        pass
+    return store
 
 
 def _open_browser(url):

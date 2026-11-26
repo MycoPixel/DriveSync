@@ -37,6 +37,8 @@ DEFAULT_CONFIG = {
     "auth_port": 53137,           # loopback port for the OAuth redirect
     "client_id": "",              # user's own Google OAuth desktop client
     "client_secret": "",
+    "drive_scope": "full",        # full | readonly (readonly = Drive read-only)
+    "keyring_tokens": False,      # keep OAuth tokens in the OS keyring
     "convert_google_docs": True,  # download Docs/Sheets/Slides as docx/xlsx/pptx
     "export_formats": {},         # per-kind override, e.g. {"document": "pdf"}
     "incremental_scan": True,     # use the Drive changes feed instead of
@@ -265,6 +267,12 @@ def save_config(cfg: dict) -> dict:
 
     merged["client_id"] = str(merged["client_id"]).strip()
     merged["client_secret"] = str(merged["client_secret"]).strip()
+
+    scope = str(merged.get("drive_scope") or "full").strip().lower()
+    if scope not in ("full", "readonly"):
+        raise ValueError("drive_scope must be 'full' or 'readonly'")
+    merged["drive_scope"] = scope
+    merged["keyring_tokens"] = bool(merged.get("keyring_tokens", False))
 
     merged["convert_google_docs"] = bool(merged["convert_google_docs"])
     fmts = merged["export_formats"]
