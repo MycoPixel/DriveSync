@@ -5,6 +5,63 @@ Older entries below 0.2.1 are summarized from the git history.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-26
+
+### Added
+- **Read-only Drive access is now enforced by the sync engine**, not just
+  by the dashboard: a bidirectional pair created before the switch is
+  treated as download-only, so a token issued with write scope can never
+  upload or delete. A banner explains the mode.
+- **Graceful shutdown.** `serve` turns SIGTERM/SIGINT/SIGHUP into a normal
+  unwind, so systemd stops the watcher and worker and checkpoints the WAL
+  instead of killing the process mid-pass.
+- **Diagnostics bundle.** `drivesync doctor --bundle` writes a redacted zip
+  with versions, config, recent activity and a database `quick_check`.
+  `serve` now writes a rotating log (`drivesync.log`, 1 MiB × 3) that
+  masks Google credentials before they reach disk.
+- **Keyring lifecycle.** Turning keyring storage off moves tokens back into
+  the 0600 database, and **Forget keyring tokens** deletes the OS-keyring
+  copies. Entries are namespaced per data directory so two profiles do not
+  share an account's refresh token.
+- **Pair-removal undo is bounded**: very large pairs skip the in-memory
+  snapshot instead of risking a memory spike on delete.
+- **The desktop app can cancel sign-in** and revokes Google access off the
+  GTK thread, so a slow or offline revocation never freezes the window.
+
+### Changed
+- The local-change watcher ignores `.git`, `node_modules`, `.venv`,
+  `__pycache__` and the DriveSync data directory, and reports a failed
+  inotify watch (e.g. the system watch limit) instead of silently falling
+  back to polling.
+- The dashboard reloads once when the per-server token rotates after a
+  restart, and the token-bearing page is served with `Cache-Control:
+  no-store`. Response headers now also include `Permissions-Policy`,
+  `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy`.
+- SQLite rows are fetched while the store lock is held, removing a class of
+  cross-thread cursor races between the worker and dashboard.
+- Activity-log pruning runs daily while the service is up, not only at
+  startup.
+- API string fields are type-checked (a JSON number in `local_path` or
+  `direction` is a 400, not a 500). A second concurrent sign-in is refused,
+  and cancelling a finished job reports its real status.
+- **Python 3.10 is now the minimum** (3.9 is end-of-life), which removes the
+  vulnerable marker-scoped fallbacks from the lockfile.
+
+### Fixed
+- The dashboard confirmation dialog now closes on Escape, traps Tab and
+  restores focus, with `aria-describedby` on the dialog.
+- The web dashboard's Spanish catalog is covered by a test, including the
+  symbol keys (`set.keyring`) that previously rendered as raw text.
+
+### Engineering
+- The AppImage ships AppStream metadata (`drivesync.metainfo.xml`), so
+  software centers and `appstreamcli validate` see it.
+- Releases attach a CycloneDX SBOM, Dependabot tracks the lockfile and
+  Actions, and a weekly workflow audits the shipped dependencies.
+- The systemd user units gained `PrivateDevices`, `ProtectClock`,
+  `ProtectHostname`, `ProtectKernelLogs`, namespace/realtime restrictions,
+  a system-call allowlist, `UMask=0077` and `TimeoutStopSec=30`.
+
 ## [0.7.0] - 2026-11-25
 
 ### Added

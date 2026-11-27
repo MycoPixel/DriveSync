@@ -103,8 +103,8 @@ tokens and files stay on your machine and talk to Google directly.
 
 ## Requirements
 
-- Linux (anything with Python 3.9+; developed and tested on x86-64)
-- Python 3.9+, `pip`/`venv`
+- Linux (anything with Python 3.10+; developed and tested on x86-64)
+- Python 3.10+, `pip`/`venv`
 - A Google account
 
 ## Install
@@ -113,8 +113,8 @@ From a package (recommended — no terminal needed beyond the install command,
 and the software center can do even that):
 
 ```bash
-sudo apt install ./drivesync_0.7.0-1_all.deb      # Debian/Ubuntu/Mint
-sudo dnf install ./drivesync-0.7.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
+sudo apt install ./drivesync_0.8.0-1_all.deb      # Debian/Ubuntu/Mint
+sudo dnf install ./drivesync-0.8.0-1.noarch.rpm   # Fedora/RHEL/openSUSE
 ```
 
 Packages install the app user-locally (`~/.local/share/drivesync`, venv
@@ -351,7 +351,8 @@ drivesync config export|import FILE   move settings + pairs between machines
 drivesync recovery status|trash|…     deletion holds, trash, versions, history
 drivesync mount DIR [--remote-id ID]  read-only FUSE mount (needs fusepy)
 drivesync audit [--fix]               credential/file-permission check
-drivesync doctor                      sanity-check the installation
+drivesync doctor [--bundle [PATH]]    sanity-check the installation;
+                                      --bundle writes a redacted support zip
 ```
 
 ### Read-only FUSE mount (optional)
@@ -539,10 +540,18 @@ the venv.
 
 OAuth tokens live in `state.db` (`0600`, data directory `0700`) unless
 the **Keep OAuth tokens in the system keyring** setting moves them to the
-OS keyring (`keyring_tokens=true`). The dashboard is loopback-only and every API call
+OS keyring (`keyring_tokens=true`); turning that setting off moves them
+back, and **Forget keyring tokens** deletes the keyring copies. The
+dashboard is loopback-only and every API call
 needs the random per-server token embedded in the page (or sent as a
 Bearer token), which blocks cross-site requests and DNS rebinding. Removing
-an account can revoke its Google grant at the same time. Check an
+an account can revoke its Google grant at the same time. Read-only Drive
+access is enforced by the sync engine as well as the API, so an existing
+bidirectional pair cannot upload in that mode.
+
+`drivesync serve` writes a rotating, credential-redacting log to the data
+directory. `drivesync doctor --bundle` produces a scrubbed zip (versions,
+config, recent activity, database `quick_check`) for a bug report. Check an
 installation with:
 
 ```bash

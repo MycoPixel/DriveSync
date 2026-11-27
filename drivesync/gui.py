@@ -45,8 +45,8 @@ from . import present  # noqa: E402
 from . import themes  # noqa: E402
 
 from . import __version__  # noqa: E402
-from .auth import (access_token_persisting, interactive_auth,  # noqa: E402
-                   revoke_token, token_from_json, whoami)
+from .auth import (AuthCancelled, access_token_persisting,  # noqa: E402
+                   interactive_auth, revoke_token, token_from_json, whoami)
 from .config import app_dir, load_config, update_config  # noqa: E402
 from .db import Store, parse_include_patterns, to_local  # noqa: E402
 from .drive import (Drive, FOLDER_MIME, breadcrumbs, file_category,
@@ -1579,6 +1579,10 @@ class DesktopApp:
         self.btn_signin.get_style_context().add_class("suggested-action")
         self.btn_signin.connect("clicked", self._on_signin)
         row.pack_start(self.btn_signin, False, False, 0)
+        self.btn_cancel_auth = self._tr_button("Cancel sign-in")
+        self.btn_cancel_auth.set_no_show_all(True)
+        self.btn_cancel_auth.connect("clicked", self._on_cancel_signin)
+        row.pack_start(self.btn_cancel_auth, False, False, 0)
         btn_rm = self._tr_button("Remove selected")
         btn_rm.get_style_context().add_class("destructive-action")
         btn_rm.connect("clicked", self._on_remove_account)
@@ -1624,20 +1628,38 @@ class DesktopApp:
 
     def _on_signin(self, _btn):
         self.btn_signin.set_sensitive(False)
+        self._auth_cancel = threading.Event()
+        self.btn_cancel_auth.show()
+        self.btn_cancel_auth.set_sensitive(True)
         self.hb.set_subtitle(i18n.t("waiting for Google…"))
         self._bg(self._auth_and_store, self._signin_done)
 
+    def _on_cancel_signin(self, _btn):
+        if getattr(self, "_auth_cancel", None) is not None:
+            self._auth_cancel.set()
+        self.btn_cancel_auth.set_sensitive(False)
+        self.hb.set_subtitle(i18n.t("cancelling…"))
+
     def _auth_and_store(self):
         cfg = load_config()  # fresh read: creds may have just been saved
-        tokens = interactive_auth(cfg)
+        try:
+            tokens = interactive_auth(
+                cfg, cancel_event=getattr(self, "_auth_cancel", None))
+        except AuthCancelled:
+            return None
         email = whoami(tokens["access_token"]).get("emailAddress", "unknown")
         row = self.store.add_account(email, tokens)
         return email, row["id"]
 
     def _signin_done(self, result):
-        email, acc_id = result
+        self._auth_cancel = None
+        self.btn_cancel_auth.hide()
         self.hb.set_subtitle("")
         self.btn_signin.set_sensitive(True)
+        if result is None:
+            self._info(i18n.t("Sign-in cancelled — nothing was changed."))
+            return
+        email, acc_id = result
         self._refresh_accounts()
         self._refresh_setup_status()
         self._info(i18n.T("Authorized {email} (account #{acc_id}).\n"
@@ -1674,11 +1696,16 @@ class DesktopApp:
         self._refresh_accounts()
         self._refresh_setup_status()
         if revoke:
-            ok, detail = revoke_token(token)
-            if not ok:
-                self._info(i18n.T(
-                    "Account removed, but Google revocation failed: "
-                    "{detail}", detail=detail))
+            # Google can take seconds (or hang) when offline; never freeze
+            # the window waiting for the revocation round trip.
+            self._bg(lambda: revoke_token(token), self._revoke_done)
+
+    def _revoke_done(self, result):
+        ok, detail = result
+        if not ok:
+            self._info(i18n.T(
+                "Account removed, but Google revocation failed: {detail}",
+                detail=detail))
 
     def _refresh_accounts(self):
         self.acc_store.clear()

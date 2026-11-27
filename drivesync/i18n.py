@@ -195,6 +195,12 @@ _STRINGS = {
 
     # ---- Accounts tab ------------------------------------------------
     "Sign in with Google\u2026": "Iniciar sesión con Google\u2026",
+    "Cancel sign-in": "Cancelar inicio de sesión",
+    "cancelling…": "cancelando…",
+    "Sign-in cancelled — nothing was changed.":
+        "Inicio de sesión cancelado; no se cambió nada.",
+    "Account removed, but Google revocation failed: {detail}":
+        "Cuenta eliminada, pero la revocación de Google falló: {detail}",
     "Remove selected": "Quitar la selección",
     "Google's consent page opens in your browser once per account — that "
     "step must happen on google.com. Tokens are stored locally and "

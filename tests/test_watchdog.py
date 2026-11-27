@@ -188,7 +188,13 @@ def test_service_units_are_sandboxed():
                 "ProtectKernelTunables=yes", "ProtectKernelModules=yes",
                 "ProtectControlGroups=yes",
                 "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
-                "RestrictSUIDSGID=yes", "LockPersonality=yes")
+                "RestrictSUIDSGID=yes", "LockPersonality=yes",
+                "PrivateDevices=yes", "ProtectClock=yes",
+                "ProtectHostname=yes", "ProtectKernelLogs=yes",
+                "RestrictNamespaces=yes", "RestrictRealtime=yes",
+                "SystemCallArchitectures=native",
+                "SystemCallFilter=@system-service", "UMask=0077",
+                "TimeoutStopSec=30")
     for src in sources:
         text = src.read_text(encoding="utf-8")
         missing = [line for line in required if line not in text]

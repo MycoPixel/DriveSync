@@ -48,6 +48,23 @@
   <icon type="theme">drivesync</icon>
   <icon type="stock">drivesync</icon>
   <releases>
+    <release version="0.8.0" date="2026-11-26">
+      <description>
+        <p>
+          Reliability release. Read-only Drive access is now enforced by the
+          sync engine, a systemd stop closes the database cleanly, and the
+          local-change watcher ignores build/VCS noise and its own data
+          directory. Keyring storage can be turned off or forgotten, and
+          very large pair removals no longer risk a memory spike.
+        </p>
+        <p>
+          The dashboard reloads after a server restart, API fields are
+          type-checked, and the desktop app can cancel sign-in. Serve now
+          writes a rotating redacted log, and `drivesync doctor --bundle`
+          produces a scrubbed support archive.
+        </p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-11-25">
       <description>
         <p>

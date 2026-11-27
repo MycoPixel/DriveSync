@@ -734,3 +734,133 @@ def test_sign_in_rejects_an_unknown_drive_scope(client):
     resp = c.post("/api/accounts", json={"drive_scope": "write"})
     assert resp.status_code == 400
     assert "drive_scope" in resp.get_json()["error"]
+
+
+# ---- input validation / hardening ----------------------------------------
+def test_index_disables_caching_and_sets_isolation_headers(client):
+    c, _ = client
+    resp = c.get("/")
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert resp.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    assert resp.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    assert "geolocation=()" in resp.headers["Permissions-Policy"]
+
+
+def test_pair_creation_rejects_non_string_paths(client):
+    c, _ = client
+    resp = c.post("/api/pairs", json={"local_path": 123,
+                                      "account_id": 1, "remote_id": "x"})
+    assert resp.status_code == 400
+    assert "local_path must be a string" in resp.get_json()["error"]
+
+
+def test_pair_creation_rejects_missing_fields(client):
+    c, _ = client
+    resp = c.post("/api/pairs", json={"account_id": 1, "remote_id": "x"})
+    assert resp.status_code == 400
+    assert "missing field: local_path" in resp.get_json()["error"]
+    resp = c.post("/api/pairs", json={"account_id": 1,
+                                      "local_path": "/tmp"})
+    assert resp.status_code == 400
+    assert "missing field: remote_id" in resp.get_json()["error"]
+
+
+def test_pair_update_rejects_non_string_direction(client, tmp_path):
+    c, store = client
+    store.add_account("me@example.com", {})
+    pair = store.add_pair(1, str(tmp_path), "abc")
+    resp = c.patch(f"/api/pairs/{pair['id']}", json={"direction": 5})
+    assert resp.status_code == 400
+    assert "direction must be a string" in resp.get_json()["error"]
+
+
+def test_large_pair_delete_offers_no_undo(client, tmp_path):
+    c, store = client
+    store.UNDO_MAX_ENTRIES = 0
+    store.add_account("me@example.com", {})
+    pair = store.add_pair(1, str(tmp_path), "abc")
+    store.base_put(pair["id"], "a.txt", "file")
+    body = c.delete(f"/api/pairs/{pair['id']}").get_json()
+    assert body["ok"] is True and body["undo"] is None
+
+
+def test_second_sign_in_is_refused_while_one_is_pending(client, monkeypatch):
+    c, _ = client
+    import threading
+    import time
+    from drivesync import config
+    import drivesync.server as srv
+
+    config.update_config(client_id="cid", client_secret="csec")
+    release = threading.Event()
+
+    def slow_auth(cfg, cancel_event=None):
+        release.wait(5)
+        return {"access_token": "t", "refresh_token": "r"}
+
+    monkeypatch.setattr(srv, "interactive_auth", slow_auth)
+    monkeypatch.setattr(srv, "whoami",
+                        lambda tok: {"emailAddress": "me@example.com"})
+    first = c.post("/api/accounts", json={})
+    assert first.status_code == 202
+    second = c.post("/api/accounts", json={})
+    assert second.status_code == 409
+    assert "already in progress" in second.get_json()["error"]
+    release.set()
+    job = first.get_json()["job"]
+    for _ in range(200):
+        if c.get(f"/api/accounts/auth/{job}").get_json()["status"] == "done":
+            break
+        time.sleep(0.01)
+
+
+def test_cancel_returns_the_jobs_real_status(client, monkeypatch):
+    c, _ = client
+    import threading
+    import time
+    from drivesync import config
+    import drivesync.server as srv
+
+    config.update_config(client_id="cid", client_secret="csec")
+    release = threading.Event()
+
+    def slow_auth(cfg, cancel_event=None):
+        cancel_event.wait(5)
+        from drivesync.auth import AuthCancelled
+        raise AuthCancelled("cancelled")
+
+    monkeypatch.setattr(srv, "interactive_auth", slow_auth)
+    monkeypatch.setattr(srv, "whoami",
+                        lambda tok: {"emailAddress": "me@example.com"})
+    job = c.post("/api/accounts", json={}).get_json()["job"]
+    cancelled = c.delete(f"/api/accounts/auth/{job}").get_json()
+    assert cancelled["status"] == "cancelled"
+    # a second cancel must not pretend the job became cancelled again
+    again = c.delete(f"/api/accounts/auth/{job}").get_json()
+    assert again["status"] == "cancelled"
+    release.set()
+    for _ in range(200):
+        status = c.get(f"/api/accounts/auth/{job}").get_json()["status"]
+        if status != "pending":
+            break
+        time.sleep(0.01)
+
+
+def test_cancel_reports_a_finished_job_as_done(client, monkeypatch):
+    c, _ = client
+    import time
+    from drivesync import config
+    import drivesync.server as srv
+
+    config.update_config(client_id="cid", client_secret="csec")
+    monkeypatch.setattr(srv, "interactive_auth",
+                        lambda cfg, cancel_event=None: {
+                            "access_token": "t", "refresh_token": "r"})
+    monkeypatch.setattr(srv, "whoami",
+                        lambda tok: {"emailAddress": "me@example.com"})
+    job = c.post("/api/accounts", json={}).get_json()["job"]
+    for _ in range(200):
+        if c.get(f"/api/accounts/auth/{job}").get_json()["status"] == "done":
+            break
+        time.sleep(0.01)
+    assert c.delete(f"/api/accounts/auth/{job}").get_json()["status"] == "done"

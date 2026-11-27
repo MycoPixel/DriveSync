@@ -32,16 +32,39 @@ function friendlyError(message) {
   return raw;
 }
 
+let _apiReloaded = false;
 const api = async (path, opts = {}) => {
-  const resp = await fetch(path, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      "X-DriveSync": API_TOKEN,
-      ...(opts.headers || {}),
-    },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  const { timeout = 20000, ...fetchOpts } = opts;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  let resp;
+  try {
+    resp = await fetch(path, {
+      ...fetchOpts,
+      signal: ctrl.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-DriveSync": API_TOKEN,
+        ...(opts.headers || {}),
+      },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (err) {
+    if (err && err.name === "AbortError")
+      throw new Error(t("The dashboard did not answer in time. Is the DriveSync service still running?"));
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  // The API token rotates on every server start; a tab left open across a
+  // restart would otherwise sit on 403 forever. Reload once to pick up the
+  // new token instead of making the user guess why everything failed.
+  if ((resp.status === 401 || resp.status === 403) && !_apiReloaded) {
+    _apiReloaded = true;
+    toast(t("The dashboard restarted — reloading…"));
+    setTimeout(() => location.reload(), 700);
+    throw new Error(t("The dashboard token expired; reloading the page."));
+  }
   const data = await resp.json().catch(() => ({ ok: false, error: "bad JSON" }));
   if (!resp.ok || data.ok === false) throw new Error(friendlyError(data.error || resp.statusText));
   return data;
@@ -76,10 +99,13 @@ function confirmDialog({ title, text, yes = "Continue", no = "Cancel",
                         check = null, danger = false }) {
   return new Promise((resolve) => {
     const back = $("#confirmBackdrop");
+    const previous = document.activeElement;
     const done = (ok) => {
       back.classList.add("hidden");
+      back.onkeydown = null;
       $("#confirmYes").classList.remove("danger");
       $("#confirmYes").classList.add("primary");
+      if (previous && typeof previous.focus === "function") previous.focus();
       resolve({ ok, checked: $("#confirmCheck").checked });
     };
     $("#confirmTitle").textContent = title || t("Confirm");
@@ -103,6 +129,23 @@ function confirmDialog({ title, text, yes = "Continue", no = "Cancel",
     $("#confirmNo").onclick = () => done(false);
     $("#confirmClose").onclick = () => done(false);
     back.onclick = (e) => { if (e.target === back) done(false); };
+    // Escape closes, and Tab stays inside the dialog (aria-modal alone
+    // does not stop focus from escaping in every browser).
+    back.onkeydown = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); done(false); return; }
+      if (e.key !== "Tab") return;
+      const items = [...back.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select, textarea, ' +
+        'a[href], [tabindex]:not([tabindex="-1"])')]
+        .filter((el) => el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    };
     back.classList.remove("hidden");
     $("#confirmYes").focus();
   });
@@ -259,6 +302,44 @@ const ES = {
     'Convertir Docs/Sheets/Slides de Google a archivos Office <span class="muted">(Docs → .docx, Sheets → .xlsx, Slides → .pptx, Drawings → .png)</span>',
   "set.ignores": 'Ignore patterns <span class="muted">(one per line, glob style)</span>|' +
     'Patrones a ignorar <span class="muted">(uno por línea, estilo glob)</span>',
+  "set.keyring": 'Keep OAuth tokens in the system keyring <span class="muted">(Secret Service/KWallet; needs the optional keyring package — otherwise tokens stay in the private 0600 database)</span>|' +
+    'Guardar los tokens OAuth en el llavero del sistema <span class="muted">(Secret Service/KWallet; necesita el paquete opcional keyring — si no, los tokens se quedan en la base de datos privada 0600)</span>',
+  "Cancel": "Cancelar",
+  "Continue": "Continuar",
+  "Name": "Nombre",
+  "Drive access": "Acceso a Drive",
+  "Full access (read and write)": "Acceso completo (lectura y escritura)",
+  "Read-only (download only)": "Solo lectura (solo descarga)",
+  "Test connection": "Probar conexión",
+  "Cancel sign-in": "Cancelar inicio de sesión",
+  "Forget keyring tokens": "Olvidar tokens del llavero",
+  "Read-only Drive access": "Acceso a Drive de solo lectura",
+  "Uploads and remote deletes are disabled; pairs only download from Drive.":
+    "Las subidas y los borrados remotos están desactivados; los pares solo descargan de Drive.",
+  "Removed {n} keyring entries": "Se eliminaron {n} entradas del llavero",
+  "This deletes the OS-keyring copies and keeps the tokens in the private 0600 database. Use it if another app or profile should no longer see them.":
+    "Esto borra las copias del llavero del sistema y conserva los tokens en la base de datos privada 0600. Úsalo si otra aplicación o perfil ya no debería verlos.",
+  "Account removed, but Google revocation failed: {detail}":
+    "Cuenta eliminada, pero la revocación de Google falló: {detail}",
+  "Remove {email} and all of its sync pairs? Local files and Drive contents are kept.":
+    "¿Eliminar {email} y todos sus pares de sincronización? Los archivos locales y el contenido de Drive se conservan.",
+  "Pair #{pid} removed": "Par n.º {pid} eliminado",
+  "{n} transfer(s) active": "{n} transferencia(s) activa(s)",
+  "cap {kb} KB/s": "límite {kb} KB/s",
+  "{m}m": "{m} min",
+  "{sec}s": "{sec} s",
+  "Open the Google Cloud Console": "Abrir la consola de Google Cloud",
+  "create a project": "crear un proyecto",
+  "Create credentials → OAuth client ID → Desktop app":
+    "Crear credenciales → ID de cliente OAuth → Aplicación de escritorio",
+  "Enable the Google Drive API": "Habilitar la API de Google Drive",
+  "Configure the OAuth consent screen": "Configurar la pantalla de consentimiento OAuth",
+  "add yourself as a test user while it is in Testing":
+    "añádete como usuario de prueba mientras esté en modo Prueba",
+  "Paste the client ID and secret below, then test the connection.":
+    "Pega abajo el ID de cliente y el secreto, y luego prueba la conexión.",
+  "pairs-cards-hint": "Cada par es una tarjeta: estado de un vistazo, con la lista completa de acciones en «Más».",
+  "appearance-shared": "Se guarda en los ajustes de DriveSync, así que la app de escritorio y este panel usan el mismo tema, color de acento e idioma.",
   "Save settings": "Guardar ajustes",
   "Choose a Drive folder": "Elegir una carpeta de Drive",
   "↑ Up": "↑ Subir",
@@ -564,6 +645,43 @@ const ES = {
   "File taken out of the Drive trash.": "Archivo sacado de la papelera de Drive.",
   "Version restored; the current copy was kept too.": "Versión restaurada; la copia actual también se conservó.",
   "Enter a file path first.": "Escribe antes una ruta de archivo.",
+  "Allow deletions": "Permitir borrados",
+  "Block deletions": "Bloquear borrados",
+  "Checking the credentials with Google…":
+    "Comprobando las credenciales con Google…",
+  "Confirm": "Confirmar",
+  "ETA": "Tiempo restante",
+  "Forget keyring tokens?": "¿Olvidar los tokens del llavero?",
+  "Google Drive is having trouble right now. Try again shortly.":
+    "Google Drive tiene problemas ahora mismo. Inténtalo de nuevo en breve.",
+  "Google Drive is rate-limiting requests. Wait a minute and retry.":
+    "Google Drive está limitando las solicitudes. Espera un minuto y reinténtalo.",
+  "Google Drive storage is full. Free some space, then retry.":
+    "El almacenamiento de Google Drive está lleno. Libera espacio y reinténtalo.",
+  "Google refused that operation. Check the account's permissions and whether this is a read-only sign-in.":
+    "Google rechazó esa operación. Comprueba los permisos de la cuenta y si el inicio de sesión es de solo lectura.",
+  "More": "Más",
+  "Open folder": "Abrir carpeta",
+  "Open in Drive": "Abrir en Drive",
+  "Pair paused": "Par en pausa",
+  "Pair restored": "Par restaurado",
+  "Pair resumed": "Par reanudado",
+  "Remove account": "Quitar cuenta",
+  "Remove pair": "Quitar par",
+  "Sign-in cancelled.": "Inicio de sesión cancelado.",
+  "Sign-in did not finish.": "El inicio de sesión no terminó.",
+  "The dashboard did not answer in time. Is the DriveSync service still running?":
+    "El panel no respondió a tiempo. ¿Sigue en ejecución el servicio DriveSync?",
+  "The dashboard restarted — reloading…": "El panel se reinició; recargando…",
+  "The dashboard token expired; reloading the page.":
+    "El token del panel caducó; recargando la página.",
+  "Undo": "Deshacer",
+  "You appear to be offline, or Google Drive is unreachable. Check the connection and retry.":
+    "Pareces estar sin conexión, o no se puede acceder a Google Drive. Comprueba la conexión y reinténtalo.",
+  "Your Google sign-in expired. Open Accounts and press Reconnect.":
+    "Tu inicio de sesión de Google caducó. Abre Cuentas y pulsa Reconectar.",
+  "calculating…": "calculando…",
+  "last sync failed": "la última sincronización falló",
 };
 
 const LANG_NAMES = { en: "English", es: "Español" };
@@ -797,6 +915,8 @@ async function loadDashboard() {
   try {
     const st = await api("/api/status");
     $("#version").textContent = "v" + st.version;
+    const ro = $("#readonlyBanner");
+    if (ro) ro.classList.toggle("hidden", !st.readonly);
     const w = st.worker || {};
     const running = w.running ? `<span class="pill on">${esc(t("syncing"))}</span>`
       : (w.paused ? `<span class="pill off">${esc(t("paused"))}</span>`
@@ -1202,15 +1322,18 @@ async function loadPairs() {
       if (!ok) return;
       try {
         const res = await api(`/api/pairs/${b.dataset.del}`, { method: "DELETE" });
-        toast(T("Pair #{pid} removed", { pid: b.dataset.del }), 8000,
-              { label: t("Undo"), run: async () => {
-                  try {
-                    await api("/api/pairs/undo", { method: "POST",
-                                                   body: { undo: res.undo } });
-                    toast(t("Pair restored"));
-                    loadPairs();
-                  } catch (err) { toast(err.message); }
-                } });
+        const undo = res.undo ? {
+          label: t("Undo"), run: async () => {
+            try {
+              await api("/api/pairs/undo", { method: "POST",
+                                             body: { undo: res.undo } });
+              toast(t("Pair restored"));
+              loadPairs();
+            } catch (err) { toast(err.message); }
+          },
+        } : null;
+        toast(T("Pair #{pid} removed", { pid: b.dataset.del }),
+              undo ? 8000 : 2600, undo);
         loadPairs();
       } catch (err) { toast(err.message); }
     }));
@@ -2253,6 +2376,8 @@ async function loadSettings() {
     $("#setConvertDocs").checked = settings.convert_google_docs !== false;
     const st = await api("/api/status");
     $("#version").textContent = "v" + st.version;
+    const ro = $("#readonlyBanner");
+    if (ro) ro.classList.toggle("hidden", !st.readonly);
     $("#aboutText").textContent =
       `DriveSync ${T("— local dashboard port {port}. Data lives in {db}.",
         { port: settings.server_port, db: st.db })}`;
@@ -2296,6 +2421,19 @@ $("#settingsForm").addEventListener("submit", async (e) => {
     setMsg("#settingsMsg", t("Saved."), "ok");
     toast(t("Settings saved"));
   } catch (err) { setMsg("#settingsMsg", err.message, "err"); }
+});
+
+$("#setForgetKeyring")?.addEventListener("click", async () => {
+  const { ok } = await confirmDialog({
+    title: t("Forget keyring tokens?"),
+    text: T("This deletes the OS-keyring copies and keeps the tokens in the private 0600 database. Use it if another app or profile should no longer see them."),
+    yes: t("Forget"), danger: true,
+  });
+  if (!ok) return;
+  try {
+    const r = await api("/api/settings/keyring/forget", { method: "POST" });
+    toast(T("Removed {n} keyring entries", { n: r.moved || 0 }));
+  } catch (err) { toast(err.message); }
 });
 
 /* ---------- global actions ---------- */

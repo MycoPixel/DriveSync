@@ -357,3 +357,84 @@ def test_keyring_unavailable_falls_back_to_sqlite(store, monkeypatch):
     raw = store._exec("SELECT token_json FROM accounts WHERE email=?",
                       ("me@example.com",)).fetchone()["token_json"]
     assert json.loads(raw)["refresh_token"] == "r"
+
+
+def test_disabling_keyring_moves_tokens_back_to_sqlite(store, monkeypatch):
+    import json
+    saved = _fake_keyring(monkeypatch)
+    store.configure_keyring(True)
+    store.add_account("me@example.com", {"refresh_token": "secret"})
+    assert json.loads(store._exec(
+        "SELECT token_json FROM accounts WHERE email=?",
+        ("me@example.com",)).fetchone()["token_json"]) == {"keyring": True}
+
+    assert store.configure_keyring(False) is False
+    raw = json.loads(store._exec(
+        "SELECT token_json FROM accounts WHERE email=?",
+        ("me@example.com",)).fetchone()["token_json"])
+    assert raw["refresh_token"] == "secret"
+    # disabling does not silently delete the keyring copy
+    assert saved
+
+
+def test_forget_keyring_tokens_purges_keyring_and_keeps_sqlite(
+        store, monkeypatch):
+    import json
+    saved = _fake_keyring(monkeypatch)
+    store.configure_keyring(True)
+    store.add_account("me@example.com", {"refresh_token": "secret"})
+
+    assert store.forget_keyring_tokens() == 1
+    assert saved == {}
+    raw = json.loads(store._exec(
+        "SELECT token_json FROM accounts WHERE email=?",
+        ("me@example.com",)).fetchone()["token_json"])
+    assert raw["refresh_token"] == "secret"
+
+
+def test_keyring_service_is_namespaced_per_data_directory(tmp_path):
+    a = Store(tmp_path / "one" / "state.db")
+    b = Store(tmp_path / "two" / "state.db")
+    try:
+        assert a._keyring_service() != b._keyring_service()
+        assert a._keyring_service().startswith("drivesync:")
+    finally:
+        a.close()
+        b.close()
+
+
+def test_concurrent_reads_fetch_under_the_store_lock(store):
+    """The dashboard and worker share one connection; rows must be read
+    while the lock is held instead of through a cursor handed to another
+    thread (the old code interleaved on the same cursor)."""
+    import threading
+    store.add_account("me@example.com", {"refresh_token": "r"})
+    errors = []
+
+    def read():
+        try:
+            for _ in range(200):
+                assert store.accounts()[0]["email"] == "me@example.com"
+                store.pairs()
+                store.recent_events()
+        except Exception as exc:      # noqa: BLE001 - report any failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+
+
+def test_snapshot_pair_reports_a_too_large_base(store):
+    store.add_account("me@example.com", {})
+    pair = store.add_pair(1, "/tmp/docs", "abc")
+    store.base_put(pair["id"], "a.txt", "file")
+    snap = store.snapshot_pair(pair["id"], max_entries=0)
+    assert snap["truncated"] is True
+    assert snap["entries"] == []
+    small = store.snapshot_pair(pair["id"], max_entries=10)
+    assert small["truncated"] is False
+    assert len(small["entries"]) == 1

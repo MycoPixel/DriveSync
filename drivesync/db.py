@@ -1,5 +1,6 @@
 """SQLite state store: accounts, pairs, base snapshots and the activity log."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -207,6 +208,40 @@ def to_local(iso: str) -> str:
     return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
+class _Rows:
+    """Materialized result of one statement.
+
+    The store shares a single SQLite connection between the worker, the
+    dashboard's request threads and the tray. Returning a live cursor and
+    fetching it after the lock is released lets two threads interleave on
+    the same cursor (``Recursive use of cursors`` or a half-read result).
+    Rows are therefore fetched while the lock is held; the tiny cursor API
+    below keeps the call sites unchanged.
+    """
+
+    __slots__ = ("_rows", "rowcount", "lastrowid")
+
+    def __init__(self, rows, rowcount=-1, lastrowid=None):
+        self._rows = rows
+        self.rowcount = rowcount
+        self.lastrowid = lastrowid
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __len__(self):
+        return len(self._rows)
+
+    def __getitem__(self, index):
+        return self._rows[index]
+
+
 class Store:
     """Thin thread-safe wrapper around the SQLite database."""
 
@@ -400,12 +435,25 @@ class Store:
     def _exec(self, sql, params=()):
         with self._lock:
             cur = self._conn.execute(sql, params)
+            rows = cur.fetchall() if cur.description else []
+            result = _Rows(rows, cur.rowcount, cur.lastrowid)
             if not self._batch_depth:
                 self._conn.commit()
-            return cur
+            return result
 
     # ---- optional OS keyring for OAuth tokens ----------------------
     _KEYRING_SERVICE = "drivesync"
+
+    def _keyring_service(self):
+        """Per-data-directory service name.
+
+        Two profiles (or a portable install and the default one) can hold
+        the same e-mail; a single service name would make them share one
+        keyring entry and overwrite each other's refresh token.
+        """
+        base = os.path.dirname(os.path.abspath(self.path or "state.db"))
+        digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:12]
+        return f"{self._KEYRING_SERVICE}:{digest}"
 
     def _keyring(self):
         """The keyring module, or None when it is unavailable/not installed."""
@@ -427,7 +475,7 @@ class Store:
         if kr is None:
             return False
         try:
-            kr.set_password(self._KEYRING_SERVICE, email,
+            kr.set_password(self._keyring_service(), email,
                             json.dumps(token_json))
             return True
         except Exception:
@@ -437,20 +485,26 @@ class Store:
         kr = self._keyring()
         if kr is None:
             return None
-        try:
-            raw = kr.get_password(self._KEYRING_SERVICE, email)
-            return json.loads(raw) if raw else None
-        except Exception:
-            return None
+        services = (self._keyring_service(), self._KEYRING_SERVICE)
+        for service in dict.fromkeys(services):
+            try:
+                raw = kr.get_password(service, email)
+                if raw:
+                    return json.loads(raw)
+            except Exception:
+                continue
+        return None
 
     def _keyring_delete(self, email):
         kr = self._keyring()
         if kr is None:
             return
-        try:
-            kr.delete_password(self._KEYRING_SERVICE, email)
-        except Exception:
-            pass
+        for service in dict.fromkeys(
+                (self._keyring_service(), self._KEYRING_SERVICE)):
+            try:
+                kr.delete_password(service, email)
+            except Exception:
+                pass
 
     def _hydrate(self, row):
         """Replace a keyring marker with the real token dict."""
@@ -468,24 +522,13 @@ class Store:
             return out
         return row
 
-    def configure_keyring(self, enabled):
-        """Turn keyring storage on/off; returns whether it is active.
-
-        Enabling migrates existing plaintext tokens into the keyring and
-        leaves only a marker in SQLite. Disabling writes future tokens back
-        to the database but does not destroy the keyring copy (a later
-        re-enable finds it again).
-        """
-        self.keyring_enabled = bool(enabled)
-        if not self.keyring_enabled:
-            return False
-        if self._keyring() is None:
-            self.keyring_enabled = False
-            return False
+    def _keyring_migrate_in(self):
+        """Move plaintext tokens into the keyring (enable path)."""
         try:
             rows = self._exec("SELECT * FROM accounts").fetchall()
         except Exception:
-            return True
+            return 0
+        moved = 0
         for row in rows:
             try:
                 data = json.loads(row["token_json"])
@@ -496,6 +539,73 @@ class Store:
             if self._keyring_set(row["email"], data):
                 self._exec("UPDATE accounts SET token_json=? WHERE id=?",
                            (json.dumps({"keyring": True}), row["id"]))
+                moved += 1
+        return moved
+
+    def _keyring_migrate_out(self, purge=False):
+        """Move keyring-backed tokens back into SQLite (disable path).
+
+        Markers alone would keep pointing at the keyring even with the
+        setting off, so "off" did not actually stop using it. Copy each
+        token back to the database and, when ``purge`` is set, delete the
+        keyring entry too.
+        """
+        try:
+            rows = self._exec("SELECT * FROM accounts").fetchall()
+        except Exception:
+            return 0
+        moved = 0
+        for row in rows:
+            try:
+                data = json.loads(row["token_json"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict) or not data.get("keyring"):
+                continue
+            token = self._keyring_get(row["email"])
+            if token:
+                self._exec("UPDATE accounts SET token_json=? WHERE id=?",
+                           (json.dumps(token), row["id"]))
+                moved += 1
+            if purge:
+                self._keyring_delete(row["email"])
+        return moved
+
+    def forget_keyring_tokens(self):
+        """Delete every keyring entry, keeping the SQLite copies usable.
+
+        Returns the number of accounts moved back to the database. Safe to
+        call when the keyring is unavailable (nothing happens).
+        """
+        moved = self._keyring_migrate_out(purge=True)
+        try:
+            rows = self._exec("SELECT email FROM accounts").fetchall()
+            for row in rows:
+                self._keyring_delete(row["email"])
+        except Exception:
+            pass
+        return moved
+
+    def configure_keyring(self, enabled, purge=False):
+        """Turn keyring storage on/off; returns whether it is active.
+
+        Enabling migrates existing plaintext tokens into the keyring and
+        leaves only a marker in SQLite. Disabling moves them back into the
+        database (so the setting genuinely takes effect) and optionally
+        removes the keyring copies.
+        """
+        if not enabled:
+            self.keyring_enabled = False
+            try:
+                self._keyring_migrate_out(purge=purge)
+            except Exception:
+                pass
+            return False
+        self.keyring_enabled = True
+        if self._keyring() is None:
+            self.keyring_enabled = False
+            return False
+        self._keyring_migrate_in()
         return True
 
     # ---- accounts -------------------------------------------------
@@ -662,16 +772,41 @@ class Store:
         self.kv_delete(f"pending_deletes:{pair_id}")
         self.kv_delete(f"deletes_approved:{pair_id}")
 
-    def snapshot_pair(self, pair_id):
-        """Everything needed to undo a pair removal (pair + base + history)."""
+    # A snapshot keeps every base row in memory for the undo window. A pair
+    # with hundreds of thousands of files would make that a large spike on
+    # delete, so very large pairs skip the undo instead of risking it.
+    UNDO_MAX_ENTRIES = 5000
+    UNDO_MAX_RECOVERY = 200
+
+    def snapshot_pair(self, pair_id, max_entries=None,
+                      max_recovery=None):
+        """Everything needed to undo a pair removal (pair + base + history).
+
+        ``truncated`` is True when the base is too large to snapshot safely;
+        the pair row alone is not enough to restore without risking a
+        re-upload/conflict storm, so callers must offer no undo in that case.
+        """
         pair = self.pair(pair_id)
         if pair is None:
             return None
+        max_entries = self.UNDO_MAX_ENTRIES if max_entries is None \
+            else max_entries
+        max_recovery = self.UNDO_MAX_RECOVERY if max_recovery is None \
+            else max_recovery
+        total = self._exec(
+            "SELECT COUNT(*) FROM entries WHERE pair_id=?",
+            (pair_id,)).fetchone()[0]
+        truncated = total > max_entries
+        entries = [] if truncated else [
+            dict(r) for r in self.base_entries(pair_id)]
+        recovery = [dict(r) for r in self._exec(
+            "SELECT * FROM recovery WHERE pair_id=? ORDER BY id DESC LIMIT ?",
+            (pair_id, max_recovery)).fetchall()]
         return {
             "pair": dict(pair),
-            "entries": [dict(r) for r in self.base_entries(pair_id)],
-            "recovery": [dict(r) for r in self._exec(
-                "SELECT * FROM recovery WHERE pair_id=?", (pair_id,)).fetchall()],
+            "entries": entries,
+            "recovery": recovery,
+            "truncated": truncated,
         }
 
     def restore_pair(self, snapshot):

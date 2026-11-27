@@ -67,6 +67,12 @@ main{padding:20px 28px 60px;max-width:1080px;margin:0 auto}
 .row.between{justify-content:space-between}
 .msg{font-size:13.5px;min-height:1.2em}
 .msg.ok{color:#1d9939}.msg.err{color:var(--danger)}
+.banner{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline;
+  margin:0 0 16px;padding:11px 14px;border-radius:10px;
+  border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));
+  background:color-mix(in srgb,var(--accent) 12%,transparent);
+  font-size:13.5px}
+.banner b{font-weight:650}
 
 .tbl{width:100%;border-collapse:collapse;font-size:14px}
 .tbl th{ text-align:left;color:var(--muted);font-size:12px;text-transform:uppercase;

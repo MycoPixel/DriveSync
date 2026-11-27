@@ -144,14 +144,22 @@ def kind_of(mime):
 
 
 def ignored(rel, patterns):
-    """True if rel matches any ignore pattern (name or path glob)."""
+    """True if rel matches any ignore pattern (name, path or component).
+
+    Component matching means a pattern like ``.git`` excludes the whole
+    directory, not only an entry whose own name is exactly ``.git``.
+    """
     if not patterns:
         return False
+    rel = rel.replace("\\", "/")
     name = rel.rsplit("/", 1)[-1]
+    parts = rel.split("/")
     for pat in patterns:
         if not pat:
             continue
         if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat):
+            return True
+        if any(fnmatch.fnmatch(part, pat) for part in parts):
             return True
     return False
 

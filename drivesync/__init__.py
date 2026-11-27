@@ -4,5 +4,5 @@ Two-way sync between local folders and Google Drive, with a local web
 dashboard and a background worker. Original implementation, MIT licensed.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 APP_NAME = "DriveSync"

@@ -91,6 +91,16 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictSUIDSGID=yes
 LockPersonality=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
@@ -110,7 +120,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Installed-Size: ${SIZE_KB}
-Depends: python3 (>= 3.9), python3-flask (>= 2.2), python3-requests (>= 2.28), python3-gi, gir1.2-gtk-3.0
+Depends: python3 (>= 3.10), python3-flask (>= 2.2), python3-requests (>= 2.28), python3-gi, gir1.2-gtk-3.0
 Recommends: python3-pystray, gir1.2-ayatanaappindicator3-0.1, python3-pil, python3-watchdog, gir1.2-notify-0.7, python3-fusepy
 Suggests: systemd
 Maintainer: DriveSync contributors <drivesync@localhost>

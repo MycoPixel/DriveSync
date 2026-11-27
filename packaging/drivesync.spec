@@ -6,7 +6,7 @@
 # The package mirrors the .deb layout: python code in a private directory,
 # launcher in /usr/bin, menu launcher, icon and a systemd user unit.
 Name:           drivesync
-Version:        0.7.0
+Version:        0.8.0
 # No distro release suffix: this is a noarch, pure-python package and a
 # host-specific tag made the artifact name differ per build machine for no
 # benefit. Keep release/name stable everywhere.
@@ -19,7 +19,7 @@ Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
 BuildRequires:  python3
-Requires:       python3 >= 3.9
+Requires:       python3 >= 3.10
 Requires:       python3-flask >= 2.2
 Requires:       python3-requests >= 2.28
 # native desktop UI ('drivesync gui', also the menu launcher target)
@@ -137,6 +137,16 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictSUIDSGID=yes
 LockPersonality=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
@@ -167,6 +177,19 @@ EOF
 %{_userunitdir}/drivesync.service
 
 %changelog
+* %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.8.0-1
+- Read-only mode is enforced by the sync engine; graceful SIGTERM shutdown
+  and WAL checkpoint
+- Keyring lifecycle (migrate back, forget, per-profile namespace), bounded
+  pair-undo snapshots and daily activity-log pruning
+- Rotating redacted logs and `drivesync doctor --bundle` diagnostics
+- Hardened watcher defaults, type-checked API fields and token-rotation
+  reload in the dashboard
+- Desktop sign-in can be cancelled and Google revocation no longer blocks
+  the window
+- Python 3.10 minimum, CycloneDX SBOM, weekly dependency audit, AppStream
+  metadata in the AppImage and further systemd sandboxing
+
 * %{chlogdate} MycoPixel (DriveSync contributors) <drivesync@localhost> - 0.7.0-1
 - Dashboard: random per-server API token, cancellable async sign-in,
   OAuth client test, account revocation on removal and pair-removal undo

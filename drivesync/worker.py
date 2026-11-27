@@ -109,7 +109,14 @@ class Worker:
         # notifications digest (Phase 4.4): last sent message + schedule
         self.status["digest"] = {"last_sent_at": None, "last_message": None,
                                  "skipped": None, "error": None}
+        # Drive access scope: the API refuses to create/switch writable
+        # pairs in read-only mode, and the pass loop below downgrades any
+        # pre-existing bidirectional pair to downloads so a token issued
+        # before the switch can never upload or delete on Drive.
+        self.status["drive_scope"] = self._drive_scope(config)
         self._metered_pause_logged = False
+        self._last_prune = None
+        self._readonly_warned = set()
         self._update_limiter()
         self._pending = set()           # pair ids requested via sync_now()
         # systemd watchdog state: a liveness stamp the pass loop, the idle
@@ -135,6 +142,7 @@ class Worker:
         changes were ignored until a restart.
         """
         self.config = dict(cfg)
+        self.status["drive_scope"] = self._drive_scope(cfg)
         if self._interval_override is None:
             try:
                 self.interval = int(cfg.get("sync_interval", self.interval))
@@ -143,6 +151,27 @@ class Worker:
         # the swap decision compares the OLD rate with the NEW effective
         # rate, so do not pre-assign _limit_kb here — _update_limiter does
         self._update_limiter()
+
+    def _drive_scope(self, cfg):
+        return "readonly" if str(
+            (cfg or {}).get("drive_scope") or "full").strip().lower() \
+            == "readonly" else "full"
+
+    def _effective_pair(self, pair):
+        """The pair as the pass loop should treat it.
+
+        Read-only mode must hold even for a bidirectional pair created
+        while the account still had write access. Downgrading the direction
+        to 'download' removes every push/delete op in the planner; the pair
+        row itself is untouched, so leaving read-only mode restores the
+        original direction on the next pass.
+        """
+        if self.status.get("drive_scope") != "readonly" \
+                or pair["direction"] == "download":
+            return pair
+        downgraded = dict(pair)
+        downgraded["direction"] = "download"
+        return downgraded
 
     def _base_effective_kb(self, pair=None):
         """KB/s the 4.1/4.2 ladder resolves right now (globally or per pair).
@@ -483,6 +512,15 @@ class Worker:
         the pass itself failed — 'drivesync sync' turns that into exit 2.
         """
         self._reload_config()
+        # A long-running service writes a summary row per pass; prune once a
+        # day (not just at startup) so state.db cannot grow without bound.
+        now_mono = time.monotonic()
+        if self._last_prune is None or now_mono - self._last_prune >= 86400:
+            self._last_prune = now_mono
+            try:
+                self.store.prune_events()
+            except Exception:
+                pass
         total = engine.SyncStats()
         # a fresh pass supersedes the previous failure; leave stale errors
         # in the activity log (where they belong) instead of status
@@ -529,12 +567,21 @@ class Worker:
                     # error may have hidden remote changes the delta does not
                     # replay, and a full scan is the only way to re-see them.
                     self._touch_heartbeat()
+                    effective = self._effective_pair(pair)
+                    if effective is not pair \
+                            and pair["id"] not in self._readonly_warned:
+                        self._readonly_warned.add(pair["id"])
+                        self.store.log(
+                            pair["id"], "readonly", "",
+                            "Drive access is read-only; uploads and remote "
+                            "deletes are disabled for this pair",
+                            level="info")
                     stale = bool(self.store.kv_get(f"stale:{pair['id']}"))
                     bucket, pair_bw = self._bucket_for_pair(pair)
                     drive.limiter = bucket
                     try:
                         stats, ok = engine.sync_pair(
-                            self.store, self.config, pair, drive,
+                            self.store, self.config, effective, drive,
                             force_full=force_full,
                             changes=None if stale else feed,
                             transfer_callback=self._on_transfer)

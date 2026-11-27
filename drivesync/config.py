@@ -32,7 +32,10 @@ DEFAULT_CONFIG = {
     "digest_time": "18:00",       # HH:MM — fires on the first tick at/after
     "digest_skip_empty": True,    # stay quiet when nothing happened
     "ignore_patterns": ["*.tmp", "*.swp", "*.partial", "*.drivesync",
-                        ".DS_Store", "Thumbs.db"],
+                        ".DS_Store", "Thumbs.db",
+                        # build/VCS noise that is never user content
+                        ".git", "node_modules", ".venv", "__pycache__",
+                        "*.pyc"],
     "server_port": 5678,
     "auth_port": 53137,           # loopback port for the OAuth redirect
     "client_id": "",              # user's own Google OAuth desktop client

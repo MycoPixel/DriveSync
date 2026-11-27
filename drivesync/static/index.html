@@ -33,6 +33,10 @@
 </nav>
 
 <main>
+  <div id="readonlyBanner" class="banner hidden" role="status" aria-live="polite">
+    <b data-i18n="Read-only Drive access">Read-only Drive access</b>
+    <span data-i18n="Uploads and remote deletes are disabled; pairs only download from Drive.">Uploads and remote deletes are disabled; pairs only download from Drive.</span>
+  </div>
   <!-- DASHBOARD -->
   <section id="tab-dashboard" class="tab active" role="tabpanel" aria-label="Dashboard">
     <div class="dashboard-metrics" aria-label="Sync overview">
@@ -487,6 +491,7 @@
           <input id="setKeyring" type="checkbox">
           <span data-i18n-html="set.keyring">Keep OAuth tokens in the system keyring <span class="muted">(Secret Service/KWallet; needs the optional keyring package — otherwise tokens stay in the private 0600 database)</span></span>
         </label>
+        <button type="button" class="btn ghost" id="setForgetKeyring" data-i18n="Forget keyring tokens">Forget keyring tokens</button>
         <label class="check">
           <input id="setIncremental" type="checkbox">
           <span data-i18n-html="set.incremental">Use the Drive changes feed <span class="muted">(incremental scan; off = full relist every pass)</span></span>
@@ -654,7 +659,7 @@
   </div>
 </div>
 
-<div class="modal-backdrop hidden" id="confirmBackdrop" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+<div class="modal-backdrop hidden" id="confirmBackdrop" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText">
   <div class="modal">
     <div class="modal-head">
       <h3 id="confirmTitle">Confirm</h3>

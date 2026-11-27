@@ -69,3 +69,31 @@ def test_start_without_watchdog_degrades(monkeypatch):
     monkeypatch.setitem(sys.modules, "watchdog", None)
     h, msg = start(None, None, {"watch_enabled": True})
     assert h is None and "watchdog" in msg
+
+
+def test_builtin_ignores_skip_vcs_and_build_noise(tmp_path):
+    fired = []
+    d = Debouncer(delay=0.02, max_wait=10.0, fire=fired.append)
+    root = str(tmp_path)
+    for rel in (".git/config", "sub/.git/HEAD", "node_modules/x/index.js",
+                "__pycache__/mod.pyc", "venv/.venv/pyvenv.cfg"):
+        assert not consider_event(d, root, str(tmp_path / rel), [], 1), rel
+    assert consider_event(d, root, str(tmp_path / "notes.txt"), [], 1)
+    time.sleep(0.1)
+    assert fired == [1]
+    d.close()
+
+
+def test_events_inside_the_data_directory_are_ignored(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_SYNC_HOME", str(tmp_path / "app"))
+    fired = []
+    d = Debouncer(delay=0.02, max_wait=10.0, fire=fired.append)
+    root = str(tmp_path)
+    assert not consider_event(
+        d, root, str(tmp_path / "app" / "state.db"), [], 1)
+    assert not consider_event(
+        d, root, str(tmp_path / "app" / "history" / "x"), [], 1)
+    time.sleep(0.1)
+    assert fired == []
+    d.close()

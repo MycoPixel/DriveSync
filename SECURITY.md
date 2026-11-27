@@ -49,16 +49,26 @@ directory, a compromised Google account, and a compromised OS/browser.
   `state` value checked on the callback, and a short-lived local callback
   server bound to `127.0.0.1`.
 - **Read-only mode** (`drive_scope=readonly`) requests only
-  `drive.readonly` from Google and refuses to create or switch a pair to
-  any direction that would write to Drive.
+  `drive.readonly` from Google, refuses to create or switch a pair to any
+  direction that would write to Drive, and **downgrades existing
+  bidirectional pairs to downloads in the worker**, so a token issued
+  before the switch still cannot upload or delete.
 - Removing an account can **revoke its grant at Google** in the same step
   (the Accounts dialog asks first), so a discarded token stops working
-  even if a backup of `state.db` survives.
+  even if a backup of `state.db` survives. The desktop app performs the
+  revocation off the UI thread.
 - **Optional OS keyring storage** (`keyring_tokens=true`) moves refresh
   tokens out of SQLite into the desktop keyring (Secret Service / KWallet);
   the database then holds only a `{"keyring": true}` marker. If no keyring
   backend is available the setting is ignored and SQLite is used, so the
-  app never starts in a broken state.
+  app never starts in a broken state. Turning the setting off moves the
+  tokens back into SQLite, and **Forget keyring tokens** deletes the
+  keyring copies. Entries are namespaced by data directory so two profiles
+  do not share one account's token.
+- `serve` writes a rotating log (`drivesync.log`, 1 MiB × 3) through a
+  filter that masks Google token shapes and `client_secret`/`token`
+  key/value pairs. `drivesync doctor --bundle` produces a redacted support
+  zip; neither the log nor the bundle contains raw credentials.
 
 ### Local dashboard
 
@@ -97,7 +107,9 @@ directory, a compromised Google account, and a compromised OS/browser.
 
 - Runtime dependencies are pinned in `requirements.lock`; CI installs that
   file and runs `pip-audit -r requirements.lock` on the release
-  interpreter, so the audit covers exactly what users get.
+  interpreter, so the audit covers exactly what users get. A weekly
+  scheduled workflow re-audits the shipped pins, and Dependabot tracks the
+  lockfile and Actions.
 - CI runs a wider Ruff rule set (fatal errors plus unused/duplicate names
   and mutable default arguments) configured in `pyproject.toml`.
 - Releases are built from tagged commits by GitHub Actions; the test matrix
@@ -106,12 +118,15 @@ directory, a compromised Google account, and a compromised OS/browser.
 - Every package is installed and smoke-tested (`drivesync --version`) on
   the platform it targets before it is attached to the release.
 - The `publish` job emits **signed build provenance** for the deb, rpm,
-  AppImage and Flatpak assets, verifiable with `gh attestation verify`.
+  AppImage and Flatpak assets, verifiable with `gh attestation verify`, and
+  attaches a CycloneDX SBOM of the pinned runtime.
 - The shipped systemd user unit runs with `NoNewPrivileges`, a private
   `/tmp`, a read-only system tree (`ProtectSystem=full`), restricted
-  address families (AF_UNIX/INET/INET6), `RestrictSUIDSGID` and locked
-  personality. `ProtectHome` stays off because syncing files under the
-  home directory is the app's purpose.
+  address families (AF_UNIX/INET/INET6), `RestrictSUIDSGID`, locked
+  personality, a private `/dev`, protected clock/hostname/kernel logs,
+  namespace and realtime restrictions, a `@system-service` system-call
+  allowlist and `UMask=0077`. `ProtectHome` stays off because syncing
+  files under the home directory is the app's purpose.
 - The Flatpak manifest uses the GNOME runtime and only adds Flask,
   requests and the app itself.
 
@@ -120,6 +135,7 @@ directory, a compromised Google account, and a compromised OS/browser.
 ```bash
 drivesync audit          # check modes, token presence, world-writable files
 drivesync audit --fix    # repair insecure permissions
+drivesync doctor --bundle  # redacted support zip for a bug report
 ```
 
 The audit never prints secret values. A non-zero exit means at least one

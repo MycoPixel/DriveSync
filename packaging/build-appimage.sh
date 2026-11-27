@@ -143,7 +143,7 @@ EOF
 sed -i "s|__PYBIN__|\$HERE${PYBIN_REL}|g" "$APPDIR/AppRun"
 chmod 755 "$APPDIR/AppRun"
 
-cat > "$APPDIR/DriveSync.desktop" <<EOF
+cat > "$APPDIR/drivesync.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=DriveSync
@@ -160,7 +160,7 @@ SingleMainWindow=true
 X-GNOME-UsesNotifications=true
 Actions=SyncNow;Dashboard;
 EOF
-cat >> "$APPDIR/DriveSync.desktop" <<'EOF'
+cat >> "$APPDIR/drivesync.desktop" <<'EOF'
 
 [Desktop Action SyncNow]
 Name=Sync all now
@@ -176,6 +176,12 @@ cp "$ROOT/drivesync/static/mark.png" "$APPDIR/drivesync.png"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp "$ROOT/drivesync/static/mark.png" \
    "$APPDIR/usr/share/icons/hicolor/256x256/apps/drivesync.png"
+# AppStream metadata: software centers and `appstreamcli validate` read it
+# from usr/share/metainfo; without it the AppImage was flagged as missing
+# upstream metadata.
+mkdir -p "$APPDIR/usr/share/metainfo"
+cp "$ROOT/drivesync.metainfo.xml" \
+   "$APPDIR/usr/share/metainfo/drivesync.metainfo.xml"
 
 # ---- appimagetool ------------------------------------------------------
 TOOL_DIR="$HOME/.local/bin"

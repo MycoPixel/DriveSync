@@ -1,0 +1,19 @@
+version: 2
+
+# Keep the pinned runtime dependencies and the workflow actions fresh.
+# The release workflow pins actions to commit SHAs; Dependabot updates those
+# pins with a comment naming the new version.
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # requirements.lock is the shipped set; a bump here should go through
+    # the test matrix and the audit job before a release.
+    labels: ["dependencies", "python"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "ci"]

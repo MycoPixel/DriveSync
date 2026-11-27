@@ -63,6 +63,22 @@ def _int_field(data, name):
     return _to_int(data.get(name) or 0, name)
 
 
+def _str_field(data, name, default="", required=False):
+    """String field from a JSON body, or a 400 naming the field.
+
+    ``str(123)`` would quietly turn a wrong type into a path or an OAuth
+    id; reject it instead of letting a later call fail with a 500.
+    """
+    value = data.get(name, default)
+    if value is None:
+        value = default
+    if not isinstance(value, str):
+        raise BadRequest(f"{name} must be a string")
+    if required and not value.strip():
+        raise BadRequest(f"missing field: {name}")
+    return value
+
+
 def is_loopback_host(host):
     """Return True only for an explicit loopback address or localhost.
 
@@ -185,6 +201,10 @@ def create_app(store: Store, worker=None, api_token=None):
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Permissions-Policy"] = \
+            "geolocation=(), camera=(), microphone=(), payment=()"
+        resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         if request.path.startswith("/api/"):
             # responses carry account data and quota: never cache them
             resp.headers["Cache-Control"] = "no-store"
@@ -226,6 +246,9 @@ def create_app(store: Store, worker=None, api_token=None):
         html = html.replace("__DRIVESYNC_API_TOKEN__", token)
         resp = make_response(html)
         resp.headers["Content-Type"] = "text/html; charset=utf-8"
+        # the page embeds the per-server API token; never let a shared cache
+        # or the back/forward cache keep a stale copy
+        resp.headers["Cache-Control"] = "no-store"
         return resp
 
     @app.get("/<path:filename>")
@@ -242,6 +265,8 @@ def create_app(store: Store, worker=None, api_token=None):
             "worker": dict(worker.status) if worker else None,
             "interval": cfg["sync_interval"],
             "conflict_policy": cfg["conflict_policy"],
+            "drive_scope": cfg.get("drive_scope", "full"),
+            "readonly": cfg.get("drive_scope", "full") == "readonly",
             "db": str(db_path()),
         })
 
@@ -304,12 +329,12 @@ def create_app(store: Store, worker=None, api_token=None):
         # only overwrite when a non-empty value was actually posted
         updates = {}
         for key in ("client_id", "client_secret"):
-            value = (data.get(key) or "").strip()
+            value = _str_field(data, key).strip()
             if value:
                 updates[key] = value
         # the auth form's scope selector applies to this sign-in and later
         # ones; save_config() validates it.
-        scope = str(data.get("drive_scope") or "").strip().lower()
+        scope = _str_field(data, "drive_scope").strip().lower()
         if scope:
             updates["drive_scope"] = scope
         try:
@@ -323,6 +348,12 @@ def create_app(store: Store, worker=None, api_token=None):
         job = {"status": "pending", "cancel": cancel,
                "created": time.time()}
         with auth_jobs_lock:
+            # One consent flow at a time: two browser windows would race the
+            # same loopback callback port and the second would overwrite the
+            # first account's tokens.
+            if any(j.get("status") == "pending"
+                   for j in auth_jobs.values()):
+                return api_error("a sign-in is already in progress", 409)
             auth_jobs[job_id] = job
 
         def run_auth():
@@ -368,15 +399,17 @@ def create_app(store: Store, worker=None, api_token=None):
             if job.get("status") == "pending":
                 job["cancel"].set()
                 job["status"] = "cancelled"
-        return jsonify({"ok": True, "status": "cancelled"})
+            status = job.get("status")
+        return jsonify({"ok": True, "status": status})
 
     @app.post("/api/oauth/test")
     def oauth_test():
         """Validate an OAuth client without starting the consent flow."""
         data = json_body()
         cfg = load_config()
-        client_id = (data.get("client_id") or cfg.get("client_id") or "").strip()
-        client_secret = (data.get("client_secret")
+        client_id = (_str_field(data, "client_id")
+                     or cfg.get("client_id") or "").strip()
+        client_secret = (_str_field(data, "client_secret")
                          or cfg.get("client_secret") or "").strip()
         ok, message = validate_client(client_id, client_secret)
         if not ok:
@@ -534,12 +567,14 @@ def create_app(store: Store, worker=None, api_token=None):
     def pairs_add():
         data = json_body()
         try:
-            local = os.path.realpath(os.path.expanduser(data["local_path"]))
+            local = os.path.realpath(
+                os.path.expanduser(_str_field(data, "local_path",
+                                              required=True)))
             if not os.path.isdir(local):
                 return api_error(f"local path is not a directory: {local}")
             account_id = _to_int(data["account_id"], "account_id")
-            remote_id = data["remote_id"]
-            direction = data.get("direction", "bidirectional")
+            remote_id = _str_field(data, "remote_id", required=True)
+            direction = _str_field(data, "direction") or "bidirectional"
             if load_config().get("drive_scope") == "readonly" \
                     and direction != "download":
                 return api_error(
@@ -586,6 +621,12 @@ def create_app(store: Store, worker=None, api_token=None):
             return api_error(
                 "This install is authorized for read-only Drive access; "
                 "pairs must stay in the 'Download only' direction.")
+        # a JSON number/object for a text field would otherwise reach SQLite
+        # or path handling and surface as a 500
+        for key in ("direction", "conflict_policy", "local_path",
+                    "remote_path", "remote_id", "symlink_policy"):
+            if key in data:
+                _str_field(data, key)
         try:
             pair = store.update_pair(pair_id, **data)
         except ValueError as exc:
@@ -599,9 +640,11 @@ def create_app(store: Store, worker=None, api_token=None):
         if snapshot is None:
             return api_error("pair not found", 404)
         store.delete_pair(pair_id)
-        undo = secrets.token_urlsafe(12)
-        with pair_undo_lock:
-            pair_undo[undo] = (time.time() + 60, snapshot)
+        undo = None
+        if not snapshot.get("truncated"):
+            undo = secrets.token_urlsafe(12)
+            with pair_undo_lock:
+                pair_undo[undo] = (time.time() + 60, snapshot)
         return jsonify({"ok": True, "undo": undo,
                         "pair": pair_json(snapshot["pair"])})
 
@@ -954,6 +997,15 @@ def create_app(store: Store, worker=None, api_token=None):
         if worker:
             worker.apply_config(cfg)
         return jsonify({"ok": True, "settings": _public_settings(cfg)})
+
+    @app.post("/api/settings/keyring/forget")
+    def keyring_forget():
+        """Delete the OS-keyring copies, keeping tokens in state.db."""
+        try:
+            moved = store.forget_keyring_tokens()
+        except Exception as exc:
+            return api_error(exc)
+        return jsonify({"ok": True, "moved": moved})
 
     @app.get("/api/health")
     def health():

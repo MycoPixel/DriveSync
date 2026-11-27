@@ -37,6 +37,26 @@ def test_sync_now_queues_and_coalesces(env):
     assert w._pending == {env.pair["id"]}
 
 
+def test_read_only_scope_downgrades_pairs_to_download(env, monkeypatch):
+    """A bidirectional pair created before the read-only switch must not
+    upload: the pass loop treats it as download-only without rewriting the
+    row, so leaving read-only restores the original direction."""
+    env.store.add_account("a@example.com", {})
+    (env.local / "a.txt").write_text("alpha")
+    cfg = dict(env.cfg, drive_scope="readonly")
+    w = Worker(env.store, cfg)
+    monkeypatch.setattr(w, "make_drive", lambda acc: env.drive)
+    stats, ok = w.run_pass()
+    assert ok is True
+    assert int(stats.pushed) == 0
+    assert env.drive.calls["upload"] == 0
+    assert env.drive.calls["upload_resumable"] == 0
+    assert w.status["drive_scope"] == "readonly"
+    assert env.store.pair(env.pair["id"])["direction"] == "bidirectional"
+    assert any(e["action"] == "readonly"
+               for e in env.store.recent_events())
+
+
 def test_run_pass_accepts_id_list(env, monkeypatch):
     """The watcher path passes a list of pair ids; one pair, empty dir."""
     env.store.add_account("a@example.com", {})   # env pairs reference account 1

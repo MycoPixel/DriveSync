@@ -13,9 +13,18 @@ import os
 import threading
 import time
 
+from .config import app_dir
+
 DEBOUNCE_SECS = 2.0
 MAX_WAIT_SECS = 30.0      # a sustained burst still syncs while it runs
 REFRESH_SECS = 15.0       # re-scan pair list so adds/removes apply live
+
+# Noise that is never a user document: VCS metadata, dependency caches and
+# build artifacts. Watchers that descend into these fire constantly while
+# a build or git operation runs, and syncing them is almost never intended.
+BUILTIN_IGNORES = (".git", ".git/*", "node_modules", "node_modules/*",
+                   ".venv", ".venv/*", "__pycache__", "__pycache__/*",
+                   "*.pyc")
 
 
 def ignored(rel, patterns):
@@ -44,7 +53,15 @@ def consider_event(debouncer, root, path, patterns, pair_id):
         return False
     if rel == ".":
         return False
-    if ignored(rel, patterns):
+    # Never react to our own state.db/WAL/history writes. A pair that
+    # contains the data directory would otherwise sync itself in a loop.
+    try:
+        data_dir = os.path.realpath(app_dir())
+        if os.path.commonpath([os.path.realpath(path), data_dir]) == data_dir:
+            return False
+    except (ValueError, OSError):
+        pass
+    if ignored(rel, BUILTIN_IGNORES) or ignored(rel, patterns):
         return False
     debouncer.poke(pair_id)
     return True
@@ -125,6 +142,7 @@ class Watcher:
         self._watches = {}          # pair_id -> (root, watch)
         self._stop = threading.Event()
         self._events = events
+        self._watch_errors = set()  # pair ids already reported
 
     def start(self):
         self._observer.start()
@@ -142,8 +160,20 @@ class Watcher:
                 w = self._observer.schedule(
                     self._make_handler(root, pid), root, recursive=True)
                 self._watches[pid] = (root, w)
-            except (OSError, FileNotFoundError):
-                continue            # path not there yet; the engine logs it
+                self._watch_errors.discard(pid)
+            except (OSError, FileNotFoundError) as exc:
+                # Path not there yet is normal; a full inotify table or a
+                # permission error is not. Report each pair once instead of
+                # silently dropping instant sync.
+                if pid not in self._watch_errors:
+                    self._watch_errors.add(pid)
+                    try:
+                        self._store.log(
+                            pid, "watch-error", "",
+                            f"could not watch {root}: {exc}", level="warning")
+                    except Exception:
+                        pass
+                continue
         for pid in list(self._watches):
             if pid not in desired:
                 _, w = self._watches.pop(pid)

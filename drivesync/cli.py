@@ -36,6 +36,29 @@ def _open_store():
     return store
 
 
+def _install_shutdown_signals():
+    """Turn SIGTERM (systemd stop) into KeyboardInterrupt.
+
+    ``app.run`` blocks in the main thread; without a handler the default
+    SIGTERM action kills the process before ``cmd_serve``'s ``finally`` can
+    stop the watcher/worker and checkpoint the WAL. Raising from the handler
+    unwinds normally, so a service stop closes state.db cleanly.
+    """
+    import signal
+
+    def _stop(signum, frame):
+        raise KeyboardInterrupt
+
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _stop)
+        except (ValueError, OSError):
+            pass
+
+
 def _open_browser(url):
     """Best-effort 'open the dashboard tab' — never an error when headless."""
     try:
@@ -78,6 +101,10 @@ def cmd_serve(args):
             "error: the DriveSync dashboard has no remote authentication; "
             "use --host 127.0.0.1 (or localhost / ::1).")
     store = _open_store()
+    from .diagnostics import configure_logging
+    log_path = configure_logging()
+    if log_path:
+        print(f"  log        : {log_path}")
     if getattr(store, "recovered", False):
         store.log(None, "db-recovered", "",
                   "state.db was corrupt; it was restored from the automatic "
@@ -110,6 +137,7 @@ def cmd_serve(args):
         from . import watch
         watch_handle, watch_msg = watch.start(worker, store, cfg)
         print(f"  {watch_msg}")
+    _install_shutdown_signals()
     try:
         run_server(store, worker, host=args.host, port=args.port)
     except OSError as exc:
@@ -796,6 +824,10 @@ def cmd_doctor(args):
                 print(f"  drive api  : FAILED — {exc}")
     else:
         print("  drive api  : (no account authorized yet)")
+    if getattr(args, "bundle", None):
+        from .diagnostics import build_bundle
+        dest = None if args.bundle is True else args.bundle
+        print(f"  bundle     : {build_bundle(dest, store=store)}")
     store.close()
     sys.exit(0 if ok else 1)
 
@@ -993,6 +1025,10 @@ def build_parser():
     s.set_defaults(fn=cmd_audit)
 
     s = sub.add_parser("doctor", help="sanity-check installation")
+    s.add_argument("--bundle", nargs="?", const=True, metavar="PATH",
+                   help="also write a redacted support bundle (default: "
+                        "drivesync-diagnostics-<stamp>.zip in the current "
+                        "directory)")
     s.set_defaults(fn=cmd_doctor)
     return p
 

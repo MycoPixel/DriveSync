@@ -126,11 +126,11 @@ jobs:
         run: gh release upload "$GITHUB_REF_NAME" dist/*.flatpak --clobber
 
   tests:
-    runs-on: ${{ (matrix.python-version == '3.9' || matrix.python-version == '3.10') && 'ubuntu-22.04' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.python-version == '3.10' && 'ubuntu-22.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -179,6 +179,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: gh release download "$GITHUB_REF_NAME" --dir dist --clobber
+      - name: Generate a CycloneDX SBOM
+        # Machine-readable inventory of the pinned runtime dependencies, so
+        # a user or scanner can check what a release actually ships.
+        run: |
+          python3 -m pip install --quiet cyclonedx-bom
+          cyclonedx-py requirements requirements.lock \
+            --output-file dist/sbom.cdx.json
       - name: Attest build provenance
         # Signed by GitHub's OIDC identity, so users can verify a download
         # was produced by this workflow and tag.
@@ -189,6 +196,7 @@ jobs:
             dist/*.rpm
             dist/*.AppImage
             dist/*.flatpak
+            dist/sbom.cdx.json
       - name: Generate SHA-256 checksums
         run: |
           cd dist
@@ -199,5 +207,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS \
+            dist/sbom.cdx.json --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false
